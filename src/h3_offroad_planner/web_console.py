@@ -229,12 +229,22 @@ def _run_operation(
         _report(progress, "build_map", 75, "completed trafficability-map build")
     elif operation in {"plan", "replan"}:
         _set_route_tile_manifest(payload)
-        _report(progress, "global_plan", 70, "started route planning")
-        try:
-            route_manifest = run_route_payload(_mapping(payload, "route"), progress=progress)
-        except TypeError:
-            route_manifest = run_route_payload(_mapping(payload, "route"))
-        result = {"route_manifest": route_manifest}
+        route_cfg = _mapping(payload, "route")
+        manifest_path = Path(str(route_cfg.get("parquet_path", "")))
+        if not manifest_path.is_file() and operation == "plan":
+            _report(progress, "build_map", 10, "底图尚未构建，正在自动构建底图...")
+            result = (
+                run_delivery_payload(payload)
+                if progress is None
+                else run_delivery_payload(payload, progress)
+            )
+        else:
+            _report(progress, "global_plan", 70, "started route planning")
+            try:
+                route_manifest = run_route_payload(route_cfg, progress=progress)
+            except TypeError:
+                route_manifest = run_route_payload(route_cfg)
+            result = {"route_manifest": route_manifest}
     else:
         # Keep the original synchronous endpoint monkeypatch-compatible.
         result = (

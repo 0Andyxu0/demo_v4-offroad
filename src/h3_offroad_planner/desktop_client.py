@@ -551,7 +551,8 @@ class DesktopMainWindow(QMainWindow):
         self.operation_buttons: list[QPushButton] = []
         for label, operation in (
             ("构建通行地图", "build"),
-            ("生成多角色 RoutePlan", "combined"),
+            ("生成多角色 RoutePlan", "plan"),
+            ("一键端到端交付", "combined"),
             ("运行 D* Lite 重规划", "replan"),
         ):
             button = QPushButton(label)
@@ -1088,9 +1089,13 @@ def _execute_desktop_operation(
         progress("evaluation", 95, "loaded persisted active-route metrics")
         return {"replan_result": typed_result, "active_route_geojson": active}
     if operation == "plan":
-        progress("global_plan", 65, "started route planning")
         route = dict(_mapping(payload, "route"))
         _set_route_tile_manifest(route, _mapping(payload, "tile_build"))
+        manifest_path = Path(str(route.get("parquet_path", "")))
+        if not manifest_path.is_file():
+            progress("build_map", 10, "底图尚未构建，正在自动构建底图...")
+            return run_delivery_payload(payload, progress)
+        progress("global_plan", 65, "started route planning")
         try:
             route_manifest = run_route_payload(route, progress=progress)
         except TypeError:

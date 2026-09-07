@@ -62,6 +62,7 @@
         <h2>三、全局预规划与动态避障</h2>
         <div class="row"><button id="set-start">选取起点</button><button id="set-goal">选取终点</button></div>
         <button id="plan-route">运行多角色 RoutePlan</button>
+        <button id="delivery-all">一键端到端交付 (建图+规划)</button>
         <button id="activate-route">确认并激活当前候选</button>
         <button id="mark-blocked">标记动态障碍格</button>
         <input id="current-h3" aria-label="当前车辆 H3" placeholder="重规划前输入当前车辆 H3 ID">
@@ -150,7 +151,8 @@
     document.getElementById("set-goal").onclick = () => { state.mode = "goal"; setStatus("请在地图上点击终点"); };
     document.getElementById("mark-blocked").onclick = () => { state.mode = "blocked"; setStatus("请点击细层 H3 格网标记动态障碍"); };
     document.getElementById("build-map").onclick = () => runOperation("build");
-    document.getElementById("plan-route").onclick = () => runOperation("combined");
+    document.getElementById("plan-route").onclick = () => runOperation("plan");
+    document.getElementById("delivery-all").onclick = () => runOperation("combined");
     document.getElementById("activate-route").onclick = () => activateCandidate();
     document.getElementById("replan-route").onclick = () => replanActive();
     document.getElementById("theme").onchange = (event) => { state.theme = event.target.value; renderGrid("fine"); };
