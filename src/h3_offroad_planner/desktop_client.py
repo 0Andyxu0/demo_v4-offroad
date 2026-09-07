@@ -800,7 +800,10 @@ class DesktopMainWindow(QMainWindow):
             if kind == "progress" and isinstance(payload, tuple) and len(payload) == 3:
                 module, percent, message = payload
                 if isinstance(module, str) and isinstance(percent, int) and isinstance(message, str):
-                    self._on_progress(module, percent, message)
+                    try:
+                        self._on_progress(module, percent, message)
+                    except Exception as exc:
+                        print(f"Error handling progress: {exc}", file=sys.stderr, flush=True)
             elif kind == "completed":
                 try:
                     self._on_completed(payload)
