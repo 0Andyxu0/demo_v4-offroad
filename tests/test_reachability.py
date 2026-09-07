@@ -89,7 +89,7 @@ def test_reachability_passes_when_connected(vehicle: VehicleProfile) -> None:
 
     # Should succeed without raising exception
     check_route_reachability(graph, evaluation, "c1", "c4", progress=progress)
-    assert not any(msg == "起终点无连通性" for _, _, msg in progress_calls)
+    assert not any(msg == "Endpoints disconnected" for _, _, msg in progress_calls)
 
 
 def test_reachability_same_start_and_goal(vehicle: VehicleProfile) -> None:
@@ -110,10 +110,10 @@ def test_reachability_fails_when_start_impassable(vehicle: VehicleProfile) -> No
     def progress(module: str, pct: int, msg: str) -> None:
         progress_calls.append((module, pct, msg))
 
-    with pytest.raises(PlanningFailedError, match="起终点无连通性"):
+    with pytest.raises(PlanningFailedError, match="Endpoints disconnected"):
         check_route_reachability(graph, evaluation, "c1", "c4", progress=progress)
 
-    assert ("reachability", 0, "起终点无连通性") in progress_calls
+    assert ("reachability", 0, "Endpoints disconnected") in progress_calls
 
 
 def test_reachability_fails_when_goal_impassable(vehicle: VehicleProfile) -> None:
@@ -122,7 +122,7 @@ def test_reachability_fails_when_goal_impassable(vehicle: VehicleProfile) -> Non
     graph.cells["c4"].slope = 80.0
     evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
 
-    with pytest.raises(PlanningFailedError, match="起终点无连通性"):
+    with pytest.raises(PlanningFailedError, match="Endpoints disconnected"):
         check_route_reachability(graph, evaluation, "c1", "c4")
 
 
@@ -135,10 +135,10 @@ def test_reachability_fails_when_graph_disconnected(vehicle: VehicleProfile) -> 
     def progress(module: str, pct: int, msg: str) -> None:
         progress_calls.append((module, pct, msg))
 
-    with pytest.raises(PlanningFailedError, match="起终点无连通性"):
+    with pytest.raises(PlanningFailedError, match="Endpoints disconnected"):
         check_route_reachability(graph, evaluation, "c1", "c4", progress=progress)
 
-    assert ("reachability", 0, "起终点无连通性") in progress_calls
+    assert ("reachability", 0, "Endpoints disconnected") in progress_calls
 
 
 def test_reachability_fails_when_start_isolated(vehicle: VehicleProfile) -> None:
@@ -169,5 +169,5 @@ def test_reachability_fails_when_start_isolated(vehicle: VehicleProfile) -> None
     graph = H3Graph(cells=cells, edges={})
     evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
 
-    with pytest.raises(PlanningFailedError, match="起终点无连通性"):
+    with pytest.raises(PlanningFailedError, match="Endpoints disconnected"):
         check_route_reachability(graph, evaluation, "solo", "target")

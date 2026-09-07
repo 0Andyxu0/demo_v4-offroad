@@ -321,7 +321,7 @@ def test_completed_render_failure_is_contained_by_qt_event_boundary(
     window._drain_operation_events()
 
     assert errors == ["desktop result rendering failed: invalid route geometry"]
-    assert window.progress_label.text() == "运行失败"
+    assert window.progress_label.text() == "Failed"
     assert window._active_thread is None
     assert all(button.isEnabled() for button in window.operation_buttons)
     window.close()

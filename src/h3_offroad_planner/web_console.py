@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from collections.abc import Callable
 from email.message import Message
@@ -171,6 +172,7 @@ class _ConsoleHandler(BaseHTTPRequestHandler):
             self._write_event("error", "failed", 100, "ERROR", str(exc))
 
     def _progress(self, module: str, percent: int, message: str) -> None:
+        print(f"[{module}] {percent:>3}%: {message}", file=sys.stderr, flush=True)
         self._write_event("progress", module, percent, "INFO", message)
 
     def _write_event(
@@ -232,7 +234,7 @@ def _run_operation(
         route_cfg = _mapping(payload, "route")
         manifest_path = Path(str(route_cfg.get("parquet_path", "")))
         if not manifest_path.is_file() and operation == "plan":
-            _report(progress, "build_map", 10, "底图尚未构建，正在自动构建底图...")
+            _report(progress, "build_map", 10, "trafficability map missing; building tile cache...")
             result = (
                 run_delivery_payload(payload)
                 if progress is None

@@ -24,36 +24,36 @@ def check_route_reachability(
     reachable via directed passable edges before entering heavy Pareto search.
 
     Detailed topological and obstacle diagnoses are logged to the IDE / system process
-    logger, while a clean and concise '起终点无连通性' error is reported to the UI.
+    logger, while a clean and concise 'Endpoints disconnected' error is reported to the UI.
     """
     if start not in evaluation.node_metrics:
-        logger.error("[DIAG] 起点 %s 不在评价网格中", start)
-        _fail_reachability(progress, "起终点无连通性")
+        logger.error("[DIAG] Start cell %s is missing from evaluation grid", start)
+        _fail_reachability(progress, "Endpoints disconnected")
 
     if goal not in evaluation.node_metrics:
-        logger.error("[DIAG] 终点 %s 不在评价网格中", goal)
-        _fail_reachability(progress, "起终点无连通性")
+        logger.error("[DIAG] Goal cell %s is missing from evaluation grid", goal)
+        _fail_reachability(progress, "Endpoints disconnected")
 
     start_node = evaluation.node_metrics[start]
     if not start_node.is_passable:
         logger.error(
-            "[DIAG] 起点 %s 自身不可通行！硬阻断原因: %s",
+            "[DIAG] Start cell %s is physically impassable! Reasons: %s",
             start,
             list(start_node.reason_codes),
         )
-        _fail_reachability(progress, "起终点无连通性")
+        _fail_reachability(progress, "Endpoints disconnected")
 
     goal_node = evaluation.node_metrics[goal]
     if not goal_node.is_passable:
         logger.error(
-            "[DIAG] 终点 %s 自身不可通行！硬阻断原因: %s",
+            "[DIAG] Goal cell %s is physically impassable! Reasons: %s",
             goal,
             list(goal_node.reason_codes),
         )
-        _fail_reachability(progress, "起终点无连通性")
+        _fail_reachability(progress, "Endpoints disconnected")
 
     if start == goal:
-        logger.info("[REACHABILITY] 起终点为同一网格，连通性门检通过")
+        logger.info("[REACHABILITY] Start and goal are identical; reachability gate passed")
         return
 
     # Build passable directed adjacency from evaluation.directed_edges
@@ -62,8 +62,8 @@ def check_route_reachability(
         adj.setdefault(from_h3, []).append(to_h3)
 
     if start not in adj:
-        logger.error("[DIAG] 起点 %s 没有向外的可行边，处于完全孤立状态", start)
-        _fail_reachability(progress, "起终点无连通性")
+        logger.error("[DIAG] Start cell %s has no passable outgoing edges; isolated", start)
+        _fail_reachability(progress, "Endpoints disconnected")
 
     # Fast Breadth-First Search on passable subgraph
     visited: set[str] = {start}
@@ -95,17 +95,17 @@ def check_route_reachability(
                     if n_node is not None and not n_node.is_passable:
                         barrier_reasons.update(n_node.reason_codes)
 
-        logger.error("[DIAG] 起终点物理不连通！")
+        logger.error("[DIAG] Endpoints physically disconnected!")
         logger.error(
-            "[DIAG] 起点 %s 所在连通块大小: %d 网格，外围阻断主要原因: %s",
+            "[DIAG] Start cell %s reachable component size: %d cells; boundary blocked by: %s",
             start,
             len(visited),
-            sorted(barrier_reasons) if barrier_reasons else "走廊几何边界或微观坡度阻断",
+            sorted(barrier_reasons) if barrier_reasons else "corridor boundary or slope",
         )
-        _fail_reachability(progress, "起终点无连通性")
+        _fail_reachability(progress, "Endpoints disconnected")
 
     logger.info(
-        "[REACHABILITY] 起终点连通性门检通过 (start=%s, goal=%s, 探索网格数=%d)",
+        "[REACHABILITY] Reachability gate passed (start=%s, goal=%s, explored_cells=%d)",
         start,
         goal,
         len(visited),

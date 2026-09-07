@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -71,6 +72,8 @@ __all__ = [
     "DesktopProjectState",
     "run_desktop_client",
 ]
+
+_TILE_PROGRESS_REGEX: re.Pattern[str] = re.compile(r"^(.*?):\s*\[(\d+/\d+)\]$")
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 DEFAULT_DELIVERY_PATH: Path = PROJECT_ROOT / "configs" / "mvp81_delivery.example.yaml"
@@ -506,7 +509,7 @@ class DesktopMainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
-        self.progress_label = QLabel("等待操作")
+        self.progress_label = QLabel("Waiting for operation")
         self.result_text = QTextBrowser()
         self.result_text.setMinimumHeight(150)
         self.theme_box = QComboBox()
@@ -652,7 +655,7 @@ class DesktopMainWindow(QMainWindow):
         )
         unsupported = self._project.unsupported_fields()
         if unsupported:
-            data_summary += "\n⚠ 运行前需处理未支持字段：" + ", ".join(unsupported)
+            data_summary += "\n[WARN] 运行前需处理未支持字段：" + ", ".join(unsupported)
         self.project_summary.setText(data_summary)
 
     def _safe_blocked_cells(self) -> list[str]:
@@ -695,8 +698,8 @@ class DesktopMainWindow(QMainWindow):
             return
         self.map_view.set_blocked_cells(self._project.blocked_cells())
         self._refresh_project_summary()
-        verb = "标记" if active else "取消标记"
-        self._append_log("WARN", "replan", 0, f"已{verb}动态障碍：{cell_id}")
+        action = "Marked" if active else "Unmarked"
+        self._append_log("WARN", "replan", 0, f"{action} dynamic blockage: {cell_id}")
 
     def _select_parent_grid(self, parent_h3: str) -> None:
         if self._last_result is None:
@@ -776,6 +779,7 @@ class DesktopMainWindow(QMainWindow):
         self._set_running(True)
         self.progress_bar.setValue(0)
         self.log_text.clear()
+        self._last_logged_step: str | None = None
         self._operation_events = SimpleQueue()
         self._active_thread = Thread(
             target=_run_desktop_operation_in_background,
@@ -811,8 +815,18 @@ class DesktopMainWindow(QMainWindow):
 
     def _on_progress(self, module: str, percent: int, message: str) -> None:
         self.progress_bar.setValue(percent)
-        self.progress_label.setText(f"{module}: {percent}% {message}")
-        self._append_log("INFO", module, percent, message)
+        match = _TILE_PROGRESS_REGEX.match(message)
+        if match:
+            step = match.group(1).strip()
+            detail = match.group(2).strip()
+            self.progress_label.setText(f"{module}: {percent}% {step} [{detail}]")
+            if getattr(self, "_last_logged_step", None) != step:
+                self._last_logged_step = step
+                self._append_log("INFO", module, percent, step)
+        else:
+            self._last_logged_step = message
+            self.progress_label.setText(f"{module}: {percent}% {message}")
+            self._append_log("INFO", module, percent, message)
 
     def _on_completed(self, result: object) -> None:
         if not isinstance(result, dict):
@@ -826,8 +840,8 @@ class DesktopMainWindow(QMainWindow):
         if self._render_candidate(self._project.candidate_index()):
             self._sync_map_from_project()
             self.progress_bar.setValue(100)
-            self.progress_label.setText("运行完成")
-            self._append_log("INFO", "complete", 100, "已生成格网、路线和评价结果。")
+            self.progress_label.setText("Complete")
+            self._append_log("INFO", "complete", 100, "Grid, routes, and evaluation generated.")
             return
         route_geojson = result.get("route_geojson")
         evaluation = result.get("route_evaluation")
@@ -844,12 +858,12 @@ class DesktopMainWindow(QMainWindow):
         )
         self._sync_map_from_project()
         self.progress_bar.setValue(100)
-        self.progress_label.setText("运行完成")
-        self._append_log("INFO", "complete", 100, "已生成格网、路线和评价结果。")
+        self.progress_label.setText("Complete")
+        self._append_log("INFO", "complete", 100, "Grid, routes, and evaluation generated.")
 
     def _on_failed(self, message: str) -> None:
         self._append_log("ERROR", "failed", 100, message)
-        self.progress_label.setText("运行失败")
+        self.progress_label.setText("Failed")
         self._show_error(message)
 
     def _finish_background_operation(self) -> None:
@@ -957,7 +971,7 @@ class DesktopMainWindow(QMainWindow):
             "INFO",
             "select",
             100,
-            f"已激活 {selection.get('candidate_id')}，角色 {selection.get('selected_role')}。",
+            f"Activated {selection.get('candidate_id')}, role {selection.get('selected_role')}.",
         )
         self._status_bar.showMessage("候选路线已显式激活并持久化。")
 
@@ -1091,7 +1105,7 @@ def _execute_desktop_operation(
         _set_route_tile_manifest(route, _mapping(payload, "tile_build"))
         manifest_path = Path(str(route.get("parquet_path", "")))
         if not manifest_path.is_file():
-            progress("build_map", 10, "底图尚未构建，正在自动构建底图...")
+            progress("build_map", 10, "trafficability map missing; building tile cache...")
             return run_delivery_payload(payload, progress)
         progress("global_plan", 65, "started route planning")
         try:
@@ -1114,6 +1128,7 @@ def _run_desktop_operation_in_background(
     def report(module: str, percent: int, message: str) -> None:
         if not isinstance(percent, int) or not 0 <= percent <= 100:
             raise ConfigError("backend emitted an invalid progress percent.")
+        print(f"[{module}] {percent:>3}%: {message}", file=sys.stderr, flush=True)
         events.put(("progress", (module, percent, message)))
 
     try:
