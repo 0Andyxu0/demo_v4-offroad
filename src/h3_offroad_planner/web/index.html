@@ -75,7 +75,7 @@
     <aside id="inspector">
       <section><h2>主要信息与进度</h2><div id="info">请绘制研究区、选择起终点后执行构建或规划。</div></section>
       <section><h2>四、结果评估与显示</h2>
-        <select id="theme"><option value="elevation">高程</option><option value="slope">坡度</option><option value="tri">地形起伏</option><option value="landcover_type">地物类型</option><option value="soil_type">土壤类型</option></select>
+        <select id="theme"><option value="slope">坡度</option><option value="tri">地形起伏</option><option value="elevation">高程</option></select>
         <div class="row"><button id="show-fine">细层格网</button><button id="show-parent">父层格网</button></div>
         <div id="legend" class="legend"></div><div id="candidates"></div>
       </section>
@@ -111,7 +111,7 @@
     function metricText(objectives, metric) { return `${metric.label}：${fmt(objectives && objectives[metric.key])}${metric.unit ? ` ${metric.unit}` : ""}`; }
     function renderEvaluation(evaluation) { infoBox.innerHTML = evaluation ? `<b>路线评价</b><p>ETA：${fmt(evaluation.eta_s)} s（${fmt(evaluation.eta_lower_s)}–${evaluation.eta_upper_s == null ? "无界" : fmt(evaluation.eta_upper_s)}）；距离：${fmt(evaluation.distance_m)} m</p><p>通行裕度：${fmt(evaluation.score_lower_min)}；综合行驶代价：${fmt(evaluation.travel_cost)}；地形风险：${fmt(evaluation.terrain_risk)}</p><p>角色/算法：${(evaluation.selection_reason || []).join("、")}；状态：${evaluation.route_state || "planned"}；版本：${evaluation.replan_version ?? 0}</p>` : "通行地图已构建，可选择细层或父层格网查看。"; }
     function updateYamlField(field, value) { const matcher = new RegExp(`(^\\s*${field}:\\s*).*$`, "m"); requestBox.value = matcher.test(requestBox.value) ? requestBox.value.replace(matcher, `$1${value}`) : `${requestBox.value}\n${field}: ${value}`; }
-    function colorFor(feature) { const value = feature.properties[state.theme]; if (typeof value === "number") { const scaled = Math.max(0, Math.min(1, state.theme === "slope" ? 1 - value / 35 : value)); return `rgb(${Math.round(230 * (1 - scaled))},${Math.round(45 + 190 * scaled)},70)`; } let hash = 0; for (const char of String(value || "unknown")) hash = ((hash << 5) - hash) + char.charCodeAt(0); return `hsl(${Math.abs(hash) % 360},55%,48%)`; }
+    function colorFor(feature) { const value = feature.properties[state.theme]; if (typeof value === "number" && Number.isFinite(value)) { let scaled = state.theme === "slope" ? 1 - value / 35 : (state.theme === "tri" ? 1 - value / 15 : value / 200); scaled = Math.max(0, Math.min(1, scaled)); return `rgb(${Math.round(230 * (1 - scaled))},${Math.round(45 + 190 * scaled)},70)`; } let hash = 0; for (const char of String(value || "unknown")) hash = ((hash << 5) - hash) + char.charCodeAt(0); return `hsl(${Math.abs(hash) % 360},55%,48%)`; }
     function gridStyle(feature) { return { color: "#354b5c", weight: 0.55, fillOpacity: 0.58, fillColor: colorFor(feature) }; }
     function gridTip(feature) { const p = feature.properties; return `<b>H3 格网：</b>${p.h3index}<br><b>通行评分：</b>${fmt(p.score)}<br><b>地物类型：</b>${p.landcover_type || "未知"}<br><b>坡度：</b>${fmt(p.slope)}°<br><b>土壤类型：</b>${p.soil_type || "未知"}<br><b>高程：</b>${fmt(p.elevation)} m<br><b>可通行：</b>${p.is_passable}`; }
     function routeTip(feature) { const e = feature.properties.route_evaluation; if (!e) return "规划路线"; return `<b>ETA：</b>${fmt(e.eta_s)} s<br><b>距离：</b>${fmt(e.distance_m)} m<br><b>通行裕度：</b>${fmt(e.score_lower_min)}<br><b>综合行驶代价：</b>${fmt(e.travel_cost)}<br><b>地形风险：</b>${fmt(e.terrain_risk)}<br><b>角色：</b>${(e.selection_reason || []).join("、")}`; }

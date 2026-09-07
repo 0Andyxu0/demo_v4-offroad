@@ -27,6 +27,7 @@ from h3_offroad_planner.models import (
 )
 from h3_offroad_planner.planners.deterministic_pareto import DeterministicParetoPlanner
 from h3_offroad_planner.portsmap import PortsMapSearchContext
+from h3_offroad_planner.reachability import check_route_reachability
 from h3_offroad_planner.route_models import RoutePlan, plan_id_for_payload
 from h3_offroad_planner.route_persistence import (
     delivery_output_paths,
@@ -95,6 +96,7 @@ def run_route_plan(
         _single_endpoint(endpoints, "goal"),
         request.max_snap_distance_m,
     )
+    check_route_reachability(graph, evaluation, start, goal, progress=progress)
     context = PortsMapSearchContext(
         graph,
         evaluation,

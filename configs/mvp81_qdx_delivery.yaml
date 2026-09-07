@@ -24,7 +24,7 @@ route:
   goal_lat: 31.9920
   goal_lng: 119.0080
   roi_strategy: auto_corridor
-  corridor_buffer_deg: 0.001
+  corridor_buffer_deg: 0.005
   res_fine: 14
   res_coarse: 11
   max_estimated_cells: 50000000

@@ -510,9 +510,7 @@ class DesktopMainWindow(QMainWindow):
         self.result_text = QTextBrowser()
         self.result_text.setMinimumHeight(150)
         self.theme_box = QComboBox()
-        self.theme_box.addItems(
-            ["score", "cost_score", "elevation", "slope", "tri", "landcover_type", "soil_type"]
-        )
+        self.theme_box.addItems(["slope", "tri", "elevation"])
         self.theme_box.currentTextChanged.connect(self._redraw_active_grid)
         self.candidate_box = QComboBox()
         self.candidate_box.currentIndexChanged.connect(self._set_candidate_index)

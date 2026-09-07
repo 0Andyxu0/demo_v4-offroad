@@ -518,12 +518,6 @@ def _parent_record_feature(record: dict[str, object]) -> dict[str, object]:
         and bool(cast(str, record.get("path"))),
         "cell_count": _record_non_negative_int(record, "cells_count"),
         "error": record.get("error") if isinstance(record.get("error"), str) else None,
-        "score": None,
-        "cost_score": None,
-        "landcover_type": None,
-        "soil_type": None,
-        "has_road": None,
-        "is_passable": None,
     }
     statistics = record.get("statistics")
     for theme in ("elevation", "slope", "tri"):
