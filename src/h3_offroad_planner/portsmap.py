@@ -64,6 +64,27 @@ class ScalarProfile:
             raise ValueError("scalar scales must define all four additive objectives.")
         if any(not isfinite(value) or value <= 0.0 for value in self.scales.values()):
             raise ValueError("scalar scales must be finite and positive.")
+        object.__setattr__(
+            self, "_w_dist", self.weights.get("distance", 0.0) / self.scales["distance"]
+        )
+        object.__setattr__(
+            self, "_w_eta", self.weights.get("eta", 0.0) / self.scales["eta"]
+        )
+        object.__setattr__(
+            self,
+            "_w_risk",
+            self.weights.get("terrain_risk", 0.0) / self.scales["terrain_risk"],
+        )
+        object.__setattr__(
+            self,
+            "_w_cost",
+            self.weights.get("travel_cost", 0.0) / self.scales["travel_cost"],
+        )
+
+    _w_dist: float = field(init=False, repr=False, default=0.0)
+    _w_eta: float = field(init=False, repr=False, default=0.0)
+    _w_risk: float = field(init=False, repr=False, default=0.0)
+    _w_cost: float = field(init=False, repr=False, default=0.0)
 
     @property
     def signature(self) -> str:
@@ -78,15 +99,11 @@ class ScalarProfile:
 
     def edge_cost(self, edge: DirectedEdgeMetrics) -> float:
         """Compute normalized additive scalar edge cost."""
-        metrics = {
-            "distance": edge.distance_m,
-            "eta": edge.eta_s,
-            "terrain_risk": edge.terrain_risk,
-            "travel_cost": edge.travel_cost,
-        }
-        return sum(
-            self.weights.get(name, 0.0) * metrics[name] / self.scales[name]
-            for name in OBJECTIVE_NAMES
+        return (
+            self._w_dist * edge.distance_m
+            + self._w_eta * edge.eta_s
+            + self._w_risk * edge.terrain_risk
+            + self._w_cost * edge.travel_cost
         )
 
 
@@ -203,12 +220,14 @@ class PortsMapSearchContext:
                 dict[str, tuple[str, ...]],
             ],
         ] = {}
+        self._parent_keys: dict[str, set[tuple[str, str, str, str, str]]] = {}
 
     def clear_pair_cache(self) -> None:
         """Release request-local Port-pair paths once callers no longer need them."""
         self._pair_cache.clear()
         self._computed_sources.clear()
         self._base_topology_cache.clear()
+        self._parent_keys.clear()
 
     def build_topology(
         self,
@@ -388,14 +407,13 @@ class PortsMapSearchContext:
         active_key: tuple[str, str, str, str, str],
     ) -> None:
         """Bound cache growth while retaining immediate identical-search reuse."""
-        stale = [
-            key
-            for key in self._pair_cache
-            if key[0] == parent and key != active_key
-        ]
-        for key in stale:
-            del self._pair_cache[key]
-            self._computed_sources.pop(key, None)
+        keys = self._parent_keys.get(parent)
+        if keys is not None:
+            stale = [k for k in keys if k != active_key]
+            for k in stale:
+                self._pair_cache.pop(k, None)
+                self._computed_sources.pop(k, None)
+                keys.remove(k)
 
     def _get_or_compute_source_pairs(
         self,
@@ -419,6 +437,7 @@ class PortsMapSearchContext:
             cached = {}
             self._pair_cache[cache_key] = cached
             self._computed_sources[cache_key] = set()
+            self._parent_keys.setdefault(parent, set()).add(cache_key)
 
         sources_done = self._computed_sources[cache_key]
         if source in sources_done:
@@ -429,12 +448,15 @@ class PortsMapSearchContext:
                 for cell_id in self._parent_children.get(parent, ())
                 if cell_id not in blocked
             }
-            fine_best = self._fine_dijkstra(
+            targets = set(port_ids)
+            targets.discard(source)
+            fine_best = self._fine_tile_search(
                 source,
                 allowed,
                 profile,
                 penalties,
                 penalty_factor,
+                targets=targets,
             )
             for target in port_ids:
                 if source == target or target not in fine_best:
@@ -468,12 +490,15 @@ class PortsMapSearchContext:
         }
         pairs: dict[tuple[str, str], PortPairPath] = {}
         for source in port_ids:
-            best = self._fine_dijkstra(
+            targets = set(port_ids)
+            targets.discard(source)
+            best = self._fine_tile_search(
                 source,
                 allowed,
                 profile,
                 penalties,
                 penalty_factor,
+                targets=targets,
             )
             for target in port_ids:
                 if source == target or target not in best:
@@ -482,32 +507,57 @@ class PortsMapSearchContext:
                 pairs[(source, target)] = PortPairPath(parent, source, target, path, cost)
         return pairs
 
-    def _fine_dijkstra(
+    def _fine_tile_search(
         self,
         source: str,
         allowed: set[str],
         profile: ScalarProfile,
         penalties: Mapping[str, int],
         penalty_factor: float,
+        targets: set[str] | None = None,
     ) -> dict[str, tuple[float, tuple[str, ...]]]:
         if source not in allowed:
             return {}
-        heap: list[tuple[float, tuple[str, ...], str]] = [(0.0, (source,), source)]
-        best: dict[str, tuple[float, tuple[str, ...]]] = {source: (0.0, (source,))}
+        heap: list[tuple[float, str]] = [(0.0, source)]
+        best: dict[str, float] = {source: 0.0}
+        came_from: dict[str, str] = {}
+        remaining_targets = set(targets) if targets is not None else None
+
         while heap:
-            cost, path, current = heappop(heap)
-            if best.get(current) != (cost, path):
+            cost, current = heappop(heap)
+            if cost > best.get(current, inf) + EPSILON:
                 continue
+            if remaining_targets is not None and current in remaining_targets:
+                remaining_targets.remove(current)
+                if not remaining_targets:
+                    break
             for neighbor in self._neighbors.get(current, ()):
                 if neighbor not in allowed:
                     continue
                 edge = self.evaluation.directed_edges[(current, neighbor)]
                 step = _penalized_cost(edge, profile, neighbor, penalties, penalty_factor)
-                candidate = (cost + step, (*path, neighbor))
-                if _is_better(candidate, best.get(neighbor)):
-                    best[neighbor] = candidate
-                    heappush(heap, (candidate[0], candidate[1], neighbor))
-        return best
+                cand_cost = cost + step
+                current_best = best.get(neighbor)
+                if current_best is None or cand_cost < current_best - EPSILON:
+                    best[neighbor] = cand_cost
+                    came_from[neighbor] = current
+                    heappush(heap, (cand_cost, neighbor))
+
+        results: dict[str, tuple[float, tuple[str, ...]]] = {}
+        query_targets = targets if targets is not None else best.keys()
+        for t in query_targets:
+            if t not in best:
+                continue
+            curr = t
+            p_rev: list[str] = [t]
+            while curr != source and curr in came_from:
+                curr = came_from[curr]
+                p_rev.append(curr)
+            if curr == source:
+                results[t] = (best[t], tuple(reversed(p_rev)))
+        return results
+
+    _fine_dijkstra = _fine_tile_search
 
     def _macro_search(
         self,
