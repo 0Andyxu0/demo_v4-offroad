@@ -10,8 +10,9 @@ import pandas as pd
 import pytest
 from shapely.geometry import Polygon
 
+from h3_offroad_planner.factor_model import FactorModelConfig, evaluate_factor_model
 from h3_offroad_planner.grid.h3_grid_builder import H3GridBuilder
-from h3_offroad_planner.models import GISInputError, H3Cell
+from h3_offroad_planner.models import GISInputError, H3Cell, H3Graph, VehicleProfile
 from h3_offroad_planner.preprocessing.gis_preprocessor import GISPreprocessor
 
 
@@ -132,3 +133,139 @@ def test_default_resolutions_are_res14_and_res11() -> None:
     builder = H3GridBuilder()
     assert builder.res_fine == 14
     assert builder.res_coarse == 11
+
+
+def test_qdx_water_depth_physical_evaluation(vehicle: VehicleProfile) -> None:
+    """Deep water is blocked, but shallow water within clearance allows wading."""
+    cell_id = str(h3.latlng_to_cell(31.98, 118.99, 14))
+    deep_cell = H3Cell(
+        h3index=cell_id,
+        lat=31.98,
+        lng=118.99,
+        elevation=50.0,
+        slope=2.0,
+        tri=0.5,
+        lc_factor=float("inf"),
+        landcover_code=5,
+        landcover_type="water",
+        depth=0.9,  # exceeds vehicle.ground_clearance_m (0.45m)
+        soil_code=1,
+        soil_type="loam",
+        uscs="ML",
+        soil_moisture=0.3,
+    )
+    graph = H3Graph(14, 11, {cell_id: deep_cell}, {})
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    assert evaluation.node_metrics[cell_id].is_passable is False
+    assert "WATER_DEPTH_LIMIT" in evaluation.node_metrics[cell_id].reason_codes
+
+    shallow_cell = H3Cell(
+        h3index=cell_id,
+        lat=31.98,
+        lng=118.99,
+        elevation=50.0,
+        slope=2.0,
+        tri=0.5,
+        lc_factor=float("inf"),
+        landcover_code=5,
+        landcover_type="water",
+        depth=0.2,  # fordable shallow water (<= 0.45m)
+        soil_code=1,
+        soil_type="loam",
+        uscs="ML",
+        soil_moisture=0.3,
+    )
+    graph2 = H3Graph(14, 11, {cell_id: shallow_cell}, {})
+    evaluation2 = evaluate_factor_model(graph2, vehicle, FactorModelConfig())
+    assert evaluation2.node_metrics[cell_id].is_passable is True
+    assert evaluation2.node_metrics[cell_id].landcover.nominal > 0.0
+
+
+def test_qdx_tree_rowspacing_physical_evaluation(vehicle: VehicleProfile) -> None:
+    """Dense trees narrower than vehicle are blocked, while wider spacing allows passage."""
+    cell_id = str(h3.latlng_to_cell(31.98, 118.99, 14))
+    tight_cell = H3Cell(
+        h3index=cell_id,
+        lat=31.98,
+        lng=118.99,
+        elevation=50.0,
+        slope=2.0,
+        tri=0.5,
+        lc_factor=1.35,
+        landcover_code=2,
+        landcover_type="forest",
+        rowspacing=1.5,  # narrower than safe width (2.2m)
+        soil_code=1,
+        soil_type="loam",
+        uscs="ML",
+        soil_moisture=0.3,
+    )
+    graph = H3Graph(14, 11, {cell_id: tight_cell}, {})
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    assert evaluation.node_metrics[cell_id].is_passable is False
+    assert "ROWSPACING_BLOCKED" in evaluation.node_metrics[cell_id].reason_codes
+
+    wide_cell = H3Cell(
+        h3index=cell_id,
+        lat=31.98,
+        lng=118.99,
+        elevation=50.0,
+        slope=2.0,
+        tri=0.5,
+        lc_factor=1.35,
+        landcover_code=2,
+        landcover_type="forest",
+        rowspacing=3.8,  # wide enough
+        soil_code=1,
+        soil_type="loam",
+        uscs="ML",
+        soil_moisture=0.3,
+    )
+    graph2 = H3Graph(14, 11, {cell_id: wide_cell}, {})
+    evaluation2 = evaluate_factor_model(graph2, vehicle, FactorModelConfig())
+    assert evaluation2.node_metrics[cell_id].is_passable is True
+    assert evaluation2.node_metrics[cell_id].landcover.nominal > 0.0
+
+
+def test_qdx_road_priority_over_background_vegetation() -> None:
+    """Narrow road corridor takes precedence over background grass when intersecting cell."""
+    center_lat, center_lng = 31.98, 118.99
+    cell_id = str(h3.latlng_to_cell(center_lat, center_lng, 14))
+    poly_grass = Polygon([
+        (center_lng - 0.001, center_lat - 0.001),
+        (center_lng + 0.001, center_lat - 0.001),
+        (center_lng + 0.001, center_lat + 0.001),
+        (center_lng - 0.001, center_lat + 0.001),
+    ])
+    # Road crosses a portion of the cell
+    poly_road = Polygon([
+        (center_lng - 0.00005, center_lat - 0.001),
+        (center_lng + 0.00005, center_lat - 0.001),
+        (center_lng + 0.00005, center_lat + 0.001),
+        (center_lng - 0.00005, center_lat + 0.001),
+    ])
+    gdf = gpd.GeoDataFrame(
+        [
+            {"id": 1, "type": "03", "fclass": "grass", "geometry": poly_grass},
+            {"id": 2, "type": "08", "fclass": "road", "geometry": poly_road},
+        ],
+        crs="EPSG:4326",
+    )
+    builder = H3GridBuilder(res_fine=14, res_coarse=11)
+    df = pd.DataFrame(
+        [
+            {
+                "h3index": cell_id,
+                "lat": center_lat,
+                "lng": center_lng,
+                "elevation": 50.0,
+                "slope": 1.0,
+                "tri": 0.2,
+                "parent_h3": str(h3.cell_to_parent(cell_id, 11)),
+                "lc_factor": 1.0,
+            }
+        ]
+    )
+    result = builder.attach_landcover(df, gdf)
+    assert result["landcover_code"].iloc[0] == 8
+    assert result["landcover_type"].iloc[0] == "impervious"

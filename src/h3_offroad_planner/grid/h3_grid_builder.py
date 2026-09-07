@@ -522,22 +522,38 @@ def _dominant_vector_landcover_details(
     best_code: int | None = None
     best_depth: float | None = None
     best_rowspacing: float | None = None
+    cell_area = cell_polygon.area
     for index in candidate_indexes:
         feature = landcover.iloc[int(index)]
         geometry = _feature_geometry(feature)
         code = _feature_landcover_code(feature)
         if geometry is None or geometry.is_empty or code is None:
             continue
-        area = float(cell_polygon.intersection(geometry).area)
+        if geometry.contains(cell_polygon):
+            area = cell_area
+        else:
+            area = float(cell_polygon.intersection(geometry).area)
         if area <= 0.0:
             continue
         is_obstacle = code in {5, 6}
         current_is_obstacle = best_code in {5, 6} if best_code is not None else False
-        should_update = (
-            (is_obstacle and not current_is_obstacle and area > 0.05 * cell_polygon.area)
-            or (is_obstacle == current_is_obstacle and area > best_area)
-            or (not current_is_obstacle and area > best_area)
-        )
+        is_road = code == 8
+        current_is_road = best_code == 8 if best_code is not None else False
+
+        if (is_obstacle and not current_is_obstacle and area > 0.05 * cell_area) or (
+            is_road
+            and not current_is_obstacle
+            and not current_is_road
+            and area > 0.10 * cell_area
+        ):
+            should_update = True
+        elif (current_is_obstacle and not is_obstacle) or (
+            current_is_road and not is_obstacle and not is_road
+        ):
+            should_update = False
+        else:
+            should_update = area > best_area
+
         if should_update:
             best_area = area
             best_code = code

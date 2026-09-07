@@ -529,6 +529,8 @@ def static_input_hash(graph: H3Graph) -> str:
                 "soil_texture": cell.soil_texture,
                 "uscs": cell.uscs,
                 "soil_moisture": cell.soil_moisture,
+                "depth": cell.depth,
+                "rowspacing": cell.rowspacing,
                 "has_road": cell.has_road,
                 "static_passable": cell.is_passable,
             }
@@ -599,7 +601,7 @@ def _raw_node_evidence(
         _known_interval(_slope_margin(cell.slope, vehicle)),
         config.speed_floor_ratio,
     )
-    landcover = _landcover_speed_interval(cell, config, missing, reasons)
+    landcover = _landcover_speed_interval(cell, vehicle, config, missing, reasons)
     soil, cone_index, sinkage = _soil_speed_interval(cell, vehicle, config, missing, reasons)
     tri = _floor_interval(
         _known_interval(_tri_speed_factor(cell.tri, config)),
@@ -628,6 +630,7 @@ def _raw_node_evidence(
 
 def _landcover_speed_interval(
     cell: H3Cell,
+    vehicle: VehicleProfile,
     config: FactorModelConfig,
     missing: FactorInterval,
     reasons: list[str],
@@ -635,8 +638,33 @@ def _landcover_speed_interval(
     if cell.landcover_code is None and cell.landcover_type is None:
         reasons.append("MISSING_LANDCOVER")
         return _floor_interval(missing, config.speed_floor_ratio)
+
+    is_water = (
+        cell.landcover_code == 5
+        or (cell.landcover_type or "").lower() == "water"
+    )
+    if is_water and cell.depth is not None and cell.depth <= vehicle.ground_clearance_m:
+        wading_speed = max(
+            config.speed_floor_ratio,
+            0.50 * (1.0 - cell.depth / max(vehicle.ground_clearance_m, 0.01)),
+        )
+        return _known_interval(wading_speed)
+
     landcover_code = -1 if cell.landcover_code is None else cell.landcover_code
     configured = config.landcover_speed_by_code.get(landcover_code)
+
+    if cell.rowspacing is not None and (
+        cell.landcover_code == 2 or (cell.landcover_type or "").lower() == "forest"
+    ):
+        safe_width = getattr(vehicle, "width_m", 2.2)
+        if cell.rowspacing >= safe_width:
+            base_speed = configured if configured is not None else 0.40
+            clearance_factor = min(
+                1.0,
+                max(0.5, (cell.rowspacing - safe_width) / max(safe_width, 0.01) + 0.5),
+            )
+            return _known_interval(max(config.speed_floor_ratio, base_speed * clearance_factor))
+
     if configured is not None:
         return _known_interval(configured)
     if isfinite(cell.lc_factor):
@@ -698,17 +726,27 @@ def _hard_constraints(
 ) -> bool:
     if not cell.is_passable:
         reasons.append("STATIC_BLOCKED")
-    if (
+    is_water = (
         cell.lc_factor == inf
         or (cell.landcover_type or "").lower() == "water"
         or cell.landcover_code == 5
-    ):
-        reasons.append("WATER")
+    )
+    if is_water:
+        if cell.depth is not None:
+            if cell.depth > vehicle.ground_clearance_m:
+                reasons.append("WATER_DEPTH_LIMIT")
+                reasons.append("WATER")
+        else:
+            reasons.append("WATER")
     if (
         (cell.landcover_type or "").lower() == "building"
-        or cell.landcover_code == 6
+        or cell.landcover_code in {0, 6}
     ):
         reasons.append("BUILDING")
+    if cell.rowspacing is not None:
+        safe_width = getattr(vehicle, "width_m", 2.2)
+        if cell.rowspacing < safe_width:
+            reasons.append("ROWSPACING_BLOCKED")
     if abs(cell.slope) > vehicle.max_climb_angle_deg:
         reasons.append("SLOPE_LIMIT")
     if cone_index is not None and cone_index < config.min_cone_index_kpa:
@@ -719,7 +757,9 @@ def _hard_constraints(
     hard_codes = {
         "STATIC_BLOCKED",
         "WATER",
+        "WATER_DEPTH_LIMIT",
         "BUILDING",
+        "ROWSPACING_BLOCKED",
         "SLOPE_LIMIT",
         "CONE_INDEX_INSUFFICIENT",
         "SINKAGE_CLEARANCE_EXCEEDED",
@@ -743,6 +783,12 @@ def _node_safety_margin(
     if sinkage is not None:
         clearance = vehicle.ground_clearance_m * config.max_sinkage_clearance_ratio
         margins.append(1.0 - sinkage / clearance)
+    if cell.depth is not None and cell.depth <= vehicle.ground_clearance_m:
+        margins.append(1.0 - cell.depth / max(vehicle.ground_clearance_m, 0.01))
+    if cell.rowspacing is not None:
+        safe_width = getattr(vehicle, "width_m", 2.2)
+        if cell.rowspacing >= safe_width:
+            margins.append(min(1.0, (cell.rowspacing - safe_width) / max(safe_width, 0.01)))
     return _clamp_ratio(min(margins))
 
 
