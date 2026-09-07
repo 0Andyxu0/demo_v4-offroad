@@ -378,3 +378,16 @@ def _direct_graph() -> H3Graph:
     cells = {name: replace(graph.cells[name]) for name in ("s", "g")}
     edge = H3Edge("s", "g", 1.0)
     return H3Graph(cells=cells, edges={("s", "g"): edge})
+
+
+def test_deterministic_planner_emits_sub_progress(vehicle: VehicleProfile) -> None:
+    graph = _corridor_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    context = PortsMapSearchContext(graph, evaluation)
+    events: list[tuple[str, int, str]] = []
+    DeterministicParetoPlanner(context).plan(
+        "s", "g", progress=lambda mod, pct, msg: events.append((mod, pct, msg))
+    )
+    assert any("searching profile [1/" in msg for _, _, msg in events)
+    assert any(msg == "searching widest bottleneck route" for _, _, msg in events)
+

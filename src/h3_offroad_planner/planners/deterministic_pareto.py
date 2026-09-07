@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import inf, isfinite
 from statistics import median
@@ -11,6 +12,8 @@ from h3_offroad_planner.models import PlanningFailedError
 from h3_offroad_planner.portsmap import PortsMapSearchContext, ScalarProfile
 
 __all__ = ["DeterministicParetoPlanner", "GeneratedPath"]
+
+ProgressCallback = Callable[[str, int, str], None]
 
 DEFAULT_MAX_PATHS: int = 5
 DEFAULT_CANDIDATE_LIMIT: int = 24
@@ -79,6 +82,7 @@ class DeterministicParetoPlanner:
         start: str,
         goal: str,
         blocked: frozenset[str] = frozenset(),
+        progress: ProgressCallback | None = None,
     ) -> list[GeneratedPath]:
         """Return at most 24 exact unique raw candidates including a widest anchor."""
         scales = _robust_scales(self.context.evaluation)
@@ -86,10 +90,18 @@ class DeterministicParetoPlanner:
         candidates: dict[tuple[str, ...], GeneratedPath] = {}
         penalties: dict[str, int] = {}
         attempts_per_profile = max(1, min(self.max_paths, 3))
+        total_profiles = len(profiles)
         for attempt in range(attempts_per_profile):
-            for profile in profiles:
+            for idx, profile in enumerate(profiles, 1):
                 if len(candidates) >= self.candidate_limit:
                     break
+                if progress is not None:
+                    progress(
+                        "global_plan",
+                        89,
+                        f"searching profile [{idx}/{total_profiles}: {profile.name}] "
+                        f"(attempt {attempt + 1}/{attempts_per_profile})",
+                    )
                 result = self.context.search(
                     start,
                     goal,
@@ -107,6 +119,8 @@ class DeterministicParetoPlanner:
                 if generated.h3_path not in candidates:
                     candidates[generated.h3_path] = generated
                     _add_reuse_penalties(penalties, generated.h3_path)
+        if progress is not None:
+            progress("global_plan", 91, "searching widest bottleneck route")
         widest = self.context.search_widest(start, goal, blocked)
         candidates[widest.h3_path] = GeneratedPath(
             widest.h3_path,

@@ -110,7 +110,7 @@ def run_route_plan(
         max_paths=request.max_candidate_paths,
         candidate_limit=request.candidate_limit,
         penalty_factor=request.penalty_factor,
-    ).plan(start, goal)
+    ).plan(start, goal, progress=progress)
     if progress is not None:
         progress(
             "global_plan",

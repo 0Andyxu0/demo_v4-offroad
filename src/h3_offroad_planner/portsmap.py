@@ -164,6 +164,13 @@ class PortsMapSearchContext:
         self.evaluation = evaluation
         self.max_ports = max_ports
         self.max_port_pairs = max_port_pairs
+        if graph.parent_children:
+            self._parent_children = graph.parent_children
+        else:
+            self._parent_children = {}
+            for cell in graph.cells.values():
+                parent_id = cell.parent_h3 or cell.h3index
+                self._parent_children.setdefault(parent_id, set()).add(cell.h3index)
         self._neighbors = _directed_neighbors(evaluation.directed_edges)
         self._pair_cache: dict[
             tuple[str, str, str, str, str],
@@ -264,19 +271,25 @@ class PortsMapSearchContext:
         """Find the maximum-minimum passability route with fixed metric tie-breaks."""
         topology = self.build_topology(start, goal, blocked)
         start_score = self.evaluation.node_metrics[start].safety_margin.lower
-        start_key = (-start_score, 0.0, 0.0, 0.0, (start,))
-        heap: list[tuple[float, float, float, float, tuple[str, ...], str]] = [
-            (*start_key, start)
+        heap: list[tuple[float, float, float, float, str]] = [
+            (-start_score, 0.0, 0.0, 0.0, start)
         ]
-        best: dict[str, tuple[float, float, float, float, tuple[str, ...]]] = {
-            start: start_key
+        best: dict[str, tuple[float, float, float, float]] = {
+            start: (-start_score, 0.0, 0.0, 0.0)
         }
+        came_from: dict[str, str] = {}
         while heap:
-            negative_margin, risk, eta, distance, path, current = heappop(heap)
-            key = (negative_margin, risk, eta, distance, path)
+            negative_margin, risk, eta, distance, current = heappop(heap)
+            key = (negative_margin, risk, eta, distance)
             if best.get(current) != key:
                 continue
             if current == goal:
+                path_rev: list[str] = [goal]
+                curr = goal
+                while curr in came_from:
+                    curr = came_from[curr]
+                    path_rev.append(curr)
+                path = tuple(reversed(path_rev))
                 metrics = evaluate_path_metrics(path, self.evaluation)
                 return PortsMapSearchResult(
                     h3_path=path,
@@ -292,16 +305,16 @@ class PortsMapSearchContext:
                     continue
                 edge = self.evaluation.directed_edges[(current, neighbor)]
                 margin = min(current_margin, edge.safety_margin_lower)
-                candidate = (
+                cand_key = (
                     -margin,
                     risk + edge.terrain_risk,
                     eta + edge.eta_s,
                     distance + edge.distance_m,
-                    (*path, neighbor),
                 )
-                if candidate < best.get(neighbor, (inf, inf, inf, inf, ("~",))):
-                    best[neighbor] = candidate
-                    heappush(heap, (*candidate, neighbor))
+                if cand_key < best.get(neighbor, (inf, inf, inf, inf)):
+                    best[neighbor] = cand_key
+                    came_from[neighbor] = current
+                    heappush(heap, (*cand_key, neighbor))
         raise PlanningFailedError(f"no widest path from {start!r} to {goal!r}.")
 
     def _all_port_pairs(
@@ -381,8 +394,8 @@ class PortsMapSearchContext:
         else:
             allowed = {
                 cell_id
-                for cell_id in self.graph.cells
-                if self._parent(cell_id) == parent and cell_id not in blocked
+                for cell_id in self._parent_children.get(parent, ())
+                if cell_id not in blocked
             }
             fine_best = self._fine_dijkstra(
                 source,
@@ -418,8 +431,8 @@ class PortsMapSearchContext:
     ) -> dict[tuple[str, str], PortPairPath]:
         allowed = {
             cell_id
-            for cell_id in self.graph.cells
-            if self._parent(cell_id) == parent and cell_id not in blocked
+            for cell_id in self._parent_children.get(parent, ())
+            if cell_id not in blocked
         }
         pairs: dict[tuple[str, str], PortPairPath] = {}
         for source in port_ids:
