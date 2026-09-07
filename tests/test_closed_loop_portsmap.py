@@ -81,6 +81,79 @@ def test_cl014_portsmap_limit_is_explicit(vehicle: VehicleProfile) -> None:
     assert caught.value.code == "PORTS_MAP_LIMIT_EXCEEDED"
 
 
+def test_portsmap_lazy_evaluation_skips_untouched_parents(vehicle: VehicleProfile) -> None:
+    """Lazy evaluation ensures unrelated parent tiles are never computed or added to cache."""
+    parents = {
+        "a": "p1",
+        "b": "p1",
+        "c": "p1",
+        "d": "p2",
+        "e": "p2",
+        "f": "p2",
+        "x": "p_far",
+        "y": "p_far",
+    }
+    cells = {
+        name: H3Cell(
+            h3index=name,
+            lat=0.0 if parent == "p1" else (1.0 if parent == "p2" else 10.0),
+            lng=float(index),
+            elevation=float(index),
+            slope=0.0,
+            tri=0.1 * index,
+            lc_factor=1.0 + 0.1 * index,
+            parent_h3=parent,
+            is_passable=True,
+        )
+        for index, (name, parent) in enumerate(parents.items())
+    }
+    specifications = (
+        ("a", "b", 2.0),
+        ("b", "c", 2.0),
+        ("a", "c", 6.0),
+        ("b", "d", 4.0),
+        ("c", "e", 1.0),
+        ("d", "e", 2.0),
+        ("d", "f", 6.0),
+        ("e", "f", 2.0),
+        ("x", "y", 1.5),
+    )
+    edges = {
+        (first, second): H3Edge(
+            first,
+            second,
+            distance,
+            slope_a_to_b=0.0,
+            slope_b_to_a=0.0,
+        )
+        for first, second, distance in specifications
+    }
+    graph = H3Graph(
+        cells=cells,
+        edges=edges,
+        parent_children={
+            "p1": {"a", "b", "c"},
+            "p2": {"d", "e", "f"},
+            "p_far": {"x", "y"},
+        },
+    )
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    context = PortsMapSearchContext(graph, evaluation)
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+
+    result = context.search("a", "f", profile)
+
+    assert result.h3_path[0] == "a"
+    assert result.h3_path[-1] == "f"
+    cached_parents = {key[0] for key in context._pair_cache}
+    # Touched parents are in cache
+    assert "p1" in cached_parents
+    assert "p2" in cached_parents
+    # Untouched parent tile is NEVER computed or cached
+    assert "p_far" not in cached_parents
+
+
+
 def _oracle_cost(
     edges: Mapping[tuple[str, str], DirectedEdgeMetrics],
     start: str,

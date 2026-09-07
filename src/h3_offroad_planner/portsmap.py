@@ -169,11 +169,16 @@ class PortsMapSearchContext:
             tuple[str, str, str, str, str],
             dict[tuple[str, str], PortPairPath],
         ] = {}
+        self._computed_sources: dict[
+            tuple[str, str, str, str, str],
+            set[str],
+        ] = {}
         self._cache_hits = 0
 
     def clear_pair_cache(self) -> None:
         """Release request-local Port-pair paths once callers no longer need them."""
         self._pair_cache.clear()
+        self._computed_sources.clear()
 
     def build_topology(
         self,
@@ -231,10 +236,8 @@ class PortsMapSearchContext:
         if any(count < 0 for count in penalties.values()):
             raise ValueError("exploration penalty counts must be non-negative.")
         topology = self.build_topology(start, goal, blocked)
-        pairs = self._all_port_pairs(topology, profile, blocked, penalties, penalty_factor)
-        path, cost = self._macro_search(
+        path, cost, pairs_count = self._macro_search(
             topology,
-            pairs,
             start,
             goal,
             profile,
@@ -248,7 +251,7 @@ class PortsMapSearchContext:
             scalar_cost=cost,
             metrics=evaluate_path_metrics(path, self.evaluation),
             ports_count=len(topology.ports),
-            port_pairs_count=len(pairs),
+            port_pairs_count=pairs_count,
             cache_hits=self._cache_hits,
         )
 
@@ -315,23 +318,23 @@ class PortsMapSearchContext:
         )
         blocked_hash = canonical_hash(sorted(blocked))
         for parent, port_ids in sorted(topology.ports_by_parent.items()):
-            port_hash = canonical_hash(port_ids)
-            cache_key = (parent, profile.signature, penalty_hash, blocked_hash, port_hash)
-            cached = self._pair_cache.get(cache_key)
-            if cached is None:
-                cached = self._parent_port_pairs(
+            for source in port_ids:
+                self._get_or_compute_source_pairs(
+                    source,
                     parent,
                     port_ids,
                     profile,
                     blocked,
                     penalties,
                     penalty_factor,
+                    penalty_hash,
+                    blocked_hash,
                 )
-                self._evict_stale_parent_contexts(parent, cache_key)
-                self._pair_cache[cache_key] = cached
-            else:
-                self._cache_hits += 1
-            all_pairs.update(cached)
+            port_hash = canonical_hash(port_ids)
+            cache_key = (parent, profile.signature, penalty_hash, blocked_hash, port_hash)
+            cached = self._pair_cache.get(cache_key)
+            if cached:
+                all_pairs.update(cached)
         return all_pairs
 
     def _evict_stale_parent_contexts(
@@ -347,6 +350,62 @@ class PortsMapSearchContext:
         ]
         for key in stale:
             del self._pair_cache[key]
+            self._computed_sources.pop(key, None)
+
+    def _get_or_compute_source_pairs(
+        self,
+        source: str,
+        parent: str,
+        port_ids: tuple[str, ...],
+        profile: ScalarProfile,
+        blocked: frozenset[str],
+        penalties: Mapping[str, int],
+        penalty_factor: float,
+        penalty_hash: str,
+        blocked_hash: str,
+    ) -> list[tuple[str, tuple[str, ...], float]]:
+        if len(port_ids) <= 1:
+            return []
+        port_hash = canonical_hash(port_ids)
+        cache_key = (parent, profile.signature, penalty_hash, blocked_hash, port_hash)
+        cached = self._pair_cache.get(cache_key)
+        if cached is None:
+            self._evict_stale_parent_contexts(parent, cache_key)
+            cached = {}
+            self._pair_cache[cache_key] = cached
+            self._computed_sources[cache_key] = set()
+
+        sources_done = self._computed_sources[cache_key]
+        if source in sources_done:
+            self._cache_hits += 1
+        else:
+            allowed = {
+                cell_id
+                for cell_id in self.graph.cells
+                if self._parent(cell_id) == parent and cell_id not in blocked
+            }
+            fine_best = self._fine_dijkstra(
+                source,
+                allowed,
+                profile,
+                penalties,
+                penalty_factor,
+            )
+            for target in port_ids:
+                if source == target or target not in fine_best:
+                    continue
+                cost, path = fine_best[target]
+                cached[(source, target)] = PortPairPath(parent, source, target, path, cost)
+            sources_done.add(source)
+
+        edges: list[tuple[str, tuple[str, ...], float]] = []
+        for target in port_ids:
+            if target == source:
+                continue
+            pair = cached.get((source, target))
+            if pair is not None:
+                edges.append((target, pair.h3_path, pair.scalar_cost))
+        return edges
 
     def _parent_port_pairs(
         self,
@@ -408,37 +467,96 @@ class PortsMapSearchContext:
     def _macro_search(
         self,
         topology: PortsMapTopology,
-        pairs: Mapping[tuple[str, str], PortPairPath],
         start: str,
         goal: str,
         profile: ScalarProfile,
         blocked: frozenset[str],
         penalties: Mapping[str, int],
         penalty_factor: float,
-    ) -> tuple[tuple[str, ...], float]:
-        adjacency: dict[str, list[tuple[str, tuple[str, ...], float]]] = {}
-        for (source, target), pair in pairs.items():
-            adjacency.setdefault(source, []).append((target, pair.h3_path, pair.scalar_cost))
+        pairs: Mapping[tuple[str, str], PortPairPath] | None = None,
+    ) -> tuple[tuple[str, ...], float, int]:
+        cross_by_source: dict[str, list[tuple[str, tuple[str, str], float]]] = {}
         for source, target in topology.cross_parent_edges:
             if source in blocked or target in blocked:
                 continue
             edge = self.evaluation.directed_edges[(source, target)]
             cost = _penalized_cost(edge, profile, target, penalties, penalty_factor)
-            adjacency.setdefault(source, []).append((target, (source, target), cost))
+            cross_by_source.setdefault(source, []).append((target, (source, target), cost))
+
+        penalty_hash = canonical_hash(
+            {"counts": dict(sorted(penalties.items())), "factor": penalty_factor}
+        )
+        blocked_hash = canonical_hash(sorted(blocked))
+
+        precomputed_adjacency: dict[str, list[tuple[str, tuple[str, ...], float]]] | None = None
+        if pairs is not None:
+            precomputed_adjacency = {}
+            for (source, target), pair in pairs.items():
+                precomputed_adjacency.setdefault(source, []).append(
+                    (target, pair.h3_path, pair.scalar_cost)
+                )
+
         heap: list[tuple[float, tuple[str, ...], str]] = [(0.0, (start,), start)]
         best: dict[str, tuple[float, tuple[str, ...]]] = {start: (0.0, (start,))}
+        visited_parents: set[str] = set()
+
         while heap:
             cost, path, current = heappop(heap)
             if best.get(current) != (cost, path):
                 continue
             if current == goal:
-                return path, cost
-            for neighbor, segment, step in sorted(adjacency.get(current, [])):
+                active_pairs_count = 0
+                if pairs is not None:
+                    active_pairs_count = len(pairs)
+                else:
+                    for vp in visited_parents:
+                        v_port_ids = topology.ports_by_parent.get(vp, ())
+                        v_port_hash = canonical_hash(v_port_ids)
+                        v_cache_key = (
+                            vp,
+                            profile.signature,
+                            penalty_hash,
+                            blocked_hash,
+                            v_port_hash,
+                        )
+                        v_cached = self._pair_cache.get(v_cache_key)
+                        if v_cached:
+                            active_pairs_count += len(v_cached)
+                return path, cost, active_pairs_count
+
+            outgoing: list[tuple[str, tuple[str, ...], float]] = []
+
+            # 1. Cross-parent edges
+            if current in cross_by_source:
+                outgoing.extend(cross_by_source[current])
+
+            # 2. Internal-parent edges
+            parent = self._parent(current)
+            visited_parents.add(parent)
+            if precomputed_adjacency is not None:
+                outgoing.extend(precomputed_adjacency.get(current, []))
+            else:
+                port_ids = topology.ports_by_parent.get(parent, ())
+                internal_edges = self._get_or_compute_source_pairs(
+                    current,
+                    parent,
+                    port_ids,
+                    profile,
+                    blocked,
+                    penalties,
+                    penalty_factor,
+                    penalty_hash,
+                    blocked_hash,
+                )
+                outgoing.extend(internal_edges)
+
+            for neighbor, segment, step in sorted(outgoing):
                 expanded = (*path, *segment[1:])
                 candidate = (cost + step, expanded)
                 if _is_better(candidate, best.get(neighbor)):
                     best[neighbor] = candidate
                     heappush(heap, (candidate[0], candidate[1], neighbor))
+
         raise PlanningFailedError(f"no exact PortsMap path from {start!r} to {goal!r}.")
 
     def _validate_endpoints(
