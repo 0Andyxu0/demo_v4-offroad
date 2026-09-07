@@ -1,0 +1,88 @@
+"""Public package API for the single-vehicle off-road planner MVP."""
+
+from h3_offroad_planner.config import load_config, load_vehicle
+from h3_offroad_planner.coordination import FleetCoordinator
+from h3_offroad_planner.exporting import GISExporter
+from h3_offroad_planner.factor_model import (
+    DirectedEdgeMetrics,
+    FactorEvaluation,
+    FactorInterval,
+    FactorModelConfig,
+    NodeFactorMetrics,
+    PathMetrics,
+)
+from h3_offroad_planner.models import (
+    AssessmentError,
+    ConfigError,
+    FleetPlan,
+    FleetPlanningInput,
+    FleetTask,
+    GISInputError,
+    GridBuildError,
+    H3Cell,
+    H3Edge,
+    H3Graph,
+    Path,
+    PlannerInput,
+    PlannerOutput,
+    PlanningFailedError,
+    PlanningInputError,
+    RouteEndpoint,
+    RouteRequest,
+    SoilProfile,
+    TileBuildRequest,
+    VehicleProfile,
+)
+from h3_offroad_planner.route_models import (
+    BlockageRecord,
+    ReplanRequest,
+    ReplanResult,
+    RouteCandidate,
+    RoutePlan,
+    RouteSelection,
+)
+from h3_offroad_planner.route_planning import run_route_plan
+from h3_offroad_planner.routing import run_route
+from h3_offroad_planner.tiling import build_h3_tile_cache
+
+__all__ = [
+    "ConfigError",
+    "AssessmentError",
+    "BlockageRecord",
+    "DirectedEdgeMetrics",
+    "FactorEvaluation",
+    "FactorInterval",
+    "FactorModelConfig",
+    "FleetPlan",
+    "FleetPlanningInput",
+    "FleetTask",
+    "GISExporter",
+    "GISInputError",
+    "GridBuildError",
+    "H3Cell",
+    "H3Edge",
+    "H3Graph",
+    "NodeFactorMetrics",
+    "Path",
+    "PathMetrics",
+    "FleetCoordinator",
+    "PlannerInput",
+    "PlannerOutput",
+    "PlanningFailedError",
+    "PlanningInputError",
+    "RouteEndpoint",
+    "RouteCandidate",
+    "RoutePlan",
+    "RouteRequest",
+    "RouteSelection",
+    "ReplanRequest",
+    "ReplanResult",
+    "SoilProfile",
+    "TileBuildRequest",
+    "VehicleProfile",
+    "build_h3_tile_cache",
+    "load_config",
+    "load_vehicle",
+    "run_route",
+    "run_route_plan",
+]

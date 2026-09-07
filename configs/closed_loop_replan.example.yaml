@@ -1,0 +1,11 @@
+selection_path: outputs/closed_loop_acceptance/route_selection.json
+current_h3: 8930910a673ffff
+now_epoch_s: 1.0
+blockage_observations: []
+policy:
+  confirmation_threshold: 2
+  debounce_window_s: 0.0
+  cooldown_s: 0.0
+  recent_failed_corridor_ttl_s: 120.0
+  global_fallback_window_s: 300.0
+  max_global_fallbacks: 3

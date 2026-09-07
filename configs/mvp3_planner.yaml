@@ -1,0 +1,6 @@
+global_planner: H3AStar
+local_replanner: DStarLite
+cost:
+  tri_coefficient: 0.1
+  gravity_coefficient: 5.0
+  score_coefficient: 0.0

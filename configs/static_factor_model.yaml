@@ -1,0 +1,40 @@
+schema_version: 2
+uncertainty:
+  missing_speed_interval: [0.25, 0.60, 0.85]
+  missing_confidence: 0.50
+speed:
+  landcover_by_code:
+    1: 0.65
+    2: 0.40
+    3: 0.70
+    4: 0.55
+    5: 0.00
+    6: 0.00
+    7: 0.75
+    8: 1.00
+    9: 0.45
+  soil_by_uscs:
+    SW: 0.90
+    SP: 0.85
+    SM: 0.70
+    ML: 0.60
+    CL: 0.55
+    CH: 0.40
+    MH: 0.35
+  tri_best: 0.0
+  tri_worst: 8.0
+  offroad_factor: 0.70
+  road_factor: 1.0
+  floor_ratio: 0.05
+  directed_slope_min_factor: 0.20
+hard_constraints:
+  min_cone_index_kpa: 185.73
+  max_sinkage_clearance_ratio: 1.0
+risk:
+  epsilon: 0.000001
+cost:
+  tri_coefficient: 0.1
+  gravity_coefficient: 5.0
+portsmap:
+  max_ports: 600000
+  max_port_pairs: 50000000

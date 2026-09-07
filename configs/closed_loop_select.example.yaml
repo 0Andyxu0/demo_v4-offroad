@@ -1,0 +1,2 @@
+plan_path: outputs/closed_loop_acceptance/route_plan.json
+role: fastest_eta

@@ -1,0 +1,35 @@
+tile_build:
+  dem_path: D:/Workspace/qdx数据/DEM-DSM/DEM_CGCS2000.tif
+  landcover_path: D:/Workspace/qdx数据/矢量数据
+  road_path: D:/Workspace/qdx数据/road/road_fina.shp
+  roi_layer_path: D:/Workspace/qdx数据/矢量数据/bound.shp
+  output_dir: D:/Workspace/demo_v4/outputs/qdx_tiles
+  res_fine: 14
+  tile_res: 11
+  max_tiles: 10000
+  max_cells_per_tile: 1000
+  overwrite: false
+route:
+  input_mode: coordinates
+  planner_config_path: D:/Workspace/demo_v4/configs/deterministic_pareto_planner.yaml
+  vehicle_path: D:/Workspace/demo_v4/configs/vehicle.yaml
+  factor_model_path: D:/Workspace/demo_v4/configs/static_factor_model.yaml
+  mission_profile: fastest
+  max_candidate_paths: 5
+  candidate_limit: 24
+  penalty_factor: 0.25
+  output_dir: D:/Workspace/demo_v4/outputs/qdx_route
+  start_lat: 31.9750
+  start_lng: 118.9880
+  goal_lat: 31.9920
+  goal_lng: 119.0080
+  roi_strategy: auto_corridor
+  corridor_buffer_deg: 0.001
+  res_fine: 14
+  res_coarse: 11
+  max_estimated_cells: 50000000
+  theme_attributes:
+    - elevation
+    - tri
+    - landcover_type
+    - slope

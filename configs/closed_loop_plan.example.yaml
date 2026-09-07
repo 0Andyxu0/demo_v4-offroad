@@ -1,0 +1,19 @@
+input_mode: coordinates
+parquet_path: outputs/mvp81_tiles/tile_manifest.json
+planner_config_path: configs/deterministic_pareto_planner.yaml
+vehicle_path: configs/vehicle.yaml
+factor_model_path: configs/static_factor_model.yaml
+mission_profile: fastest
+max_candidate_paths: 5
+candidate_limit: 24
+penalty_factor: 0.25
+output_dir: outputs/closed_loop_acceptance
+start_lat: 31.901118601406722
+start_lng: 118.81719555208593
+goal_lat: 31.936378271128575
+goal_lng: 118.7791349112786
+res_fine: 9
+res_coarse: 7
+max_estimated_cells: 50000000
+max_snap_distance_m: 20000.0
+theme_attributes: [elevation, slope, tri, landcover_type, soil_type]

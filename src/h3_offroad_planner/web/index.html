@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>H3 越野通行地图与路径规划</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #101820; color: #e8f1f7; }
+    main { display: grid; grid-template-columns: 320px minmax(420px, 1fr) 350px; height: 100vh; }
+    aside { overflow: auto; padding: 14px; background: #17242f; }
+    #workspace { border-right: 1px solid #385064; }
+    section { border-bottom: 1px solid #385064; padding: 12px 0; }
+    h1 { margin: 0 0 6px; font-size: 19px; } h2 { margin: 0 0 8px; font-size: 14px; }
+    p { margin: 5px 0; font-size: 12px; color: #acc4d3; }
+    button, select, input { box-sizing: border-box; width: 100%; margin: 3px 0; padding: 8px; }
+    textarea, pre { box-sizing: border-box; width: 100%; background: #0b1218; border: 1px solid #385064; color: #d8edf9; padding: 8px; }
+    textarea { height: 220px; font: 12px ui-monospace, monospace; } pre { height: 220px; overflow: auto; white-space: pre-wrap; }
+    #map { height: 100%; min-height: 420px; } #map-pane { min-width: 0; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .status { min-height: 28px; color: #76d6ff; } .error { color: #ff9388; } .success { color: #89e0a4; }
+    .card { padding: 9px; margin: 7px 0; border: 1px solid #426178; background: #1d2e3b; }
+    .candidate { border: 1px solid #426178; margin: 5px 0; padding: 7px; cursor: pointer; }
+    .candidate.active { border-color: #ffbf4b; background: #253747; }
+    .candidate-title { display: block; font-weight: 700; text-align: left; }
+    .candidate-reason { display: block; margin-top: 4px; color: #89e0a4; font-size: 11px; text-align: left; }
+    .candidate-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 7px; margin-top: 6px; font-size: 11px; text-align: left; }
+    .candidate-total { display: block; margin-top: 6px; color: #acc4d3; font-size: 11px; text-align: left; }
+    .legend { display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+    .swatch { display: inline-block; width: 14px; height: 14px; }
+    @media (max-width: 1050px) { main { grid-template-columns: 290px minmax(400px, 1fr); } #inspector { display: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <aside id="workspace">
+      <h1>H3 越野 WebGIS</h1>
+      <div id="status" class="status">地图正在初始化…</div>
+
+      <section>
+        <h2>一、数据输入</h2>
+        <button id="load-default">恢复默认 YAML</button>
+        <div class="card"><b>按类型定位导入</b><p>仅在点击“查询文件”后扫描受控目录。</p>
+          <select id="data-kind"><option value="dem">DEM 高程</option><option value="landcover">土地利用</option><option value="soil">土壤</option><option value="road">道路</option><option value="vehicle">车辆</option><option value="planner">规划器</option></select>
+          <button id="load-catalog">查询文件</button><select id="data-catalog"><option value="">请先查询文件</option></select>
+          <button id="apply-data">应用选中文件</button>
+        </div>
+        <textarea id="request" aria-label="交付 YAML"></textarea>
+      </section>
+
+      <section>
+        <h2>二、构建通行地图</h2>
+        <div class="row"><button id="draw-roi">绘制研究区</button><button id="clear-roi">清除研究区</button></div>
+        <button id="build-map">构建并显示 H3 格网</button>
+      </section>
+
+      <section>
+        <h2>三、全局预规划与动态避障</h2>
+        <div class="row"><button id="set-start">选取起点</button><button id="set-goal">选取终点</button></div>
+        <button id="plan-route">运行多角色 RoutePlan</button>
+        <button id="activate-route">确认并激活当前候选</button>
+        <button id="mark-blocked">标记动态障碍格</button>
+        <input id="current-h3" aria-label="当前车辆 H3" placeholder="重规划前输入当前车辆 H3 ID">
+        <button id="replan-route">运行 D* Lite 重规划</button>
+      </section>
+    </aside>
+
+    <div id="map-pane"><div id="map"></div></div>
+
+    <aside id="inspector">
+      <section><h2>主要信息与进度</h2><div id="info">请绘制研究区、选择起终点后执行构建或规划。</div></section>
+      <section><h2>四、结果评估与显示</h2>
+        <select id="theme"><option value="elevation">高程</option><option value="slope">坡度</option><option value="tri">地形起伏</option><option value="landcover_type">地物类型</option><option value="soil_type">土壤类型</option></select>
+        <div class="row"><button id="show-fine">细层格网</button><button id="show-parent">父层格网</button></div>
+        <div id="legend" class="legend"></div><div id="candidates"></div>
+      </section>
+      <section><h2>后端运行日志</h2><pre id="backend-log">等待操作。</pre></section>
+    </aside>
+  </main>
+
+  <script>
+    const WEB_CONFIG = Object.freeze({
+      tiandituKey: "__TIANDITU_KEY__",
+      tiandituLayer: "__TIANDITU_LAYER__",
+      defaultRequestYaml: __DEFAULT_REQUEST_YAML__,
+    });
+    const DATA_FIELDS = Object.freeze({ dem: "dem_path", landcover: "landcover_path", soil: "soil_path", road: "road_path", vehicle: "vehicle_path", planner: "planner_config_path" });
+    const OBJECTIVE_META = Object.freeze([
+      { key: "eta_s", label: "ETA", unit: "s" },
+      { key: "distance_m", label: "距离", unit: "m" },
+      { key: "score_lower_min", label: "通行裕度", unit: "" },
+      { key: "travel_cost", label: "综合行驶代价", unit: "cost unit" },
+      { key: "terrain_risk", label: "地形风险", unit: "" },
+    ]);
+    const requestBox = document.getElementById("request");
+    const statusBox = document.getElementById("status");
+    const infoBox = document.getElementById("info");
+    const logBox = document.getElementById("backend-log");
+    const catalogBox = document.getElementById("data-catalog");
+    const kindBox = document.getElementById("data-kind");
+    const state = { roi: null, start: null, goal: null, blocked: [], candidateIndex: 0, selectedCandidateId: null, planPath: null, selectionPath: null, candidateRoutes: [], fine: null, parent: null, theme: "elevation", mode: "none" };
+
+    function setStatus(message, type = "") { statusBox.textContent = message; statusBox.className = `status ${type}`; }
+    function log(event) { logBox.textContent += `\n[${event.level || "INFO"}] ${event.module || "web"} ${event.percent ?? ""}% ${event.message || ""}`; logBox.scrollTop = logBox.scrollHeight; }
+    function fmt(value) { return typeof value === "number" && Number.isFinite(value) ? value.toFixed(3) : "—"; }
+    function metricText(objectives, metric) { return `${metric.label}：${fmt(objectives && objectives[metric.key])}${metric.unit ? ` ${metric.unit}` : ""}`; }
+    function renderEvaluation(evaluation) { infoBox.innerHTML = evaluation ? `<b>路线评价</b><p>ETA：${fmt(evaluation.eta_s)} s（${fmt(evaluation.eta_lower_s)}–${evaluation.eta_upper_s == null ? "无界" : fmt(evaluation.eta_upper_s)}）；距离：${fmt(evaluation.distance_m)} m</p><p>通行裕度：${fmt(evaluation.score_lower_min)}；综合行驶代价：${fmt(evaluation.travel_cost)}；地形风险：${fmt(evaluation.terrain_risk)}</p><p>角色/算法：${(evaluation.selection_reason || []).join("、")}；状态：${evaluation.route_state || "planned"}；版本：${evaluation.replan_version ?? 0}</p>` : "通行地图已构建，可选择细层或父层格网查看。"; }
+    function updateYamlField(field, value) { const matcher = new RegExp(`(^\\s*${field}:\\s*).*$`, "m"); requestBox.value = matcher.test(requestBox.value) ? requestBox.value.replace(matcher, `$1${value}`) : `${requestBox.value}\n${field}: ${value}`; }
+    function colorFor(feature) { const value = feature.properties[state.theme]; if (typeof value === "number") { const scaled = Math.max(0, Math.min(1, state.theme === "slope" ? 1 - value / 35 : value)); return `rgb(${Math.round(230 * (1 - scaled))},${Math.round(45 + 190 * scaled)},70)`; } let hash = 0; for (const char of String(value || "unknown")) hash = ((hash << 5) - hash) + char.charCodeAt(0); return `hsl(${Math.abs(hash) % 360},55%,48%)`; }
+    function gridStyle(feature) { return { color: "#354b5c", weight: 0.55, fillOpacity: 0.58, fillColor: colorFor(feature) }; }
+    function gridTip(feature) { const p = feature.properties; return `<b>H3 格网：</b>${p.h3index}<br><b>通行评分：</b>${fmt(p.score)}<br><b>地物类型：</b>${p.landcover_type || "未知"}<br><b>坡度：</b>${fmt(p.slope)}°<br><b>土壤类型：</b>${p.soil_type || "未知"}<br><b>高程：</b>${fmt(p.elevation)} m<br><b>可通行：</b>${p.is_passable}`; }
+    function routeTip(feature) { const e = feature.properties.route_evaluation; if (!e) return "规划路线"; return `<b>ETA：</b>${fmt(e.eta_s)} s<br><b>距离：</b>${fmt(e.distance_m)} m<br><b>通行裕度：</b>${fmt(e.score_lower_min)}<br><b>综合行驶代价：</b>${fmt(e.travel_cost)}<br><b>地形风险：</b>${fmt(e.terrain_risk)}<br><b>角色：</b>${(e.selection_reason || []).join("、")}`; }
+
+    const map = L.map("map", { center: [32.03266, 119.03144], zoom: 12, zoomControl: false });
+    const image = L.tileLayer(`https://t{s}.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${WEB_CONFIG.tiandituKey}`, { subdomains: "01234567", maxZoom: 18 });
+    const imageAnno = L.tileLayer(`https://t{s}.tianditu.gov.cn/cia_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cia&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${WEB_CONFIG.tiandituKey}`, { subdomains: "01234567", maxZoom: 18 });
+    const vector = L.tileLayer(`https://t{s}.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${WEB_CONFIG.tiandituKey}`, { subdomains: "01234567", maxZoom: 18 });
+    const vectorAnno = L.tileLayer(`https://t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${WEB_CONFIG.tiandituKey}`, { subdomains: "01234567", maxZoom: 18 });
+    if (WEB_CONFIG.tiandituLayer === "vector") { vector.addTo(map); vectorAnno.addTo(map); } else { image.addTo(map); imageAnno.addTo(map); } L.control.layers({ "卫星影像": image, "电子地图": vector }, { "影像标注": imageAnno, "地图标注": vectorAnno }, { position: "topleft" }).addTo(map); L.control.zoom({ position: "topright" }).addTo(map);
+    const drawn = new L.FeatureGroup().addTo(map); const markers = L.layerGroup().addTo(map); const fineLayer = L.geoJSON(null, { style: gridStyle }); const parentLayer = L.geoJSON(null, { style: gridStyle }); const routeLayer = L.geoJSON(null);
+    const drawControl = new L.Control.Draw({ draw: { polygon: { shapeOptions: { color: "#ff9e3d", fillOpacity: 0.12 } }, rectangle: false, polyline: false, marker: false, circle: false, circlemarker: false }, edit: { featureGroup: drawn } }); map.addControl(drawControl);
+
+    function renderGrid(kind) { const source = kind === "fine" ? state.fine : state.parent; if (!source) return; fineLayer.clearLayers(); parentLayer.clearLayers(); const target = kind === "fine" ? fineLayer : parentLayer; target.addData(source).addTo(map); target.eachLayer((layer) => { layer.setStyle(gridStyle(layer.feature)); layer.bindTooltip(gridTip(layer.feature), { sticky: true }); layer.on("click", () => markBlocked(layer)); }); if (target.getLayers().length) map.fitBounds(target.getBounds()); document.getElementById("legend").innerHTML = `<span class="swatch" style="background:#d8b342"></span>${kind === "fine" ? "细层" : "父层"}：${state.theme}`; }
+    function renderRoute(geojson) { routeLayer.clearLayers(); if (!geojson) return; routeLayer.addData(geojson).addTo(map); routeLayer.setStyle({ color: "#1976d2", weight: 5 }); routeLayer.eachLayer((layer) => layer.bindTooltip(routeTip(layer.feature), { sticky: true })); }
+    function markBlocked(layer) { if (state.mode !== "blocked") return; const cell = layer.feature.properties.h3index; if (!cell || state.blocked.includes(cell)) return; state.blocked.push(cell); layer.setStyle({ color: "#ff3131", weight: 2.5 }); log({ level: "WARN", module: "replan", percent: 0, message: `已标记障碍：${cell}` }); }
+    function setEndpoint(role, latlng) { state[role] = { lat: latlng.lat, lng: latlng.lng }; const color = role === "start" ? "#42d67e" : "#ff6d61"; L.marker(latlng, { icon: L.divIcon({ className: "", html: `<div style="width:14px;height:14px;border-radius:50%;background:${color};border:2px solid white"></div>` }) }).addTo(markers).bindTooltip(role === "start" ? "起点" : "终点"); setStatus(`${role === "start" ? "起点" : "终点"}已选取`); }
+
+    async function loadCatalog() { const kind = kindBox.value; setStatus(`正在查询 ${kind} 文件…`); try { const response = await fetch(`/api/data-catalog?kind=${encodeURIComponent(kind)}`); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "目录查询失败"); catalogBox.replaceChildren(new Option(`请选择 ${kind} 文件`, "")); payload.data_catalog.forEach((item) => catalogBox.add(new Option(item.path, item.path))); setStatus(`已加载 ${payload.data_catalog.length} 个 ${kind} 文件`, "success"); } catch (error) { setStatus(`无法读取文件目录：${error.message}。请确认通过 http://127.0.0.1:8765/ 打开页面。`, "error"); } }
+    async function runOperation(operation) { logBox.textContent = ""; setStatus(`正在执行 ${operation}…`); try { const response = await fetch("/api/run-stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operation, request_yaml: requestBox.value, study_area_geojson: state.roi, start: state.start, goal: state.goal, blocked_cells: state.blocked, candidate_index: state.candidateIndex }) }); if (!response.ok || !response.body) throw new Error(`后端未响应（HTTP ${response.status}）`); const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; while (true) { const chunk = await reader.read(); if (chunk.done) break; buffer += decoder.decode(chunk.value, { stream: true }); const lines = buffer.split("\n"); buffer = lines.pop(); lines.filter(Boolean).forEach((line) => consumeEvent(JSON.parse(line))); } } catch (error) { setStatus(`操作连接失败：${error.message}。请从本地控制台 URL 打开页面。`, "error"); } }
+    function consumeEvent(event) { log(event); if (event.type === "progress") setStatus(`${event.module}: ${event.percent}% ${event.message}`); if (event.type === "error") setStatus(event.message, "error"); if (event.type === "result") { setStatus("运行完成", "success"); applyResult(event.payload); } }
+    function applyResult(payload) { state.fine = payload.fine_grid_geojson; state.parent = payload.parent_grid_geojson; state.candidateRoutes = Array.isArray(payload.candidate_routes) ? payload.candidate_routes : []; const plan = payload.delivery && payload.delivery.route_manifest; if (plan && plan.output_files) { state.planPath = plan.output_files.route_plan || null; state.selectionPath = state.planPath ? state.planPath.replace(/route_plan\.json$/, "route_selection.json") : null; } const selected = state.candidateRoutes.find((candidate) => candidate && candidate.is_recommended); if (selected && Number.isInteger(selected.candidate_index)) { state.candidateIndex = selected.candidate_index; state.selectedCandidateId = selected.candidate_id; } renderGrid("fine"); renderRoute(payload.route_geojson); renderEvaluation(payload.route_evaluation); renderCandidates(); }
+    function renderCandidates() { const box = document.getElementById("candidates"); box.replaceChildren(); state.candidateRoutes.forEach((candidate) => { if (!candidate || !Number.isInteger(candidate.candidate_index)) return; const item = document.createElement("button"); const active = candidate.candidate_index === state.candidateIndex; item.className = `candidate ${active ? "active" : ""}`; const title = document.createElement("span"); title.className = "candidate-title"; title.textContent = `候选 ${candidate.candidate_index + 1}`; item.appendChild(title); const reason = document.createElement("span"); reason.className = "candidate-reason"; reason.textContent = (candidate.evaluation && candidate.evaluation.selection_reason || []).join("、") || "未分配角色"; item.appendChild(reason); const metrics = document.createElement("span"); metrics.className = "candidate-metrics"; OBJECTIVE_META.forEach((metric) => { const value = document.createElement("span"); value.textContent = metricText(candidate.evaluation, metric); metrics.appendChild(value); }); item.appendChild(metrics); const hasGeometry = candidate.geojson && ["Feature", "FeatureCollection"].includes(candidate.geojson.type); item.disabled = !hasGeometry; item.onclick = () => selectCandidate(candidate); box.appendChild(item); }); }
+    function selectCandidate(candidate) { if (!candidate.geojson || !["Feature", "FeatureCollection"].includes(candidate.geojson.type)) { setStatus("该候选缺少可切换的地图几何，已保留当前活动路线。", "error"); return; } state.candidateIndex = candidate.candidate_index; state.selectedCandidateId = candidate.candidate_id; renderRoute(candidate.geojson); renderEvaluation(candidate.evaluation); renderCandidates(); setStatus(`已切换至候选 ${candidate.candidate_index + 1}；尚未激活`, "success"); }
+    async function activateCandidate() { if (!state.planPath || !state.selectedCandidateId) { setStatus("请先完成规划并选择候选。", "error"); return; } const response = await fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan_path: state.planPath, candidate_id: state.selectedCandidateId }) }); const payload = await response.json(); if (!response.ok) { setStatus(payload.error || "候选激活失败", "error"); return; } state.selectionPath = state.planPath.replace(/route_plan\.json$/, "route_selection.json"); setStatus(`已激活 ${payload.candidate_id}`, "success"); }
+    async function replanActive() { const current = document.getElementById("current-h3").value.trim(); if (!state.selectionPath || !current) { setStatus("重规划需要已激活候选和显式 current_h3。", "error"); return; } const now = Date.now() / 1000; const blockage_observations = state.blocked.map((cell) => ({ blockage_id: `web-${cell}`, h3index: cell, state: "tentative", confirmation_count: 1, trusted_source: true, observed_at_epoch_s: now, mission_lifetime: true, source: "web" })); const response = await fetch("/api/replan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selection_path: state.selectionPath, current_h3: current, now_epoch_s: now, blockage_observations }) }); const payload = await response.json(); if (!response.ok) { setStatus(payload.error || "重规划失败", "error"); return; } applyResult(payload); setStatus(`D* Lite 状态：${payload.route_evaluation && payload.route_evaluation.route_state}`, "success"); }
+
+    requestBox.value = WEB_CONFIG.defaultRequestYaml;
+    map.on(L.Draw.Event.CREATED, (event) => { drawn.clearLayers(); drawn.addLayer(event.layer); state.roi = event.layer.toGeoJSON(); setStatus("研究区已更新", "success"); });
+    map.on("click", (event) => { if (state.mode === "start" || state.mode === "goal") { setEndpoint(state.mode, event.latlng); state.mode = "none"; } });
+    document.getElementById("load-default").onclick = () => { requestBox.value = WEB_CONFIG.defaultRequestYaml; };
+    document.getElementById("load-catalog").onclick = () => loadCatalog();
+    document.getElementById("apply-data").onclick = () => { if (catalogBox.value) updateYamlField(DATA_FIELDS[kindBox.value], catalogBox.value); };
+    document.getElementById("draw-roi").onclick = () => new L.Draw.Polygon(map).enable();
+    document.getElementById("clear-roi").onclick = () => { drawn.clearLayers(); state.roi = null; };
+    document.getElementById("set-start").onclick = () => { state.mode = "start"; setStatus("请在地图上点击起点"); };
+    document.getElementById("set-goal").onclick = () => { state.mode = "goal"; setStatus("请在地图上点击终点"); };
+    document.getElementById("mark-blocked").onclick = () => { state.mode = "blocked"; setStatus("请点击细层 H3 格网标记动态障碍"); };
+    document.getElementById("build-map").onclick = () => runOperation("build");
+    document.getElementById("plan-route").onclick = () => runOperation("combined");
+    document.getElementById("activate-route").onclick = () => activateCandidate();
+    document.getElementById("replan-route").onclick = () => replanActive();
+    document.getElementById("theme").onchange = (event) => { state.theme = event.target.value; renderGrid("fine"); };
+    document.getElementById("show-fine").onclick = () => renderGrid("fine");
+    document.getElementById("show-parent").onclick = () => renderGrid("parent");
+    setStatus("就绪：天地图底图已初始化", "success");
+  </script>
+</body>
+</html>

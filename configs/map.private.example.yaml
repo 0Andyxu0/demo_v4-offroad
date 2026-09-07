@@ -1,0 +1,6 @@
+# Copy this file to configs/map.private.yaml for automatic local discovery.
+# For installed deployments, set H3_OFFROAD_MAP_CONFIG to an external private YAML path.
+# Never add the real token to RoutePlan YAML or commit the private copy.
+provider: tianditu
+layer_type: imagery
+token: replace-with-local-tianditu-token

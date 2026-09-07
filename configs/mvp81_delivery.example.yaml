@@ -1,0 +1,34 @@
+tile_build:
+  dem_path: D:/Workspace/demo_v1/data/dem_nanjing.tif
+  landcover_path: D:/Workspace/demo_v1/data/land_nanjing.tif
+  road_path: D:/Workspace/demo_v1/data/road_nanjing.shp
+  roi_layer_path: D:/Workspace/demo_v1/configs/mvp71_nanjing_roi.geojson
+  output_dir: D:/Workspace/demo_v1/outputs/mvp81_tiles
+  res_fine: 9
+  tile_res: 7
+  max_tiles: 80
+  max_cells_per_tile: 500
+  overwrite: false
+route:
+  input_mode: coordinates
+  planner_config_path: D:/Workspace/demo_v1/configs/deterministic_pareto_planner.yaml
+  vehicle_path: D:/Workspace/demo_v1/configs/vehicle.yaml
+  factor_model_path: D:/Workspace/demo_v1/configs/static_factor_model.yaml
+  mission_profile: fastest
+  max_candidate_paths: 5
+  candidate_limit: 24
+  penalty_factor: 0.25
+  output_dir: D:/Workspace/demo_v1/outputs/mvp81_route
+  start_lat: 31.901118601406722
+  start_lng: 118.81719555208593
+  goal_lat: 31.936378271128575
+  goal_lng: 118.7791349112786
+  res_fine: 9
+  res_coarse: 7
+  max_estimated_cells: 50000000
+  theme_attributes:
+    - elevation
+    - tri
+    - landcover_type
+    - soil_type
+    - slope
