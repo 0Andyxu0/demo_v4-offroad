@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
-from math import inf, isfinite
+from math import atan2, cos, inf, isfinite, radians, sin, sqrt
 
 from h3_offroad_planner.factor_model import (
     DirectedEdgeMetrics,
@@ -181,11 +181,34 @@ class PortsMapSearchContext:
             set[str],
         ] = {}
         self._cache_hits = 0
+        coord_scale = 1.0
+        if evaluation.directed_edges:
+            sample_ratios: list[float] = []
+            for (u, v), edge in list(evaluation.directed_edges.items())[:50]:
+                cell_u = graph.cells.get(u)
+                cell_v = graph.cells.get(v)
+                if cell_u is not None and cell_v is not None and edge.distance_m > EPSILON:
+                    h_dist = _haversine_m(cell_u.lat, cell_u.lng, cell_v.lat, cell_v.lng)
+                    if h_dist > EPSILON:
+                        sample_ratios.append(edge.distance_m / h_dist)
+            if sample_ratios:
+                min_ratio = min(sample_ratios)
+                coord_scale = 0.0 if min_ratio < 0.5 else min(1.0, min_ratio)
+        self._coord_scale = coord_scale
+        self._base_topology_cache: dict[
+            frozenset[str],
+            tuple[
+                dict[str, Port],
+                dict[tuple[str, str], tuple[str, ...]],
+                dict[str, tuple[str, ...]],
+            ],
+        ] = {}
 
     def clear_pair_cache(self) -> None:
         """Release request-local Port-pair paths once callers no longer need them."""
         self._pair_cache.clear()
         self._computed_sources.clear()
+        self._base_topology_cache.clear()
 
     def build_topology(
         self,
@@ -195,36 +218,45 @@ class PortsMapSearchContext:
     ) -> PortsMapTopology:
         """Build explicit boundary and temporary Ports for a request overlay."""
         self._validate_endpoints(start, goal, blocked)
-        ports: dict[str, Port] = {}
-        cross_edges: dict[tuple[str, str], tuple[str, ...]] = {}
-        for from_h3, to_h3 in sorted(self.evaluation.directed_edges):
-            if from_h3 in blocked or to_h3 in blocked:
-                continue
-            parent_from = self._parent(from_h3)
-            parent_to = self._parent(to_h3)
-            if parent_from == parent_to:
-                continue
-            ports[from_h3] = Port(from_h3, parent_from)
-            ports[to_h3] = Port(to_h3, parent_to)
-            cross_edges[(from_h3, to_h3)] = (from_h3, to_h3)
+        base = self._base_topology_cache.get(blocked)
+        if base is None:
+            base_ports: dict[str, Port] = {}
+            base_cross: dict[tuple[str, str], tuple[str, ...]] = {}
+            for from_h3, to_h3 in sorted(self.evaluation.directed_edges):
+                if from_h3 in blocked or to_h3 in blocked:
+                    continue
+                parent_from = self._parent(from_h3)
+                parent_to = self._parent(to_h3)
+                if parent_from == parent_to:
+                    continue
+                base_ports[from_h3] = Port(from_h3, parent_from)
+                base_ports[to_h3] = Port(to_h3, parent_to)
+                base_cross[(from_h3, to_h3)] = (from_h3, to_h3)
+            base_by_parent: dict[str, list[str]] = {}
+            for port in base_ports.values():
+                base_by_parent.setdefault(port.parent_h3, []).append(port.h3index)
+            base_normalized = {
+                p: tuple(sorted(set(pids))) for p, pids in base_by_parent.items()
+            }
+            base = (base_ports, base_cross, base_normalized)
+            self._base_topology_cache[blocked] = base
+
+        base_ports, base_cross, base_normalized = base
+        ports = dict(base_ports)
+        normalized = dict(base_normalized)
         for endpoint in (start, goal):
-            existing = ports.get(endpoint)
-            ports[endpoint] = Port(
-                endpoint,
-                self._parent(endpoint),
-                is_temporary=existing is None,
-            )
-        by_parent: dict[str, list[str]] = {}
-        for port in ports.values():
-            by_parent.setdefault(port.parent_h3, []).append(port.h3index)
-        normalized = {
-            parent: tuple(sorted(set(port_ids))) for parent, port_ids in by_parent.items()
-        }
+            if endpoint not in ports:
+                parent_ep = self._parent(endpoint)
+                ports[endpoint] = Port(endpoint, parent_ep, is_temporary=True)
+                current_pids = normalized.get(parent_ep, ())
+                if endpoint not in current_pids:
+                    normalized[parent_ep] = tuple(sorted((*current_pids, endpoint)))
+
         self._enforce_limits(ports, normalized)
         return PortsMapTopology(
             ports=ports,
             ports_by_parent=normalized,
-            cross_parent_edges=cross_edges,
+            cross_parent_edges=base_cross,
         )
 
     def search(
@@ -509,15 +541,50 @@ class PortsMapSearchContext:
                     (target, pair.h3_path, pair.scalar_cost)
                 )
 
-        heap: list[tuple[float, tuple[str, ...], str]] = [(0.0, (start,), start)]
-        best: dict[str, tuple[float, tuple[str, ...]]] = {start: (0.0, (start,))}
+        # Heuristic setup
+        w_dist = profile.weights.get("distance", 0.0) / profile.scales["distance"]
+        w_eta = profile.weights.get("eta", 0.0) / profile.scales["eta"]
+        max_speed_mps = 200.0 / 3.6
+        unit_cost_lower_bound = (w_dist + (w_eta / max_speed_mps)) * self._coord_scale
+
+        goal_cell = self.graph.cells[goal]
+        goal_lat = goal_cell.lat
+        goal_lng = goal_cell.lng
+        goal_dist_cache: dict[str, float] = {}
+
+        def _h(node: str) -> float:
+            if unit_cost_lower_bound <= EPSILON:
+                return 0.0
+            d = goal_dist_cache.get(node)
+            if d is None:
+                c = self.graph.cells[node]
+                d = _haversine_m(c.lat, c.lng, goal_lat, goal_lng)
+                goal_dist_cache[node] = d
+            return unit_cost_lower_bound * d
+
+        h_start = _h(start)
+        heap: list[tuple[float, float, str]] = [(h_start, 0.0, start)]
+        best_cost: dict[str, float] = {start: 0.0}
+        came_from: dict[str, tuple[str, tuple[str, ...]]] = {}
         visited_parents: set[str] = set()
 
         while heap:
-            cost, path, current = heappop(heap)
-            if best.get(current) != (cost, path):
+            priority, cost, current = heappop(heap)
+            if cost > best_cost.get(current, inf) + EPSILON:
                 continue
             if current == goal:
+                segments_rev: list[tuple[str, ...]] = []
+                curr = goal
+                while curr != start and curr in came_from:
+                    prev, seg = came_from[curr]
+                    segments_rev.append(seg)
+                    curr = prev
+
+                path_parts: list[str] = [start]
+                for seg in reversed(segments_rev):
+                    path_parts.extend(seg[1:])
+                path = tuple(path_parts)
+
                 active_pairs_count = 0
                 if pairs is not None:
                     active_pairs_count = len(pairs)
@@ -564,11 +631,13 @@ class PortsMapSearchContext:
                 outgoing.extend(internal_edges)
 
             for neighbor, segment, step in sorted(outgoing):
-                expanded = (*path, *segment[1:])
-                candidate = (cost + step, expanded)
-                if _is_better(candidate, best.get(neighbor)):
-                    best[neighbor] = candidate
-                    heappush(heap, (candidate[0], candidate[1], neighbor))
+                cand_cost = cost + step
+                current_best = best_cost.get(neighbor)
+                if current_best is None or cand_cost < current_best - EPSILON:
+                    best_cost[neighbor] = cand_cost
+                    came_from[neighbor] = (current, segment)
+                    cand_priority = cand_cost + _h(neighbor)
+                    heappush(heap, (cand_priority, cand_cost, neighbor))
 
         raise PlanningFailedError(f"no exact PortsMap path from {start!r} to {goal!r}.")
 
@@ -646,3 +715,14 @@ def _validate_continuous_path(
             raise PlanningFailedError(
                 f"PortsMap expansion is discontinuous at {source!r}->{target!r}."
             )
+
+
+def _haversine_m(lat_a: float, lng_a: float, lat_b: float, lng_b: float) -> float:
+    earth_radius_m = 6_371_000.0
+    delta_lat = radians(lat_b - lat_a)
+    delta_lng = radians(lng_b - lng_a)
+    first_lat = radians(lat_a)
+    second_lat = radians(lat_b)
+    root = sin(delta_lat / 2.0) ** 2
+    root += cos(first_lat) * cos(second_lat) * sin(delta_lng / 2.0) ** 2
+    return 2.0 * earth_radius_m * atan2(sqrt(root), sqrt(max(0.0, 1.0 - root)))
