@@ -148,6 +148,7 @@ class PortsMapTopology:
     ports: Mapping[str, Port]
     ports_by_parent: Mapping[str, tuple[str, ...]]
     cross_parent_edges: Mapping[tuple[str, str], tuple[str, ...]]
+    port_hashes: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -190,11 +191,11 @@ class PortsMapSearchContext:
                 self._parent_children.setdefault(parent_id, set()).add(cell.h3index)
         self._neighbors = _directed_neighbors(evaluation.directed_edges)
         self._pair_cache: dict[
-            tuple[str, str, str, str, str],
+            tuple[str, str, object, object, str],
             dict[tuple[str, str], PortPairPath],
         ] = {}
         self._computed_sources: dict[
-            tuple[str, str, str, str, str],
+            tuple[str, str, object, object, str],
             set[str],
         ] = {}
         self._cache_hits = 0
@@ -220,7 +221,7 @@ class PortsMapSearchContext:
                 dict[str, tuple[str, ...]],
             ],
         ] = {}
-        self._parent_keys: dict[str, set[tuple[str, str, str, str, str]]] = {}
+        self._parent_keys: dict[str, set[tuple[str, str, object, object, str]]] = {}
 
     def clear_pair_cache(self) -> None:
         """Release request-local Port-pair paths once callers no longer need them."""
@@ -272,10 +273,15 @@ class PortsMapSearchContext:
                     normalized[parent_ep] = tuple(sorted((*current_pids, endpoint)))
 
         self._enforce_limits(ports, normalized)
+        port_hashes = {
+            parent_id: canonical_hash(port_tuple)
+            for parent_id, port_tuple in normalized.items()
+        }
         return PortsMapTopology(
             ports=ports,
             ports_by_parent=normalized,
             cross_parent_edges=base_cross,
+            port_hashes=port_hashes,
         )
 
     def search(
@@ -377,11 +383,28 @@ class PortsMapSearchContext:
         penalty_factor: float,
     ) -> dict[tuple[str, str], PortPairPath]:
         all_pairs: dict[tuple[str, str], PortPairPath] = {}
-        penalty_hash = canonical_hash(
-            {"counts": dict(sorted(penalties.items())), "factor": penalty_factor}
-        )
-        blocked_hash = canonical_hash(sorted(blocked))
+        penalties_by_parent: dict[str, tuple[tuple[str, int], ...]] = {}
+        if penalty_factor > 0.0 and penalties:
+            p_map: dict[str, list[tuple[str, int]]] = {}
+            for cell_id, count in penalties.items():
+                p = self._parent(cell_id)
+                p_map.setdefault(p, []).append((cell_id, count))
+            penalties_by_parent = {p: tuple(sorted(items)) for p, items in p_map.items()}
+
+        blocked_by_parent: dict[str, tuple[str, ...]] = {}
+        if blocked:
+            b_map: dict[str, list[str]] = {}
+            for cell_id in blocked:
+                p = self._parent(cell_id)
+                b_map.setdefault(p, []).append(cell_id)
+            blocked_by_parent = {p: tuple(sorted(items)) for p, items in b_map.items()}
+
         for parent, port_ids in sorted(topology.ports_by_parent.items()):
+            local_p = penalties_by_parent.get(parent, ())
+            local_b = blocked_by_parent.get(parent, ())
+            port_hash = topology.port_hashes.get(parent)
+            if port_hash is None:
+                port_hash = canonical_hash(port_ids)
             for source in port_ids:
                 self._get_or_compute_source_pairs(
                     source,
@@ -391,11 +414,11 @@ class PortsMapSearchContext:
                     blocked,
                     penalties,
                     penalty_factor,
-                    penalty_hash,
-                    blocked_hash,
+                    local_p,
+                    local_b,
+                    port_hash,
                 )
-            port_hash = canonical_hash(port_ids)
-            cache_key = (parent, profile.signature, penalty_hash, blocked_hash, port_hash)
+            cache_key = (parent, profile.signature, local_p, local_b, port_hash)
             cached = self._pair_cache.get(cache_key)
             if cached:
                 all_pairs.update(cached)
@@ -404,7 +427,7 @@ class PortsMapSearchContext:
     def _evict_stale_parent_contexts(
         self,
         parent: str,
-        active_key: tuple[str, str, str, str, str],
+        active_key: tuple[str, str, object, object, str],
     ) -> None:
         """Bound cache growth while retaining immediate identical-search reuse."""
         keys = self._parent_keys.get(parent)
@@ -414,6 +437,9 @@ class PortsMapSearchContext:
                 self._pair_cache.pop(k, None)
                 self._computed_sources.pop(k, None)
                 keys.remove(k)
+        else:
+            self._parent_keys[parent] = set()
+        self._parent_keys[parent].add(active_key)
 
     def _get_or_compute_source_pairs(
         self,
@@ -424,20 +450,19 @@ class PortsMapSearchContext:
         blocked: frozenset[str],
         penalties: Mapping[str, int],
         penalty_factor: float,
-        penalty_hash: str,
-        blocked_hash: str,
+        local_penalty_key: tuple[tuple[str, int], ...],
+        local_blocked_key: tuple[str, ...],
+        port_hash: str,
     ) -> list[tuple[str, tuple[str, ...], float]]:
         if len(port_ids) <= 1:
             return []
-        port_hash = canonical_hash(port_ids)
-        cache_key = (parent, profile.signature, penalty_hash, blocked_hash, port_hash)
+        cache_key = (parent, profile.signature, local_penalty_key, local_blocked_key, port_hash)
         cached = self._pair_cache.get(cache_key)
         if cached is None:
             self._evict_stale_parent_contexts(parent, cache_key)
             cached = {}
             self._pair_cache[cache_key] = cached
             self._computed_sources[cache_key] = set()
-            self._parent_keys.setdefault(parent, set()).add(cache_key)
 
         sources_done = self._computed_sources[cache_key]
         if source in sources_done:
@@ -450,12 +475,14 @@ class PortsMapSearchContext:
             }
             targets = set(port_ids)
             targets.discard(source)
+            effective_penalties = penalties if local_penalty_key else {}
+            effective_penalty_factor = penalty_factor if local_penalty_key else 0.0
             fine_best = self._fine_tile_search(
                 source,
                 allowed,
                 profile,
-                penalties,
-                penalty_factor,
+                effective_penalties,
+                effective_penalty_factor,
                 targets=targets,
             )
             for target in port_ids:
@@ -578,10 +605,21 @@ class PortsMapSearchContext:
             cost = _penalized_cost(edge, profile, target, penalties, penalty_factor)
             cross_by_source.setdefault(source, []).append((target, (source, target), cost))
 
-        penalty_hash = canonical_hash(
-            {"counts": dict(sorted(penalties.items())), "factor": penalty_factor}
-        )
-        blocked_hash = canonical_hash(sorted(blocked))
+        penalties_by_parent: dict[str, tuple[tuple[str, int], ...]] = {}
+        if penalty_factor > 0.0 and penalties:
+            p_map: dict[str, list[tuple[str, int]]] = {}
+            for cell_id, count in penalties.items():
+                p = self._parent(cell_id)
+                p_map.setdefault(p, []).append((cell_id, count))
+            penalties_by_parent = {p: tuple(sorted(items)) for p, items in p_map.items()}
+
+        blocked_by_parent: dict[str, tuple[str, ...]] = {}
+        if blocked:
+            b_map: dict[str, list[str]] = {}
+            for cell_id in blocked:
+                p = self._parent(cell_id)
+                b_map.setdefault(p, []).append(cell_id)
+            blocked_by_parent = {p: tuple(sorted(items)) for p, items in b_map.items()}
 
         precomputed_adjacency: dict[str, list[tuple[str, tuple[str, ...], float]]] | None = None
         if pairs is not None:
@@ -591,11 +629,14 @@ class PortsMapSearchContext:
                     (target, pair.h3_path, pair.scalar_cost)
                 )
 
-        # Heuristic setup
+        # Admissible heuristic lower bound (includes travel_cost lower bound of 1.0 m/m)
         w_dist = profile.weights.get("distance", 0.0) / profile.scales["distance"]
         w_eta = profile.weights.get("eta", 0.0) / profile.scales["eta"]
+        w_cost = profile.weights.get("travel_cost", 0.0) / profile.scales["travel_cost"]
         max_speed_mps = 200.0 / 3.6
-        unit_cost_lower_bound = (w_dist + (w_eta / max_speed_mps)) * self._coord_scale
+        unit_cost_lower_bound = (
+            w_dist + (w_eta / max_speed_mps) + (w_cost * 1.0)
+        ) * self._coord_scale
 
         goal_cell = self.graph.cells[goal]
         goal_lat = goal_cell.lat
@@ -641,12 +682,16 @@ class PortsMapSearchContext:
                 else:
                     for vp in visited_parents:
                         v_port_ids = topology.ports_by_parent.get(vp, ())
-                        v_port_hash = canonical_hash(v_port_ids)
+                        v_port_hash = topology.port_hashes.get(vp)
+                        if v_port_hash is None:
+                            v_port_hash = canonical_hash(v_port_ids)
+                        v_local_p = penalties_by_parent.get(vp, ())
+                        v_local_b = blocked_by_parent.get(vp, ())
                         v_cache_key = (
                             vp,
                             profile.signature,
-                            penalty_hash,
-                            blocked_hash,
+                            v_local_p,
+                            v_local_b,
                             v_port_hash,
                         )
                         v_cached = self._pair_cache.get(v_cache_key)
@@ -667,6 +712,11 @@ class PortsMapSearchContext:
                 outgoing.extend(precomputed_adjacency.get(current, []))
             else:
                 port_ids = topology.ports_by_parent.get(parent, ())
+                local_p = penalties_by_parent.get(parent, ())
+                local_b = blocked_by_parent.get(parent, ())
+                port_hash = topology.port_hashes.get(parent)
+                if port_hash is None:
+                    port_hash = canonical_hash(port_ids)
                 internal_edges = self._get_or_compute_source_pairs(
                     current,
                     parent,
@@ -675,8 +725,9 @@ class PortsMapSearchContext:
                     blocked,
                     penalties,
                     penalty_factor,
-                    penalty_hash,
-                    blocked_hash,
+                    local_p,
+                    local_b,
+                    port_hash,
                 )
                 outgoing.extend(internal_edges)
 

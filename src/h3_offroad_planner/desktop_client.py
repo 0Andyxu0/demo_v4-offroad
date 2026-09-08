@@ -78,7 +78,9 @@ _TILE_PROGRESS_REGEX: re.Pattern[str] = re.compile(r"^(.*?):\s*\[(\d+/\d+)\]$")
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 DEFAULT_DELIVERY_PATH: Path = PROJECT_ROOT / "configs" / "mvp81_delivery.example.yaml"
 DESKTOP_SESSION_ROOT: Path = PROJECT_ROOT / "outputs" / "desktop_sessions"
-OPERATIONS: frozenset[str] = frozenset({"build", "plan", "replan", "combined"})
+OPERATIONS: frozenset[str] = frozenset(
+    {"build", "load_map", "plan", "load_route", "replan", "combined"}
+)
 CANDIDATE_OBJECTIVE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("distance", "距离", "m"),
     ("trafficability", "通行惩罚", "m"),
@@ -468,10 +470,17 @@ class DesktopMainWindow(QMainWindow):
         import_action.triggered.connect(self._choose_delivery_yaml)
         export_action = QAction("导出当前配置为 YAML…", self)
         export_action.triggered.connect(self._export_delivery_yaml)
+        load_map_action = QAction("加载本地通行底图…", self)
+        load_map_action.triggered.connect(lambda: self._start_operation("load_map"))
+        load_route_action = QAction("加载已有规划路线…", self)
+        load_route_action.triggered.connect(lambda: self._start_operation("load_route"))
         default_action = QAction("恢复默认配置", self)
         default_action.triggered.connect(self._load_default_project)
         file_menu.addAction(import_action)
         file_menu.addAction(export_action)
+        file_menu.addSeparator()
+        file_menu.addAction(load_map_action)
+        file_menu.addAction(load_route_action)
         file_menu.addSeparator()
         file_menu.addAction(default_action)
         project_menu = menu_bar.addMenu("项目")
@@ -552,7 +561,9 @@ class DesktopMainWindow(QMainWindow):
         self.operation_buttons: list[QPushButton] = []
         for label, operation in (
             ("构建通行地图", "build"),
+            ("加载本地通行底图…", "load_map"),
             ("生成多角色 RoutePlan", "plan"),
+            ("加载已有规划路线…", "load_route"),
             ("一键端到端交付", "combined"),
             ("运行 D* Lite 重规划", "replan"),
         ):
@@ -734,48 +745,98 @@ class DesktopMainWindow(QMainWindow):
             self._refresh_project_summary()
             self._status_bar.showMessage("已清空动态障碍。")
 
-    def _start_operation(self, operation: str) -> None:
+    def _start_operation(self, operation: str, **kwargs: object) -> None:
         if self._active_thread is not None and self._active_thread.is_alive():
             self._show_error("已有任务正在运行。")
             return
-        try:
-            payload = self._project.build_run_payload(DESKTOP_SESSION_ROOT)
-        except (ConfigError, OSError, yaml.YAMLError) as exc:
-            self._show_error(str(exc))
-            return
-        if operation == "replan":
-            current_h3, accepted = QInputDialog.getText(
-                self,
-                "D* Lite 重规划",
-                "请输入当前车辆所在 H3 ID（不会从旧路线猜测）：",
-            )
-            if not accepted or not current_h3.strip():
+        if operation == "load_map":
+            path_val = kwargs.get("tile_manifest_path")
+            if not isinstance(path_val, str) or not path_val:
+                default_dir = (
+                    str(Path(str(self._project.tile_build.get("output_dir", ""))))
+                    if self._project.tile_build.get("output_dir")
+                    else str(PROJECT_ROOT / "outputs")
+                )
+                path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "选择本地通行底图清单",
+                    default_dir,
+                    "通行底图清单 (tile_manifest.json *.json)",
+                )
+                if not path:
+                    return
+                path_val = path
+            manifest_file = Path(path_val)
+            if not manifest_file.is_file():
+                self._show_error(f"底图清单文件不存在：{path_val}")
                 return
-            route_output = self._project.route.get("output_dir")
-            if not isinstance(route_output, str) or not route_output:
-                self._show_error("路线输出目录未配置，无法读取 RouteSelection。")
+            self._project.tile_build["output_dir"] = str(manifest_file.parent)
+            self._project.route["parquet_path"] = str(manifest_file)
+            self._refresh_project_summary()
+            payload: dict[str, object] = {"tile_manifest_path": str(manifest_file)}
+        elif operation == "load_route":
+            path_val = kwargs.get("route_file_path")
+            if not isinstance(path_val, str) or not path_val:
+                default_dir = (
+                    str(Path(str(self._project.route.get("output_dir", ""))))
+                    if self._project.route.get("output_dir")
+                    else str(PROJECT_ROOT / "outputs")
+                )
+                path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "选择已有规划路线清单或路线方案",
+                    default_dir,
+                    "规划方案清单 (route_manifest.json route_plan.json *.json)",
+                )
+                if not path:
+                    return
+                path_val = path
+            route_file = Path(path_val)
+            if not route_file.is_file():
+                self._show_error(f"规划文件不存在：{path_val}")
                 return
-            now_epoch_s = time.time()
-            payload = {
-                "replan_request": {
-                    "selection_path": str(Path(route_output) / "route_selection.json"),
-                    "current_h3": current_h3.strip(),
-                    "now_epoch_s": now_epoch_s,
-                    "blockage_observations": [
-                        {
-                            "blockage_id": f"client-{cell_id}",
-                            "h3index": cell_id,
-                            "state": "tentative",
-                            "confirmation_count": 1,
-                            "trusted_source": True,
-                            "observed_at_epoch_s": now_epoch_s,
-                            "mission_lifetime": True,
-                            "source": "desktop_client",
-                        }
-                        for cell_id in self._safe_blocked_cells()
-                    ],
+            self._project.route["output_dir"] = str(route_file.parent)
+            self._refresh_project_summary()
+            payload = {"route_file_path": str(route_file)}
+        else:
+            try:
+                payload = self._project.build_run_payload(DESKTOP_SESSION_ROOT)
+            except (ConfigError, OSError, yaml.YAMLError) as exc:
+                self._show_error(str(exc))
+                return
+            if operation == "replan":
+                current_h3, accepted = QInputDialog.getText(
+                    self,
+                    "D* Lite 重规划",
+                    "请输入当前车辆所在 H3 ID（不会从旧路线猜测）：",
+                )
+                if not accepted or not current_h3.strip():
+                    return
+                route_output = self._project.route.get("output_dir")
+                if not isinstance(route_output, str) or not route_output:
+                    self._show_error("路线输出目录未配置，无法读取 RouteSelection。")
+                    return
+                now_epoch_s = time.time()
+                payload = {
+                    "replan_request": {
+                        "selection_path": str(Path(route_output) / "route_selection.json"),
+                        "current_h3": current_h3.strip(),
+                        "now_epoch_s": now_epoch_s,
+                        "blockage_observations": [
+                            {
+                                "blockage_id": f"client-{cell_id}",
+                                "h3index": cell_id,
+                                "state": "tentative",
+                                "confirmation_count": 1,
+                                "trusted_source": True,
+                                "observed_at_epoch_s": now_epoch_s,
+                                "mission_lifetime": True,
+                                "source": "desktop_client",
+                            }
+                            for cell_id in self._safe_blocked_cells()
+                        ],
+                    }
                 }
-            }
         self._set_running(True)
         self.progress_bar.setValue(0)
         self.log_text.clear()
@@ -841,6 +902,23 @@ class DesktopMainWindow(QMainWindow):
         self._candidate_routes = _candidate_routes_from_result(self._last_result)
         self._load_candidates()
         if self._render_candidate(self._project.candidate_index()):
+            if self._candidate_routes and self._project.endpoint("start") is None:
+                rec = next(
+                    (c for c in self._candidate_routes if c.get("is_recommended")),
+                    self._candidate_routes[0],
+                )
+                geojson = rec.get("geojson")
+                if isinstance(geojson, dict) and "features" in geojson:
+                    features = geojson.get("features", [])
+                    if features and isinstance(features[0], dict):
+                        coords = features[0].get("geometry", {}).get("coordinates", [])
+                        if len(coords) >= 2:
+                            try:
+                                self._project.set_endpoint("start", coords[0][1], coords[0][0])
+                                self._project.set_endpoint("goal", coords[-1][1], coords[-1][0])
+                                self._refresh_project_summary()
+                            except Exception:
+                                pass
             self._sync_map_from_project()
             self.progress_bar.setValue(100)
             self.progress_label.setText("Complete")
@@ -862,7 +940,12 @@ class DesktopMainWindow(QMainWindow):
         self._sync_map_from_project()
         self.progress_bar.setValue(100)
         self.progress_label.setText("Complete")
-        self._append_log("INFO", "complete", 100, "Grid, routes, and evaluation generated.")
+        msg = (
+            "Trafficability map tiles loaded into workspace."
+            if route_geojson is None and evaluation is None
+            else "Grid, routes, and evaluation generated."
+        )
+        self._append_log("INFO", "complete", 100, msg)
 
     def _on_failed(self, message: str) -> None:
         self._append_log("ERROR", "failed", 100, message)
@@ -1087,6 +1170,70 @@ def _execute_desktop_operation(
             tile_manifest = run_tile_payload(_mapping(payload, "tile_build"))
         result: dict[str, object] = {"tile_manifest": tile_manifest}
         progress("build_map", 85, "completed trafficability-map build")
+        return result
+    if operation == "load_map":
+        progress("load_map", 10, "reading local tile manifest...")
+        manifest_path_str = payload.get("tile_manifest_path")
+        if not isinstance(manifest_path_str, str) or not manifest_path_str:
+            tile = _mapping(payload, "tile_build")
+            output_dir = tile.get("output_dir")
+            if not isinstance(output_dir, str) or not output_dir:
+                raise ConfigError("load_map requires tile_manifest_path or tile_build.output_dir.")
+            manifest_path_str = str(Path(output_dir) / TILE_MANIFEST_NAME)
+        manifest_path = Path(manifest_path_str)
+        if not manifest_path.is_file():
+            raise ConfigError(f"tile manifest not found: {manifest_path}")
+        try:
+            tile_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"failed to read tile manifest: {manifest_path}") from exc
+        progress("load_map", 85, f"loaded tile manifest ({len(tile_manifest.get('tiles', []))} tiles)")
+        return {"tile_manifest": tile_manifest}
+    if operation == "load_route":
+        progress("load_route", 10, "reading persisted route artifacts...")
+        route_path_str = payload.get("route_file_path")
+        if not isinstance(route_path_str, str) or not route_path_str:
+            route = _mapping(payload, "route")
+            output_dir = route.get("output_dir")
+            if not isinstance(output_dir, str) or not output_dir:
+                raise ConfigError("load_route requires route_file_path or route.output_dir.")
+            route_path_str = str(Path(output_dir) / "route_manifest.json")
+        route_path = Path(route_path_str)
+        if not route_path.is_file():
+            raise ConfigError(f"route file not found: {route_path}")
+        try:
+            route_data = json.loads(route_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"failed to read route file: {route_path}") from exc
+
+        result: dict[str, object] = {}
+        if isinstance(route_data, dict) and "candidates" in route_data:
+            result["route_manifest"] = route_data
+            adjacent_tile = route_path.parent / TILE_MANIFEST_NAME
+            if adjacent_tile.is_file():
+                try:
+                    result["tile_manifest"] = json.loads(adjacent_tile.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+        elif isinstance(route_data, dict) and "output_files" in route_data:
+            manifest_files = route_data.get("output_files", {})
+            if isinstance(manifest_files, dict):
+                plan_file = manifest_files.get("route_plan")
+                if isinstance(plan_file, str) and Path(plan_file).is_file():
+                    result["route_manifest"] = json.loads(Path(plan_file).read_text(encoding="utf-8"))
+                tile_file = manifest_files.get("tile_manifest")
+                if isinstance(tile_file, str) and Path(tile_file).is_file():
+                    result["tile_manifest"] = json.loads(Path(tile_file).read_text(encoding="utf-8"))
+            if "route_manifest" not in result:
+                plan_file = route_path.parent / "route_plan.json"
+                if plan_file.is_file():
+                    result["route_manifest"] = json.loads(plan_file.read_text(encoding="utf-8"))
+                else:
+                    result["route_manifest"] = route_data
+        else:
+            result["route_manifest"] = route_data
+
+        progress("load_route", 85, "loaded route artifacts into desktop workspace")
         return result
     if operation == "replan":
         progress("replan", 65, "started D* Lite route repair")

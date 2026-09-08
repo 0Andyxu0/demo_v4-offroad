@@ -92,6 +92,8 @@ class DeterministicParetoPlanner:
         attempts_per_profile = max(1, min(self.max_paths, 3))
         total_profiles = len(profiles)
         for attempt in range(attempts_per_profile):
+            if len(candidates) >= self.candidate_limit:
+                break
             for idx, profile in enumerate(profiles, 1):
                 if len(candidates) >= self.candidate_limit:
                     break

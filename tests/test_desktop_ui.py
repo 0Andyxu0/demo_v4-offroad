@@ -598,3 +598,99 @@ def test_map_view_blocks_oversized_grid_script(monkeypatch: pytest.MonkeyPatch) 
     assert harness.scripts == []
     assert len(harness.map_error.emitted) == 1
     assert "超过桌面安全上限" in str(harness.map_error.emitted[0][0])
+
+
+def test_desktop_load_map_and_load_route_operations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qt_app: QApplication,
+) -> None:
+    """The desktop client can directly load existing tile manifests and route plans."""
+    monkeypatch.setattr(desktop_client, "DesktopMapView", _FakeMap)
+    window = DesktopMainWindow()
+
+    tile_manifest_file = tmp_path / "tile_manifest.json"
+    tile_manifest_file.write_text(
+        json.dumps({
+            "artifact_kind": "tile_h3_cache",
+            "output_dir": str(tmp_path),
+            "tiles": [],
+        }),
+        encoding="utf-8",
+    )
+
+    route_plan_file = tmp_path / "route_plan.json"
+    route_plan_file.write_text(
+        json.dumps({
+            "plan_id": "test-plan",
+            "candidates": [
+                {
+                    "candidate_id": "cand-1",
+                    "roles": ["fastest_route"],
+                    "is_recommended": True,
+                    "geojson": {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [[118.81, 31.90], [118.78, 31.93]],
+                                },
+                                "properties": {},
+                            }
+                        ],
+                    },
+                    "metrics": {
+                        "distance_m": 5000.0,
+                        "eta_s": 300.0,
+                        "score_lower_min": 0.85,
+                        "travel_cost": 10.0,
+                    },
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    # 1. Test execute load_map
+    progress_log: list[str] = []
+    map_res = desktop_client._execute_desktop_operation(
+        "load_map",
+        {"tile_manifest_path": str(tile_manifest_file)},
+        lambda mod, pct, msg: progress_log.append(f"{mod}:{pct}:{msg}"),
+    )
+    assert "tile_manifest" in map_res
+    assert any("loaded tile manifest" in p for p in progress_log)
+
+    # 2. Test execute load_route
+    route_res = desktop_client._execute_desktop_operation(
+        "load_route",
+        {"route_file_path": str(route_plan_file)},
+        lambda mod, pct, msg: progress_log.append(f"{mod}:{pct}:{msg}"),
+    )
+    assert "route_manifest" in route_res
+
+    # 3. Test window integration: load_map
+    window._start_operation("load_map", tile_manifest_path=str(tile_manifest_file))
+    deadline = time.monotonic() + 3.0
+    while window._active_thread is not None and time.monotonic() < deadline:
+        qt_app.processEvents()
+        time.sleep(0.001)
+    assert window._project.tile_build["output_dir"] == str(tmp_path)
+    assert window._project.route["parquet_path"] == str(tile_manifest_file)
+    assert window.progress_bar.value() == 100
+
+    # 4. Test window integration: load_route
+    window._start_operation("load_route", route_file_path=str(route_plan_file))
+    deadline = time.monotonic() + 3.0
+    while window._active_thread is not None and time.monotonic() < deadline:
+        qt_app.processEvents()
+        time.sleep(0.001)
+    assert window._project.route["output_dir"] == str(tmp_path)
+    assert window.candidate_box.count() == 1
+    assert "fastest_route" in window.candidate_box.itemText(0)
+    assert window.progress_bar.value() == 100
+
+    window.close()
+

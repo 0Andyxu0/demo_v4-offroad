@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import time
+import warnings
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -61,6 +64,34 @@ def delivery_output_paths(output_dir: str) -> dict[str, str]:
     return {Path(name).stem: str(root / name) for name in names}
 
 
+def _safe_replace_file(temporary: Path, target: Path) -> Path:
+    """Replace target with temporary, falling back to timestamped copy if target is locked by external processes."""
+    try:
+        temporary.replace(target)
+        return target
+    except OSError as exc:
+        for _ in range(3):
+            time.sleep(0.1)
+            try:
+                temporary.replace(target)
+                return target
+            except OSError:
+                pass
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fallback = target.with_name(f"{target.stem}_{timestamp}{target.suffix}")
+        try:
+            temporary.replace(fallback)
+            warnings.warn(
+                f"Target file {target.name} is locked by an external application; "
+                f"saved to {fallback.name} instead: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return fallback
+        except OSError:
+            raise exc
+
+
 def atomic_write_json(path: str | Path, payload: object) -> None:
     """Write canonical ordered JSON via same-directory temporary replacement."""
     output = Path(path)
@@ -69,7 +100,7 @@ def atomic_write_json(path: str | Path, payload: object) -> None:
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
         json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
         stream.write("\n")
-    temporary.replace(output)
+    _safe_replace_file(temporary, output)
 
 
 def write_route_plan_outputs(
@@ -81,7 +112,11 @@ def write_route_plan_outputs(
     """Write RoutePlan JSON, GeoJSON, GPKG and style/manifest artifacts atomically."""
     paths = delivery_output_paths(output_dir)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    _write_routes_gpkg(paths["routes"], graph, plan)
+    actual_routes_path = _write_routes_gpkg(paths["routes"], graph, plan)
+    paths["routes"] = actual_routes_path
+    output_files = dict(plan.output_files)
+    output_files["routes"] = actual_routes_path
+    object.__setattr__(plan, "output_files", output_files)
     atomic_write_json(paths["route_plan"], plan.to_dict())
     atomic_write_json(
         paths["route_manifest"],
@@ -95,10 +130,10 @@ def write_route_plan_outputs(
             "factor_model_hash": plan.factor_model_hash,
             "static_input_hash": plan.static_input_hash,
             "graph_topology_hash": plan.graph_topology_hash,
-            "output_files": dict(plan.output_files),
+            "output_files": output_files,
             "graph_storage": {
                 "format": "gpkg",
-                "path": Path(paths["routes"]).name,
+                "path": Path(actual_routes_path).name,
                 "cells_layer": "h3_static_facts",
                 "edges_table": GRAPH_EDGE_TABLE,
                 "resolution_fine": graph.resolution_fine,
@@ -377,7 +412,7 @@ def write_active_route_state(
         driver="GPKG",
         mode="w",
     )
-    temporary.replace(gpkg)
+    _safe_replace_file(temporary, gpkg)
 
 
 def select_route(
@@ -520,7 +555,7 @@ def _blockage_gdf(
     return gpd.GeoDataFrame(rows, geometry=geometries, crs=CRS_WGS84)
 
 
-def _write_routes_gpkg(path: str, graph: H3Graph, plan: RoutePlan) -> None:
+def _write_routes_gpkg(path: str, graph: H3Graph, plan: RoutePlan) -> str:
     output = Path(path)
     temporary = output.with_name(f".{output.stem}.tmp.gpkg")
     if temporary.exists():
@@ -548,7 +583,7 @@ def _write_routes_gpkg(path: str, graph: H3Graph, plan: RoutePlan) -> None:
         mode="a",
     )
     _write_graph_edge_table(temporary, graph)
-    temporary.replace(output)
+    return str(_safe_replace_file(temporary, output))
 
 
 def _write_graph_edge_table(path: Path, graph: H3Graph) -> None:
@@ -617,7 +652,7 @@ def _replace_active_gpkg_layers(path: Path, feature: dict[str, object]) -> None:
     )
     for layer in ("route_selected", "route_active"):
         frame.to_file(temporary, layer=layer, driver="GPKG", mode="w")
-    temporary.replace(path)
+    _safe_replace_file(temporary, path)
 
 
 def _static_facts_gdf(graph: H3Graph) -> gpd.GeoDataFrame:
