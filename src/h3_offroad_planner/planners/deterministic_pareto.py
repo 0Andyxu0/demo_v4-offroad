@@ -64,6 +64,7 @@ class DeterministicParetoPlanner:
         max_paths: int = DEFAULT_MAX_PATHS,
         candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
         penalty_factor: float = DEFAULT_PENALTY_FACTOR,
+        include_composite: bool = False,
     ) -> None:
         """Initialize deterministic profile and reuse-penalty candidate generation."""
         if not 1 <= max_paths <= 5:
@@ -76,6 +77,7 @@ class DeterministicParetoPlanner:
         self.max_paths = max_paths
         self.candidate_limit = candidate_limit
         self.penalty_factor = penalty_factor
+        self.include_composite = include_composite
 
     def plan(
         self,
@@ -86,15 +88,15 @@ class DeterministicParetoPlanner:
     ) -> list[GeneratedPath]:
         """Return at most 24 exact unique raw candidates including a widest anchor."""
         scales = _robust_scales(self.context.evaluation)
-        profiles = _fixed_profiles(scales)
+        profiles = _fixed_profiles(scales, include_composite=self.include_composite)
         candidates: dict[tuple[str, ...], GeneratedPath] = {}
         penalties: dict[str, int] = {}
         attempts_per_profile = max(1, min(self.max_paths, 3))
         total_profiles = len(profiles)
-        for attempt in range(attempts_per_profile):
+        for idx, profile in enumerate(profiles, 1):
             if len(candidates) >= self.candidate_limit:
                 break
-            for idx, profile in enumerate(profiles, 1):
+            for attempt in range(attempts_per_profile):
                 if len(candidates) >= self.candidate_limit:
                     break
                 if progress is not None:
@@ -121,6 +123,9 @@ class DeterministicParetoPlanner:
                 if generated.h3_path not in candidates:
                     candidates[generated.h3_path] = generated
                     _add_reuse_penalties(penalties, generated.h3_path)
+                elif attempt > 0:
+                    # Deterministic search without new penalties will yield the same path
+                    break
         if progress is not None:
             progress("global_plan", 91, "searching widest bottleneck route")
         widest = self.context.search_widest(start, goal, blocked)
@@ -151,24 +156,28 @@ def _robust_scales(evaluation: FactorEvaluation) -> dict[str, float]:
     }
 
 
-def _fixed_profiles(scales: dict[str, float]) -> list[ScalarProfile]:
+def _fixed_profiles(
+    scales: dict[str, float],
+    include_composite: bool = False,
+) -> list[ScalarProfile]:
     profiles = [
         ScalarProfile({name: 1.0}, scales, name=name)
         for name in ("distance", "eta", "terrain_risk", "travel_cost")
     ]
-    profiles.extend(
-        [
-            ScalarProfile(
-                dict.fromkeys(("distance", "eta", "terrain_risk", "travel_cost"), 0.25),
-                scales,
-                "balanced",
-            ),
-            ScalarProfile({"distance": 0.4, "eta": 0.6}, scales, "distance_eta"),
-            ScalarProfile({"eta": 0.6, "terrain_risk": 0.4}, scales, "eta_risk"),
-            ScalarProfile({"terrain_risk": 0.5, "travel_cost": 0.5}, scales, "risk_cost"),
-            ScalarProfile({"distance": 0.4, "travel_cost": 0.6}, scales, "distance_cost"),
-        ]
-    )
+    if include_composite:
+        profiles.extend(
+            [
+                ScalarProfile(
+                    dict.fromkeys(("distance", "eta", "terrain_risk", "travel_cost"), 0.25),
+                    scales,
+                    "balanced",
+                ),
+                ScalarProfile({"distance": 0.4, "eta": 0.6}, scales, "distance_eta"),
+                ScalarProfile({"eta": 0.6, "terrain_risk": 0.4}, scales, "eta_risk"),
+                ScalarProfile({"terrain_risk": 0.5, "travel_cost": 0.5}, scales, "risk_cost"),
+                ScalarProfile({"distance": 0.4, "travel_cost": 0.6}, scales, "distance_cost"),
+            ]
+        )
     return profiles
 
 
