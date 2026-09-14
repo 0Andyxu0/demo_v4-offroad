@@ -38,7 +38,14 @@ ROI_STRATEGIES: frozenset[str] = frozenset({"auto_corridor", "layer"})
 DEFAULT_ROUTE_THEMES: tuple[str, ...] = ("score", "cost_score")
 TILE_SAMPLING_MODES: frozenset[str] = frozenset({"center"})
 PLANNER_OBJECTIVES: frozenset[str] = frozenset(
-    {"distance", "roughness", "slope", "trafficability", "travel_cost"}
+    {
+        "distance",
+        "environment_distance",
+        "roughness",
+        "slope",
+        "trafficability",
+        "travel_cost",
+    }
 )
 
 
@@ -155,6 +162,11 @@ class VehicleProfile:
     max_thrust_n: float
     tire_radius_m: float
     min_turn_radius_m: float
+    width_m: float | None = None
+    wheelbase_m: float | None = None
+    front_overhang_m: float | None = None
+    rear_overhang_m: float | None = None
+    reference_point: str = "rear_axle_center"
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -169,6 +181,27 @@ class VehicleProfile:
         _require_positive("max_thrust_n", self.max_thrust_n)
         _require_positive("tire_radius_m", self.tire_radius_m)
         _require_positive("min_turn_radius_m", self.min_turn_radius_m)
+        for name in ("width_m", "wheelbase_m"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_positive(name, value)
+        _require_optional_nonnegative("front_overhang_m", self.front_overhang_m)
+        _require_optional_nonnegative("rear_overhang_m", self.rear_overhang_m)
+        if self.reference_point != "rear_axle_center":
+            raise ValueError("reference_point must be 'rear_axle_center'.")
+
+    @property
+    def has_complete_geometry(self) -> bool:
+        """Whether continuous whole-vehicle validation can be performed."""
+        return all(
+            value is not None
+            for value in (
+                self.width_m,
+                self.wheelbase_m,
+                self.front_overhang_m,
+                self.rear_overhang_m,
+            )
+        )
 
 
 @dataclass
@@ -195,6 +228,14 @@ class H3Cell:
     sinkage_m: float | None = None
     sinkage_resistance: float | None = None
     soil_mobility: float | None = None
+    soil_source: str | None = None
+    source_support_m: float | None = None
+    twi: float | None = None
+    drainage_sensitivity: float | None = None
+    drainage_valid: bool = False
+    drainage_boundary_affected: bool = False
+    surface_response: float | None = None
+    surface_evidence: str | None = None
     has_road: bool = False
     parent_h3: str = ""
     is_passable: bool = True
@@ -227,6 +268,15 @@ class H3Cell:
         _require_optional_nonnegative("sinkage_resistance", self.sinkage_resistance)
         if self.soil_mobility is not None and not 0.0 <= self.soil_mobility <= 1.0:
             raise ValueError("soil_mobility must be in [0, 1] when provided.")
+        _require_optional_nonnegative("source_support_m", self.source_support_m)
+        if self.twi is not None:
+            _require_finite("twi", self.twi)
+        for name in ("drainage_sensitivity", "surface_response"):
+            value = getattr(self, name)
+            if value is not None and not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1] when provided.")
+        if self.drainage_valid != (self.drainage_sensitivity is not None):
+            raise ValueError("drainage_valid must match drainage_sensitivity presence.")
         if not 0.0 <= self.score <= 1.0:
             raise ValueError("score must be in [0, 1].")
         expected_cost_score = 1.0 - self.score
@@ -319,6 +369,7 @@ class RouteRequest:
     max_candidate_paths: int = 5
     candidate_limit: int = 24
     penalty_factor: float = 0.25
+    static_planning_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.input_mode not in ROUTE_INPUT_MODES:
@@ -349,6 +400,7 @@ class RouteRequest:
         ):
             raise ValueError("blocked_cells must contain unique non-empty H3 ids.")
         _require_optional_path("factor_model_path", self.factor_model_path)
+        _require_optional_path("static_planning_path", self.static_planning_path)
         if self.mission_profile not in {
             "fastest",
             "shortest",
@@ -375,12 +427,7 @@ class RouteRequest:
             start_lng = self.start_lng
             goal_lat = self.goal_lat
             goal_lng = self.goal_lng
-            if (
-                start_lat is None
-                or start_lng is None
-                or goal_lat is None
-                or goal_lng is None
-            ):
+            if start_lat is None or start_lng is None or goal_lat is None or goal_lng is None:
                 raise ValueError("coordinate mode requires start and goal latitude/longitude.")
             _require_lat_lng(float(start_lat), float(start_lng))
             _require_lat_lng(float(goal_lat), float(goal_lng))
@@ -417,6 +464,10 @@ class TileBuildRequest:
     soil_path: str | None = None
     soil_catalog_path: str | None = None
     road_path: str | None = None
+    drainage_path: str | None = None
+    twi_path: str | None = None
+    drainage_validity_path: str | None = None
+    drainage_boundary_path: str | None = None
     res_fine: int = 14
     tile_res: int = 11
     max_tiles: int = 1_000
@@ -433,6 +484,15 @@ class TileBuildRequest:
         _require_optional_path("soil_path", self.soil_path)
         _require_optional_path("soil_catalog_path", self.soil_catalog_path)
         _require_optional_path("road_path", self.road_path)
+        _require_optional_path("drainage_path", self.drainage_path)
+        _require_optional_path("twi_path", self.twi_path)
+        _require_optional_path("drainage_validity_path", self.drainage_validity_path)
+        _require_optional_path("drainage_boundary_path", self.drainage_boundary_path)
+        if self.drainage_path is None and any(
+            value is not None
+            for value in (self.twi_path, self.drainage_validity_path, self.drainage_boundary_path)
+        ):
+            raise ValueError("drainage_path is required with drainage mask paths.")
         if self.soil_path is not None and self.soil_catalog_path is None:
             raise ValueError("soil_catalog_path is required when soil_path is provided.")
         if self.tile_res < 0 or self.res_fine <= self.tile_res:
@@ -612,6 +672,8 @@ class FleetPlanningInput:
                 raise PlanningInputError(f"fleet task start={task.start!r} is not in graph.")
             if task.goal not in self.graph.cells:
                 raise PlanningInputError(f"fleet task goal={task.goal!r} is not in graph.")
+
+
 @dataclass
 class FleetPlan:
     """Basic future coordinator output with one path per vehicle."""

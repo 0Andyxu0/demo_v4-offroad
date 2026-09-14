@@ -50,12 +50,15 @@ class ScalarProfile:
         }
     )
     name: str = "custom"
+    environment_pressure: float | None = None
+    environment_weight: float = 0.0
+    environment_scale: float = 1.0
 
     def __post_init__(self) -> None:
         unknown = set(self.weights).difference(OBJECTIVE_NAMES)
         if unknown:
             raise ValueError(f"unknown scalar objectives: {sorted(unknown)}")
-        if not self.weights or sum(self.weights.values()) <= 0.0:
+        if sum(self.weights.values()) + self.environment_weight <= 0.0:
             raise ValueError("scalar profile must contain a positive weight sum.")
         for value in self.weights.values():
             if not isfinite(value) or value < 0.0:
@@ -64,12 +67,20 @@ class ScalarProfile:
             raise ValueError("scalar scales must define all four additive objectives.")
         if any(not isfinite(value) or value <= 0.0 for value in self.scales.values()):
             raise ValueError("scalar scales must be finite and positive.")
+        if not isfinite(self.environment_weight) or self.environment_weight < 0.0:
+            raise ValueError("environment_weight must be finite and non-negative.")
+        if not isfinite(self.environment_scale) or self.environment_scale <= 0.0:
+            raise ValueError("environment_scale must be finite and positive.")
+        if self.environment_pressure is not None and (
+            not isfinite(self.environment_pressure) or self.environment_pressure < 0.0
+        ):
+            raise ValueError("environment_pressure must be finite and non-negative.")
+        if self.environment_weight > 0.0 and self.environment_pressure is None:
+            raise ValueError("environment_pressure is required for environment_weight.")
         object.__setattr__(
             self, "_w_dist", self.weights.get("distance", 0.0) / self.scales["distance"]
         )
-        object.__setattr__(
-            self, "_w_eta", self.weights.get("eta", 0.0) / self.scales["eta"]
-        )
+        object.__setattr__(self, "_w_eta", self.weights.get("eta", 0.0) / self.scales["eta"])
         object.__setattr__(
             self,
             "_w_risk",
@@ -94,16 +105,28 @@ class ScalarProfile:
                 "name": self.name,
                 "weights": dict(sorted(self.weights.items())),
                 "scales": dict(sorted(self.scales.items())),
+                "environment_pressure": self.environment_pressure,
+                "environment_weight": self.environment_weight,
+                "environment_scale": self.environment_scale,
             }
         )
 
     def edge_cost(self, edge: DirectedEdgeMetrics) -> float:
         """Compute normalized additive scalar edge cost."""
+        environment_cost = 0.0
+        if self.environment_pressure is not None and self.environment_weight > 0.0:
+            key = f"{self.environment_pressure:g}"
+            if key not in edge.environment_distance_m:
+                raise PlanningInputError(f"edge lacks environment pressure scenario {key}.")
+            environment_cost = (
+                self.environment_weight * edge.environment_distance_m[key] / self.environment_scale
+            )
         return (
             self._w_dist * edge.distance_m
             + self._w_eta * edge.eta_s
             + self._w_risk * edge.terrain_risk
             + self._w_cost * edge.travel_cost
+            + environment_cost
         )
 
 
@@ -255,9 +278,7 @@ class PortsMapSearchContext:
             base_by_parent: dict[str, list[str]] = {}
             for port in base_ports.values():
                 base_by_parent.setdefault(port.parent_h3, []).append(port.h3index)
-            base_normalized = {
-                p: tuple(sorted(set(pids))) for p, pids in base_by_parent.items()
-            }
+            base_normalized = {p: tuple(sorted(set(pids))) for p, pids in base_by_parent.items()}
             base = (base_ports, base_cross, base_normalized)
             self._base_topology_cache[blocked] = base
 
@@ -274,8 +295,7 @@ class PortsMapSearchContext:
 
         self._enforce_limits(ports, normalized)
         port_hashes = {
-            parent_id: canonical_hash(port_tuple)
-            for parent_id, port_tuple in normalized.items()
+            parent_id: canonical_hash(port_tuple) for parent_id, port_tuple in normalized.items()
         }
         return PortsMapTopology(
             ports=ports,
@@ -328,12 +348,8 @@ class PortsMapSearchContext:
         """Find the maximum-minimum passability route with fixed metric tie-breaks."""
         topology = self.build_topology(start, goal, blocked)
         start_score = self.evaluation.node_metrics[start].safety_margin.lower
-        heap: list[tuple[float, float, float, float, str]] = [
-            (-start_score, 0.0, 0.0, 0.0, start)
-        ]
-        best: dict[str, tuple[float, float, float, float]] = {
-            start: (-start_score, 0.0, 0.0, 0.0)
-        }
+        heap: list[tuple[float, float, float, float, str]] = [(-start_score, 0.0, 0.0, 0.0, start)]
+        best: dict[str, tuple[float, float, float, float]] = {start: (-start_score, 0.0, 0.0, 0.0)}
         came_from: dict[str, str] = {}
         while heap:
             negative_margin, risk, eta, distance, current = heappop(heap)
@@ -511,9 +527,7 @@ class PortsMapSearchContext:
         penalty_factor: float,
     ) -> dict[tuple[str, str], PortPairPath]:
         allowed = {
-            cell_id
-            for cell_id in self._parent_children.get(parent, ())
-            if cell_id not in blocked
+            cell_id for cell_id in self._parent_children.get(parent, ()) if cell_id not in blocked
         }
         pairs: dict[tuple[str, str], PortPairPath] = {}
         for source in port_ids:
@@ -633,9 +647,10 @@ class PortsMapSearchContext:
         w_dist = profile.weights.get("distance", 0.0) / profile.scales["distance"]
         w_eta = profile.weights.get("eta", 0.0) / profile.scales["eta"]
         w_cost = profile.weights.get("travel_cost", 0.0) / profile.scales["travel_cost"]
+        w_environment = profile.environment_weight / profile.environment_scale
         max_speed_mps = 200.0 / 3.6
         unit_cost_lower_bound = (
-            w_dist + (w_eta / max_speed_mps) + (w_cost * 1.0)
+            w_dist + (w_eta / max_speed_mps) + (w_cost * 1.0) + w_environment
         ) * self._coord_scale
 
         goal_cell = self.graph.cells[goal]

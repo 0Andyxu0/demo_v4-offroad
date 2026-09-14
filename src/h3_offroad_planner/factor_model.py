@@ -27,20 +27,27 @@ from h3_offroad_planner.models import (
 
 __all__ = [
     "DirectedEdgeMetrics",
+    "DecisionConfig",
+    "EnvironmentConfig",
     "FactorEvaluation",
     "FactorInterval",
     "FactorModelConfig",
+    "GeometryConfig",
     "NodeFactorMetrics",
     "PathMetrics",
     "PHYSICAL_EVIDENCE_WARNING",
     "build_directed_edge_cache",
     "canonical_hash",
+    "environment_multiplier",
     "evaluate_factor_model",
     "evaluate_path_metrics",
     "graph_topology_hash",
     "load_factor_model",
+    "load_static_planning_config",
     "static_input_hash",
+    "StaticPlanningConfig",
     "write_effective_snapshots",
+    "write_static_planning_snapshot",
 ]
 
 GRAVITY_MPS2: float = 9.81
@@ -73,9 +80,7 @@ SCHEMA_V2_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType(
                 "directed_slope_min_factor",
             }
         ),
-        "hard_constraints": frozenset(
-            {"min_cone_index_kpa", "max_sinkage_clearance_ratio"}
-        ),
+        "hard_constraints": frozenset({"min_cone_index_kpa", "max_sinkage_clearance_ratio"}),
         "risk": frozenset({"epsilon"}),
         "cost": frozenset({"tri_coefficient", "gravity_coefficient"}),
         "portsmap": frozenset({"max_ports", "max_port_pairs"}),
@@ -171,6 +176,7 @@ class DirectedEdgeMetrics:
     safety_margin_nominal: float
     safety_margin_upper: float
     directed_slope_deg: float
+    environment_distance_m: Mapping[str, float] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         finite_nonnegative = (
@@ -198,6 +204,16 @@ class DirectedEdgeMetrics:
             <= 1.0
         ):
             raise ValueError("directed edge safety-margin interval must be ordered in [0, 1].")
+        if any(
+            not isfinite(value) or value < self.distance_m
+            for value in self.environment_distance_m.values()
+        ):
+            raise ValueError("environment edge distances must be finite and >= geometry distance.")
+        object.__setattr__(
+            self,
+            "environment_distance_m",
+            MappingProxyType(dict(self.environment_distance_m)),
+        )
 
 
 @dataclass(frozen=True)
@@ -214,6 +230,7 @@ class PathMetrics:
     safety_margin_min: float
     safety_margin_mean: float
     edge_count: int
+    environment_distance_m: Mapping[str, float] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         values = (
@@ -231,6 +248,16 @@ class PathMetrics:
             raise ValueError("path safety-margin aggregates must be ordered in [0, 1].")
         if self.eta_upper_bounded != (self.eta_upper_s is not None):
             raise ValueError("eta_upper_bounded must match eta_upper_s presence.")
+        if any(
+            not isfinite(value) or value < self.distance_m
+            for value in self.environment_distance_m.values()
+        ):
+            raise ValueError("environment path distances must be finite and >= geometry distance.")
+        object.__setattr__(
+            self,
+            "environment_distance_m",
+            MappingProxyType(dict(self.environment_distance_m)),
+        )
 
     def to_dict(self) -> dict[str, object]:
         """Return schema-v1 metrics with compatibility names at the output boundary."""
@@ -245,7 +272,170 @@ class PathMetrics:
             "score_lower_min": self.safety_margin_min,
             "score_nominal_mean": self.safety_margin_mean,
             "edge_count": self.edge_count,
+            "environment_distance_m": dict(sorted(self.environment_distance_m.items())),
         }
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.distance_m,
+                self.eta_lower_s,
+                self.eta_s,
+                self.eta_upper_s,
+                self.eta_upper_bounded,
+                self.terrain_risk,
+                self.travel_cost,
+                self.safety_margin_min,
+                self.safety_margin_mean,
+                self.edge_count,
+                tuple(sorted(self.environment_distance_m.items())),
+            )
+        )
+
+
+@dataclass(frozen=True)
+class EnvironmentConfig:
+    """Static surface/drainage multiplier policy and request pressure scenarios."""
+
+    comparison_pressures: tuple[float, ...] = (0.0, 0.5, 1.0)
+    request_pressures: tuple[float, ...] = (0.5, 1.0)
+    unknown_drainage_range: tuple[float, float] = (0.0, 1.0)
+    unknown_surface_range: tuple[float, float] = (0.0, 1.0)
+    shared_sensitivity: float = 1.0
+    model: str = "surface_drainage_multiplier_v1"
+    pressure_basis: str = "synthetic_scenario"
+
+    def __post_init__(self) -> None:
+        if self.model != "surface_drainage_multiplier_v1":
+            raise ConfigError("unsupported environment model version.")
+        if self.pressure_basis != "synthetic_scenario":
+            raise ConfigError("unsupported environment pressure_basis.")
+        for name, values in (
+            ("comparison_pressures", self.comparison_pressures),
+            ("request_pressures", self.request_pressures),
+        ):
+            if not values or len(set(values)) != len(values):
+                raise ConfigError(f"{name} must contain unique pressure values.")
+            if any(not isfinite(value) or value < 0.0 for value in values):
+                raise ConfigError(f"{name} must contain finite non-negative values.")
+        if not set(self.request_pressures).issubset(self.comparison_pressures):
+            raise ConfigError("request_pressures must be a subset of comparison_pressures.")
+        for name, bounds in (
+            ("unknown_drainage_range", self.unknown_drainage_range),
+            ("unknown_surface_range", self.unknown_surface_range),
+        ):
+            if len(bounds) != 2 or not 0.0 <= bounds[0] <= bounds[1] <= 1.0:
+                raise ConfigError(f"{name} must be an ordered [0, 1] interval.")
+        if not isfinite(self.shared_sensitivity) or self.shared_sensitivity < 0.0:
+            raise ConfigError("shared_sensitivity must be finite and non-negative.")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "model": self.model,
+            "pressure_basis": self.pressure_basis,
+            "comparison_pressures": list(self.comparison_pressures),
+            "request_pressures": list(self.request_pressures),
+            "unknown_drainage_range": list(self.unknown_drainage_range),
+            "unknown_surface_range": list(self.unknown_surface_range),
+            "shared_sensitivity": self.shared_sensitivity,
+        }
+
+
+@dataclass(frozen=True)
+class GeometryConfig:
+    """Continuous trajectory construction and validation tolerances."""
+
+    simplify_tolerance_m: float = 0.05
+    geometry_tolerance_m: float = 0.01
+    map_error_m: float = 0.0
+    arc_step_deg: float = 10.0
+    max_arc_segments: int = 720
+
+    def __post_init__(self) -> None:
+        for name in ("simplify_tolerance_m", "geometry_tolerance_m", "arc_step_deg"):
+            value = getattr(self, name)
+            if not isfinite(value) or value <= 0.0:
+                raise ConfigError(f"{name} must be finite and positive.")
+        if not isfinite(self.map_error_m) or self.map_error_m < 0.0:
+            raise ConfigError("map_error_m must be finite and non-negative.")
+        if not isinstance(self.max_arc_segments, int) or self.max_arc_segments <= 0:
+            raise ConfigError("max_arc_segments must be a positive integer.")
+
+
+@dataclass(frozen=True)
+class DecisionConfig:
+    """Candidate-pool detour budget, robust ordering, and switch hysteresis."""
+
+    detour_ratio: float = 0.15
+    clearance_target_m: float = 0.0
+    clearance_tolerance_m: float = 0.01
+    switch_relative_improvement: float = 0.05
+    candidate_limit: int = 24
+    display_limit: int = 5
+
+    def __post_init__(self) -> None:
+        for name in ("detour_ratio", "clearance_target_m", "clearance_tolerance_m"):
+            value = getattr(self, name)
+            if not isfinite(value) or value < 0.0:
+                raise ConfigError(f"{name} must be finite and non-negative.")
+        if not 0.0 <= self.switch_relative_improvement < 1.0:
+            raise ConfigError("switch_relative_improvement must be in [0, 1).")
+        if not 1 <= self.display_limit <= 5:
+            raise ConfigError("display_limit must be in [1, 5].")
+        if not self.display_limit <= self.candidate_limit <= 24:
+            raise ConfigError("candidate_limit must be in [display_limit, 24].")
+
+
+@dataclass(frozen=True)
+class StaticPlanningConfig:
+    """Versioned request policy for the three static-GIS planning increments."""
+
+    environment: EnvironmentConfig = EnvironmentConfig()
+    geometry: GeometryConfig = GeometryConfig()
+    decision: DecisionConfig = DecisionConfig()
+    version: str = "static_gis_route_v2"
+
+    def __post_init__(self) -> None:
+        if self.version != "static_gis_route_v2":
+            raise ConfigError("unsupported static planning version.")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "environment": self.environment.to_dict(),
+            "geometry": asdict(self.geometry),
+            "decision": asdict(self.decision),
+        }
+
+
+def environment_multiplier(
+    cell: H3Cell,
+    pressure: float,
+    config: EnvironmentConfig,
+) -> tuple[float, bool]:
+    """Return M=1+w*U*S*(1+D) and whether static evidence was unknown."""
+    if not isfinite(pressure) or pressure < 0.0:
+        raise ValueError("pressure must be finite and non-negative.")
+    surface_unknown = cell.surface_response is None
+    surface = config.unknown_surface_range[1] if surface_unknown else cell.surface_response
+    if surface is None:
+        raise AssertionError("surface response fallback must be numeric.")
+    drainage_unknown = surface > 0.0 and (
+        not cell.drainage_valid
+        or cell.drainage_sensitivity is None
+        or cell.drainage_boundary_affected
+    )
+    drainage = (
+        config.unknown_drainage_range[1] if drainage_unknown else (cell.drainage_sensitivity or 0.0)
+    )
+    multiplier = 1.0 + pressure * surface * config.shared_sensitivity * (1.0 + drainage)
+    return multiplier, bool(
+        surface_unknown or drainage_unknown or (surface > 0 and cell.soil_code is None)
+    )
+
+
+def _pressure_key(pressure: float) -> str:
+    return f"{pressure:g}"
 
 
 @dataclass(frozen=True)
@@ -391,23 +581,155 @@ def load_factor_model(path: str) -> FactorModelConfig:
     return _factor_model_from_mapping(cast(dict[str, object], loaded))
 
 
+def load_static_planning_config(path: str) -> StaticPlanningConfig:
+    """Load the versioned soil/drainage, geometry, and robust decision policy."""
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise ConfigError(f"static planning file does not exist: {path}")
+    with file_path.open("r", encoding="utf-8") as stream:
+        loaded = yaml.safe_load(stream)
+    if not isinstance(loaded, dict):
+        raise ConfigError("static planning file must contain a mapping.")
+    data = cast(dict[str, object], loaded)
+    allowed = {
+        "version",
+        "soil",
+        "hydrology",
+        "environment",
+        "vehicle_geometry",
+        "geometry",
+        "decision",
+    }
+    unknown = sorted(set(data).difference(allowed))
+    if unknown:
+        raise ConfigError(f"static planning file contains unsupported fields: {unknown}")
+    _validate_static_source_sections(data)
+    environment_data = _optional_mapping(data, "environment")
+    decision_data = _optional_mapping(data, "decision")
+    geometry_data = _optional_mapping(data, "geometry")
+    environment = EnvironmentConfig(
+        model=str(environment_data.get("model", "surface_drainage_multiplier_v1")),
+        pressure_basis=str(environment_data.get("pressure_basis", "synthetic_scenario")),
+        comparison_pressures=_float_tuple(
+            environment_data.get("comparison_pressures", [0.0, 0.5, 1.0]),
+            "comparison_pressures",
+        ),
+        request_pressures=_float_tuple(
+            environment_data.get("request_pressures", [0.5, 1.0]),
+            "request_pressures",
+        ),
+        unknown_drainage_range=_float_pair(
+            environment_data.get("unknown_drainage_range", [0.0, 1.0]),
+            "unknown_drainage_range",
+        ),
+        unknown_surface_range=_float_pair(
+            environment_data.get("unknown_surface_range", [0.0, 1.0]),
+            "unknown_surface_range",
+        ),
+        shared_sensitivity=_mapping_float(
+            environment_data,
+            "shared_sensitivity",
+            _mapping_float(_optional_mapping(data, "soil"), "shared_sensitivity", 1.0),
+        ),
+    )
+    geometry = GeometryConfig(
+        simplify_tolerance_m=_mapping_float(geometry_data, "simplify_tolerance_m", 0.05),
+        geometry_tolerance_m=_mapping_float(geometry_data, "geometry_tolerance_m", 0.01),
+        map_error_m=_mapping_float(geometry_data, "map_error_m", 0.0),
+        arc_step_deg=_mapping_float(geometry_data, "arc_step_deg", 10.0),
+        max_arc_segments=_mapping_int(geometry_data, "max_arc_segments", 720),
+    )
+    decision = DecisionConfig(
+        detour_ratio=_mapping_float(decision_data, "detour_ratio", 0.15),
+        clearance_target_m=_mapping_float(decision_data, "clearance_target_m", 0.0),
+        clearance_tolerance_m=_mapping_float(decision_data, "clearance_tolerance_m", 0.01),
+        switch_relative_improvement=_mapping_float(
+            decision_data, "switch_relative_improvement", 0.05
+        ),
+        candidate_limit=_mapping_int(decision_data, "candidate_limit", 24),
+        display_limit=_mapping_int(decision_data, "display_limit", 5),
+    )
+    return StaticPlanningConfig(
+        environment=environment,
+        geometry=geometry,
+        decision=decision,
+        version=str(data.get("version", "static_gis_route_v2")),
+    )
+
+
+def _validate_static_source_sections(data: Mapping[str, object]) -> None:
+    soil = _optional_mapping(data, "soil")
+    if soil and soil.get("mode", "categorical_drainage") != "categorical_drainage":
+        raise ConfigError("soil mode must be 'categorical_drainage'.")
+    if soil and soil.get("default_theta_v") is not None:
+        raise ConfigError("default_theta_v must remain null in categorical drainage mode.")
+    hydrology = _optional_mapping(data, "hydrology")
+    if hydrology and hydrology.get("backend", "grass_r_watershed") != "grass_r_watershed":
+        raise ConfigError("hydrology backend must be 'grass_r_watershed'.")
+    vehicle = _optional_mapping(data, "vehicle_geometry")
+    if vehicle and vehicle.get("reference_point", "rear_axle_center") != "rear_axle_center":
+        raise ConfigError("vehicle_geometry reference_point must be rear_axle_center.")
+
+
+def _optional_mapping(data: Mapping[str, object], key: str) -> dict[str, object]:
+    value = data.get(key, {})
+    if not isinstance(value, dict):
+        raise ConfigError(f"static planning field {key!r} must be a mapping.")
+    return cast(dict[str, object], value)
+
+
+def _float_tuple(value: object, name: str) -> tuple[float, ...]:
+    if not isinstance(value, (list, tuple)) or any(
+        isinstance(item, bool) or not isinstance(item, (int, float)) for item in value
+    ):
+        raise ConfigError(f"{name} must be a numeric sequence.")
+    return tuple(float(cast(float, item)) for item in value)
+
+
+def _float_pair(value: object, name: str) -> tuple[float, float]:
+    values = _float_tuple(value, name)
+    if len(values) != 2:
+        raise ConfigError(f"{name} must contain exactly two values.")
+    return (values[0], values[1])
+
+
+def _mapping_float(data: Mapping[str, object], key: str, default: float) -> float:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"static planning field {key!r} must be numeric.")
+    return float(value)
+
+
+def _mapping_int(data: Mapping[str, object], name: str, default: int) -> int:
+    value = data.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"static planning field {name!r} must be an integer.")
+    return value
+
+
 def evaluate_factor_model(
     graph: H3Graph,
     vehicle: VehicleProfile,
     config: FactorModelConfig,
+    environment: EnvironmentConfig | None = None,
 ) -> FactorEvaluation:
     """Evaluate physical node evidence once and freeze directed edge metrics."""
     if not graph.cells:
         raise PlanningInputError("factor evaluation requires a non-empty graph.")
     evidence = {
-        cell_id: _raw_node_evidence(cell, vehicle, config)
+        cell_id: _raw_node_evidence(
+            cell,
+            vehicle,
+            config,
+            strict_static_mode=environment is not None,
+        )
         for cell_id, cell in graph.cells.items()
     }
     nodes = {
         cell_id: _node_metrics(graph.cells[cell_id], evidence[cell_id], vehicle)
         for cell_id in sorted(graph.cells)
     }
-    edges = build_directed_edge_cache(graph, nodes, vehicle, config)
+    edges = build_directed_edge_cache(graph, nodes, vehicle, config, environment)
     return FactorEvaluation(
         node_metrics=nodes,
         directed_edges=edges,
@@ -423,6 +745,7 @@ def build_directed_edge_cache(
     node_metrics: Mapping[str, NodeFactorMetrics],
     vehicle: VehicleProfile,
     config: FactorModelConfig,
+    environment: EnvironmentConfig | None = None,
 ) -> dict[tuple[str, str], DirectedEdgeMetrics]:
     """Build the authoritative directed metrics used by route searches."""
     if set(node_metrics) != set(graph.cells):
@@ -438,6 +761,7 @@ def build_directed_edge_cache(
                 node_metrics,
                 vehicle,
                 config,
+                environment,
             )
             if metrics is not None:
                 cache[(from_h3, to_h3)] = metrics
@@ -466,6 +790,7 @@ def evaluate_path_metrics(
             margin.lower,
             margin.nominal,
             0,
+            {},
         )
     edges = _path_edges(h3_path, evaluation)
     bounded = all(edge.eta_upper_bounded for edge in edges)
@@ -483,6 +808,10 @@ def evaluate_path_metrics(
         safety_margin_min=min(edge.safety_margin_lower for edge in edges),
         safety_margin_mean=weighted_margin / total_distance,
         edge_count=len(edges),
+        environment_distance_m={
+            key: sum(edge.environment_distance_m[key] for edge in edges)
+            for key in edges[0].environment_distance_m
+        },
     )
 
 
@@ -531,6 +860,14 @@ def static_input_hash(graph: H3Graph) -> str:
                 "soil_moisture": cell.soil_moisture,
                 "depth": cell.depth,
                 "rowspacing": cell.rowspacing,
+                "soil_source": cell.soil_source,
+                "source_support_m": cell.source_support_m,
+                "twi": cell.twi,
+                "drainage_sensitivity": cell.drainage_sensitivity,
+                "drainage_valid": cell.drainage_valid,
+                "drainage_boundary_affected": cell.drainage_boundary_affected,
+                "surface_response": cell.surface_response,
+                "surface_evidence": cell.surface_evidence,
                 "has_road": cell.has_road,
                 "static_passable": cell.is_passable,
             }
@@ -575,6 +912,17 @@ def write_effective_snapshots(
     return str(vehicle_path), str(factor_path)
 
 
+def write_static_planning_snapshot(
+    output_dir: str,
+    config: StaticPlanningConfig,
+) -> str:
+    """Write the effective static-planning policy needed by replanning."""
+    path = Path(output_dir) / "effective_static_planning.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_yaml_write(path, config.to_dict())
+    return str(path)
+
+
 @dataclass(frozen=True)
 class _RawNodeEvidence:
     speed_factors: tuple[FactorInterval, ...]
@@ -590,6 +938,7 @@ def _raw_node_evidence(
     cell: H3Cell,
     vehicle: VehicleProfile,
     config: FactorModelConfig,
+    strict_static_mode: bool = False,
 ) -> _RawNodeEvidence:
     reasons: list[str] = []
     missing = FactorInterval(
@@ -601,7 +950,9 @@ def _raw_node_evidence(
         _known_interval(_slope_margin(cell.slope, vehicle)),
         config.speed_floor_ratio,
     )
-    landcover = _landcover_speed_interval(cell, vehicle, config, missing, reasons)
+    landcover = _landcover_speed_interval(
+        cell, vehicle, config, missing, reasons, strict_static_mode
+    )
     soil, cone_index, sinkage = _soil_speed_interval(cell, vehicle, config, missing, reasons)
     tri = _floor_interval(
         _known_interval(_tri_speed_factor(cell.tri, config)),
@@ -610,8 +961,24 @@ def _raw_node_evidence(
     road = _known_interval(
         config.road_speed_factor if cell.has_road else config.offroad_speed_factor
     )
-    passable = _hard_constraints(cell, vehicle, config, cone_index, sinkage, reasons)
-    margin = _node_safety_margin(cell, vehicle, config, cone_index, sinkage, passable)
+    passable = _hard_constraints(
+        cell,
+        vehicle,
+        config,
+        cone_index,
+        sinkage,
+        reasons,
+        strict_static_mode,
+    )
+    margin = _node_safety_margin(
+        cell,
+        vehicle,
+        config,
+        cone_index,
+        sinkage,
+        passable,
+        strict_static_mode,
+    )
     confidence = (
         config.missing_confidence
         if any(reason.startswith(MISSING_REASON_PREFIX) for reason in reasons)
@@ -634,36 +1001,41 @@ def _landcover_speed_interval(
     config: FactorModelConfig,
     missing: FactorInterval,
     reasons: list[str],
+    strict_static_mode: bool,
 ) -> FactorInterval:
     if cell.landcover_code is None and cell.landcover_type is None:
         reasons.append("MISSING_LANDCOVER")
         return _floor_interval(missing, config.speed_floor_ratio)
 
-    is_water = (
-        cell.landcover_code == 5
-        or (cell.landcover_type or "").lower() == "water"
-    )
-    if is_water and cell.depth is not None and cell.depth <= vehicle.ground_clearance_m:
+    is_water = cell.landcover_code == 5 or (cell.landcover_type or "").lower() == "water"
+    if (
+        not strict_static_mode
+        and is_water
+        and cell.depth is not None
+        and cell.depth <= vehicle.ground_clearance_m
+    ):
         wading_speed = max(
             config.speed_floor_ratio,
             0.50 * (1.0 - cell.depth / max(vehicle.ground_clearance_m, 0.01)),
         )
         return _known_interval(wading_speed)
 
-    landcover_code = -1 if cell.landcover_code is None else cell.landcover_code
-    configured = config.landcover_speed_by_code.get(landcover_code)
-
-    if cell.rowspacing is not None and (
-        cell.landcover_code == 2 or (cell.landcover_type or "").lower() == "forest"
+    if (
+        not strict_static_mode
+        and cell.rowspacing is not None
+        and (cell.landcover_code == 2 or (cell.landcover_type or "").lower() == "forest")
     ):
-        safe_width = getattr(vehicle, "width_m", 2.2)
+        safe_width = vehicle.width_m or 2.2
         if cell.rowspacing >= safe_width:
-            base_speed = configured if configured is not None else 0.40
+            base_speed = config.landcover_speed_by_code.get(cell.landcover_code or -1, 0.40)
             clearance_factor = min(
                 1.0,
                 max(0.5, (cell.rowspacing - safe_width) / max(safe_width, 0.01) + 0.5),
             )
             return _known_interval(max(config.speed_floor_ratio, base_speed * clearance_factor))
+
+    landcover_code = -1 if cell.landcover_code is None else cell.landcover_code
+    configured = config.landcover_speed_by_code.get(landcover_code)
 
     if configured is not None:
         return _known_interval(configured)
@@ -723,6 +1095,7 @@ def _hard_constraints(
     cone_index: float | None,
     sinkage: float | None,
     reasons: list[str],
+    strict_static_mode: bool,
 ) -> bool:
     if not cell.is_passable:
         reasons.append("STATIC_BLOCKED")
@@ -732,21 +1105,16 @@ def _hard_constraints(
         or cell.landcover_code == 5
     )
     if is_water:
-        if cell.depth is not None:
-            if cell.depth > vehicle.ground_clearance_m:
-                reasons.append("WATER_DEPTH_LIMIT")
-                reasons.append("WATER")
-        else:
+        if strict_static_mode or cell.depth is None:
             reasons.append("WATER")
-    if (
-        (cell.landcover_type or "").lower() == "building"
-        or cell.landcover_code in {0, 6}
-    ):
-        reasons.append("BUILDING")
-    if cell.rowspacing is not None:
-        safe_width = getattr(vehicle, "width_m", 2.2)
+        if cell.depth is not None and cell.depth > vehicle.ground_clearance_m:
+            reasons.append("WATER_DEPTH_LIMIT")
+    if not strict_static_mode and cell.rowspacing is not None:
+        safe_width = vehicle.width_m or 2.2
         if cell.rowspacing < safe_width:
             reasons.append("ROWSPACING_BLOCKED")
+    if (cell.landcover_type or "").lower() == "building" or cell.landcover_code in {0, 6}:
+        reasons.append("BUILDING")
     if abs(cell.slope) > vehicle.max_climb_angle_deg:
         reasons.append("SLOPE_LIMIT")
     if cone_index is not None and cone_index < config.min_cone_index_kpa:
@@ -774,6 +1142,7 @@ def _node_safety_margin(
     cone_index: float | None,
     sinkage: float | None,
     passable: bool,
+    strict_static_mode: bool,
 ) -> float:
     if not passable:
         return 0.0
@@ -785,8 +1154,8 @@ def _node_safety_margin(
         margins.append(1.0 - sinkage / clearance)
     if cell.depth is not None and cell.depth <= vehicle.ground_clearance_m:
         margins.append(1.0 - cell.depth / max(vehicle.ground_clearance_m, 0.01))
-    if cell.rowspacing is not None:
-        safe_width = getattr(vehicle, "width_m", 2.2)
+    if not strict_static_mode and cell.rowspacing is not None:
+        safe_width = vehicle.width_m or 2.2
         if cell.rowspacing >= safe_width:
             margins.append(min(1.0, (cell.rowspacing - safe_width) / max(safe_width, 0.01)))
     return _clamp_ratio(min(margins))
@@ -846,6 +1215,7 @@ def _directed_edge_metrics(
     nodes: Mapping[str, NodeFactorMetrics],
     vehicle: VehicleProfile,
     config: FactorModelConfig,
+    environment: EnvironmentConfig | None,
 ) -> DirectedEdgeMetrics | None:
     first = nodes[from_h3]
     second = nodes[to_h3]
@@ -881,6 +1251,19 @@ def _directed_edge_metrics(
         safety_margin_nominal=margin,
         safety_margin_upper=margin,
         directed_slope_deg=slope,
+        environment_distance_m=(
+            {}
+            if environment is None
+            else {
+                _pressure_key(pressure): edge.geo_distance
+                * (
+                    environment_multiplier(source_cell, pressure, environment)[0]
+                    + environment_multiplier(target_cell, pressure, environment)[0]
+                )
+                / 2.0
+                for pressure in environment.comparison_pressures
+            }
+        ),
     )
 
 
@@ -980,9 +1363,7 @@ def _factor_model_from_mapping(data: dict[str, object]) -> FactorModelConfig:
     portsmap = _mapping(data, "portsmap")
     legacy_calibration = _mapping(data, "benefit") if schema_version == 1 else {}
     missing_key = (
-        "missing_speed_interval"
-        if schema_version == MODEL_SCHEMA_VERSION
-        else "missing_interval"
+        "missing_speed_interval" if schema_version == MODEL_SCHEMA_VERSION else "missing_interval"
     )
     missing = _sequence(uncertainty, missing_key, [0.25, 0.60, 0.85])
     if len(missing) != 3:
@@ -1117,9 +1498,7 @@ def _int_float_mapping(data: Mapping[str, object], key: str) -> dict[int, float]
         try:
             result[normalized] = float(value)
         except ValueError as exc:
-            raise ConfigError(
-                f"factor model field {key!r} must map integers to numbers."
-            ) from exc
+            raise ConfigError(f"factor model field {key!r} must map integers to numbers.") from exc
     return result
 
 
@@ -1134,9 +1513,7 @@ def _str_float_mapping(data: Mapping[str, object], key: str) -> dict[str, float]
         try:
             result[name] = float(value)
         except ValueError as exc:
-            raise ConfigError(
-                f"factor model field {key!r} must map strings to numbers."
-            ) from exc
+            raise ConfigError(f"factor model field {key!r} must map strings to numbers.") from exc
     return result
 
 

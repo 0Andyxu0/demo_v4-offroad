@@ -2,6 +2,8 @@ tile_build:
   dem_path: D:/Workspace/qdx数据/DEM-DSM/DEM_CGCS2000.tif
   landcover_path: D:/Workspace/qdx数据/矢量数据
   road_path: D:/Workspace/qdx数据/road/road_fina.shp
+  soil_path: D:/Workspace/demo_v1/data/soil_nanjing.tif
+  soil_catalog_path: D:/Workspace/demo_v1/data/soil_nanjing.tif.vat.dbf
   roi_layer_path: D:/Workspace/qdx数据/矢量数据/bound.shp
   output_dir: D:/Workspace/demo_v4/outputs/qdx_tiles
   res_fine: 14
@@ -14,6 +16,7 @@ route:
   planner_config_path: D:/Workspace/demo_v4/configs/deterministic_pareto_planner.yaml
   vehicle_path: D:/Workspace/demo_v4/configs/vehicle.yaml
   factor_model_path: D:/Workspace/demo_v4/configs/static_factor_model.yaml
+  static_planning_path: D:/Workspace/demo_v4/configs/static_gis_planning.yaml
   mission_profile: fastest
   max_candidate_paths: 5
   candidate_limit: 24

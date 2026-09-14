@@ -88,5 +88,18 @@ def load_vehicle(path: str) -> VehicleProfile:
         max_thrust_n=float(cast(float, data["max_thrust_n"])),
         tire_radius_m=float(cast(float, data["tire_radius_m"])),
         min_turn_radius_m=float(cast(float, data["min_turn_radius_m"])),
+        width_m=_optional_float(data, "width_m"),
+        wheelbase_m=_optional_float(data, "wheelbase_m"),
+        front_overhang_m=_optional_float(data, "front_overhang_m"),
+        rear_overhang_m=_optional_float(data, "rear_overhang_m"),
+        reference_point=str(data.get("reference_point", "rear_axle_center")),
     )
 
+
+def _optional_float(data: dict[str, object], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"vehicle field {key!r} must be numeric or null.")
+    return float(value)

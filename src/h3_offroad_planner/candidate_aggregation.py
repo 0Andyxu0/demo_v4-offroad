@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from math import isclose
+from math import isclose, isfinite
 
 from h3_offroad_planner.factor_model import (
     PHYSICAL_EVIDENCE_WARNING,
+    DecisionConfig,
     PathMetrics,
     evaluate_path_metrics,
 )
@@ -20,7 +21,7 @@ from h3_offroad_planner.route_models import (
     candidate_id_for_path,
 )
 
-__all__ = ["AggregationResult", "CandidateAggregator"]
+__all__ = ["AggregationResult", "CandidateAggregator", "select_robust_candidates"]
 
 EPSILON: float = 1.0e-9
 MISSION_ROLE: dict[str, str] = {
@@ -41,7 +42,7 @@ REPLAN_PROFILE: dict[str, str] = {
 
 @dataclass(frozen=True)
 class AggregationResult:
-    """One-to-five unique role candidates and recommendation diagnostics."""
+    """Unique role candidates or a bounded pre-display candidate pool."""
 
     candidates: tuple[RouteCandidate, ...]
     recommended_candidate_id: str
@@ -71,6 +72,8 @@ class CandidateAggregator:
         raw_candidates: list[GeneratedPath],
         mission_profile: str,
         max_candidates: int = 5,
+        *,
+        preserve_pool: bool = False,
     ) -> AggregationResult:
         """Return exact unique candidates, merged roles, and mission recommendation."""
         if mission_profile not in MISSION_PROFILES:
@@ -81,7 +84,9 @@ class CandidateAggregator:
             raise ValueError("raw_candidates must contain between 1 and 24 paths.")
         validated = self._validated_unique(raw_candidates)
         pareto = _pareto_candidates(validated)
-        representatives = self._cluster_representatives(pareto)
+        representatives = (
+            dict(validated) if preserve_pool else self._cluster_representatives(pareto)
+        )
         roles = _assign_metric_roles(representatives)
         fastest_path = next(
             path for path, assigned_roles in roles.items() if "fastest_eta" in assigned_roles
@@ -91,7 +96,12 @@ class CandidateAggregator:
         if independent is not None:
             representatives[independent.h3_path] = independent
             roles.setdefault(independent.h3_path, []).append("independent_backup")
-        candidates = self._route_candidates(representatives, roles, evidence)
+        candidates = self._route_candidates(
+            representatives,
+            roles,
+            evidence,
+            include_unassigned=preserve_pool,
+        )
         recommended, reference, warnings = _recommendation(
             mission_profile,
             candidates,
@@ -102,7 +112,10 @@ class CandidateAggregator:
             replace(candidate, is_recommended=candidate.candidate_id == recommended)
             for candidate in candidates
         )
-        candidates = _truncate_candidates(candidates, recommended, max_candidates)
+        if preserve_pool:
+            candidates = _truncate_candidate_pool(candidates, recommended, 24)
+        else:
+            candidates = _truncate_candidates(candidates, recommended, max_candidates)
         if recommended not in {candidate.candidate_id for candidate in candidates}:
             raise PlanningFailedError("candidate truncation removed the recommended route.")
         return AggregationResult(
@@ -203,9 +216,7 @@ class CandidateAggregator:
         except PlanningFailedError:
             pass
         survivors = [
-            candidate
-            for candidate in survivors
-            if not blocked.intersection(candidate.h3_path)
+            candidate for candidate in survivors if not blocked.intersection(candidate.h3_path)
         ]
         if not survivors:
             return None, {}
@@ -246,9 +257,13 @@ class CandidateAggregator:
         representatives: dict[tuple[str, ...], GeneratedPath],
         roles: dict[tuple[str, ...], list[str]],
         evidence: dict[str, object],
+        *,
+        include_unassigned: bool = False,
     ) -> tuple[RouteCandidate, ...]:
         candidates = []
-        for path, assigned_roles in roles.items():
+        paths = representatives if include_unassigned else roles
+        for path in paths:
+            assigned_roles = roles.get(path, [])
             generated = representatives[path]
             ordered_roles = tuple(role for role in PATH_ROLES if role in assigned_roles)
             candidate_evidence = evidence if "independent_backup" in ordered_roles else {}
@@ -264,15 +279,14 @@ class CandidateAggregator:
                     independence_evidence=candidate_evidence,
                     geojson=self._route_geojson(path),
                     generation_profile=generated.generation_profile,
-                    replan_profile=REPLAN_PROFILE[ordered_roles[0]],
+                    replan_profile=(REPLAN_PROFILE[ordered_roles[0]] if ordered_roles else "eta"),
                 )
             )
         return tuple(sorted(candidates, key=_route_candidate_sort_key))
 
     def _route_geojson(self, path: tuple[str, ...]) -> dict[str, object]:
         coordinates = [
-            [self.graph.cells[cell_id].lng, self.graph.cells[cell_id].lat]
-            for cell_id in path
+            [self.graph.cells[cell_id].lng, self.graph.cells[cell_id].lat] for cell_id in path
         ]
         return {
             "type": "Feature",
@@ -314,6 +328,151 @@ class CandidateAggregator:
         return self.graph.cells[cell_id].parent_h3 or cell_id
 
 
+def select_robust_candidates(
+    candidates: tuple[RouteCandidate, ...],
+    policy: DecisionConfig,
+    current_candidate_id: str | None = None,
+    request_pressures: tuple[float, ...] = (),
+) -> tuple[tuple[RouteCandidate, ...], str, dict[str, object], tuple[str, ...]]:
+    """Apply the candidate-pool detour budget, robust order, and optional hysteresis."""
+    valid = [candidate for candidate in candidates if candidate.trajectory.get("status") == "valid"]
+    if not valid:
+        fallback = next(
+            (candidate for candidate in candidates if candidate.is_recommended), candidates[0]
+        )
+        output = _truncate_candidate_pool(candidates, fallback.candidate_id, policy.display_limit)
+        return (
+            output,
+            fallback.candidate_id,
+            {
+                "length_reference_scope": "candidate_pool",
+                "length_reference_m": None,
+                "geometry_valid_count": 0,
+            },
+            ("NO_GEOMETRY_VALID_CANDIDATE",),
+        )
+    length_reference = min(_trajectory_number(candidate, "length_m") for candidate in valid)
+    limit = (1.0 + policy.detour_ratio) * length_reference
+    budgeted = [
+        candidate
+        for candidate in valid
+        if _trajectory_number(candidate, "length_m") <= limit + EPSILON
+    ]
+    selected = min(
+        budgeted,
+        key=lambda candidate: _robust_key(candidate, policy, request_pressures),
+    )
+    switch_reason = "initial_robust_selection"
+    current: RouteCandidate | None = next(
+        (candidate for candidate in budgeted if candidate.candidate_id == current_candidate_id),
+        None,
+    )
+    if current is not None and current.candidate_id != selected.candidate_id:
+        current_clearance = _clearance_bucket(current, policy)
+        selected_clearance = _clearance_bucket(selected, policy)
+        current_j = _worst_environment_distance(current, request_pressures)
+        selected_j = _worst_environment_distance(selected, request_pressures)
+        improvement = (
+            1.0
+            if current_j <= EPSILON and selected_j < current_j
+            else 0.0
+            if current_j <= EPSILON
+            else (current_j - selected_j) / current_j
+        )
+        if (
+            selected_clearance <= current_clearance
+            and improvement <= policy.switch_relative_improvement
+        ):
+            selected = current
+            switch_reason = "retained_by_hysteresis"
+        elif selected_clearance > current_clearance:
+            switch_reason = "clearance_level_improved"
+        else:
+            switch_reason = "environment_improvement_exceeded_threshold"
+    output = tuple(
+        replace(candidate, is_recommended=candidate.candidate_id == selected.candidate_id)
+        for candidate in sorted(
+            budgeted,
+            key=lambda candidate: _robust_key(candidate, policy, request_pressures),
+        )[: policy.display_limit]
+    )
+    if selected.candidate_id not in {candidate.candidate_id for candidate in output}:
+        output = (replace(selected, is_recommended=True), *output[:-1])
+        output = tuple(
+            replace(candidate, is_recommended=candidate.candidate_id == selected.candidate_id)
+            for candidate in output
+        )
+    conditional = any(
+        _trajectory_number(candidate, "unknown_coverage_m") > 0.0 for candidate in output
+    )
+    warnings = ("CONDITIONAL_ENVIRONMENT_EVIDENCE",) if conditional else ()
+    return (
+        output,
+        selected.candidate_id,
+        {
+            "length_reference_scope": "candidate_pool",
+            "length_reference_m": length_reference,
+            "detour_ratio": policy.detour_ratio,
+            "length_budget_m": limit,
+            "geometry_valid_count": len(valid),
+            "budget_candidate_count": len(budgeted),
+            "clearance_target_m": policy.clearance_target_m,
+            "switch_reason": switch_reason,
+            "previous_candidate_id": current_candidate_id,
+            "request_pressures": list(request_pressures),
+        },
+        warnings,
+    )
+
+
+def _robust_key(
+    candidate: RouteCandidate,
+    policy: DecisionConfig,
+    request_pressures: tuple[float, ...] = (),
+) -> tuple[float, float, float, str]:
+    return (
+        -float(_clearance_bucket(candidate, policy)),
+        _worst_environment_distance(candidate, request_pressures),
+        _trajectory_number(candidate, "length_m"),
+        candidate.candidate_id,
+    )
+
+
+def _clearance_bucket(candidate: RouteCandidate, policy: DecisionConfig) -> int:
+    raw = candidate.trajectory.get("min_clearance_m")
+    clearance = 0.0 if not isinstance(raw, (int, float)) else float(raw)
+    capped = min(clearance, policy.clearance_target_m)
+    tolerance = max(policy.clearance_tolerance_m, EPSILON)
+    return int((capped + tolerance / 2.0) / tolerance)
+
+
+def _worst_environment_distance(
+    candidate: RouteCandidate,
+    request_pressures: tuple[float, ...] = (),
+) -> float:
+    raw = candidate.trajectory.get("environment_distance_m", {})
+    if not isinstance(raw, dict):
+        return _trajectory_number(candidate, "length_m")
+    requested_keys = {_pressure_key(pressure) for pressure in request_pressures}
+    values = [
+        float(value)
+        for key, value in raw.items()
+        if isinstance(value, (int, float)) and (not requested_keys or key in requested_keys)
+    ]
+    return max(values, default=_trajectory_number(candidate, "length_m"))
+
+
+def _pressure_key(pressure_kpa: float) -> str:
+    return f"{pressure_kpa:.6f}".rstrip("0").rstrip(".")
+
+
+def _trajectory_number(candidate: RouteCandidate, field: str) -> float:
+    value = candidate.trajectory.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+        raise PlanningInputError(f"candidate trajectory field {field!r} must be finite numeric.")
+    return float(value)
+
+
 def _pareto_candidates(
     candidates: dict[tuple[str, ...], GeneratedPath],
 ) -> dict[tuple[str, ...], GeneratedPath]:
@@ -330,9 +489,9 @@ def _pareto_candidates(
 def _dominates(first: GeneratedPath, second: GeneratedPath) -> bool:
     first_values = tuple(first.objectives.values())
     second_values = tuple(second.objectives.values())
-    return all(
-        a <= b + EPSILON for a, b in zip(first_values, second_values, strict=True)
-    ) and any(a < b - EPSILON for a, b in zip(first_values, second_values, strict=True))
+    return all(a <= b + EPSILON for a, b in zip(first_values, second_values, strict=True)) and any(
+        a < b - EPSILON for a, b in zip(first_values, second_values, strict=True)
+    )
 
 
 def _assign_metric_roles(
@@ -459,5 +618,21 @@ def _travel_cost_key(path: GeneratedPath) -> tuple[float, float, float, tuple[st
 def _route_candidate_sort_key(
     candidate: RouteCandidate,
 ) -> tuple[int, float, float, tuple[str, ...]]:
-    role_index = min(PATH_ROLES.index(role) for role in candidate.roles)
+    role_index = min(
+        (PATH_ROLES.index(role) for role in candidate.roles),
+        default=len(PATH_ROLES),
+    )
     return (role_index, candidate.metrics.eta_s, candidate.metrics.distance_m, candidate.h3_path)
+
+
+def _truncate_candidate_pool(
+    candidates: tuple[RouteCandidate, ...],
+    recommended: str,
+    limit: int,
+) -> tuple[RouteCandidate, ...]:
+    """Bound an internal pool while preserving its selected candidate."""
+    if len(candidates) <= limit:
+        return candidates
+    selected = next(candidate for candidate in candidates if candidate.candidate_id == recommended)
+    remainder = [candidate for candidate in candidates if candidate.candidate_id != recommended]
+    return (selected, *remainder[: limit - 1])

@@ -5,5 +5,19 @@ from h3_offroad_planner.preprocessing.gis_preprocessor import (
     RasterLayer,
     RasterQuality,
 )
+from h3_offroad_planner.preprocessing.hydrology import (
+    HydrologyArtifacts,
+    HydrologyConfig,
+    map_twi_to_drainage,
+    preprocess_hydrology,
+)
 
-__all__ = ["GISPreprocessor", "RasterLayer", "RasterQuality"]
+__all__ = [
+    "GISPreprocessor",
+    "HydrologyArtifacts",
+    "HydrologyConfig",
+    "RasterLayer",
+    "RasterQuality",
+    "map_twi_to_drainage",
+    "preprocess_hydrology",
+]

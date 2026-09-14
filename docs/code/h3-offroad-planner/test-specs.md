@@ -74,7 +74,24 @@
 | CL-039 | 双车辆复用静态 Tile | 连续两次车辆评估后输入 cell/edge 对象值完全不变 | `tests/test_closed_loop_factor.py::test_cl039_route_time_evaluation_does_not_mutate_reusable_tile` |
 | CL-040 | 完整计划身份确定性 | 相同闭环输入重建的计划、候选、角色和哈希完全一致 | `tests/test_closed_loop_persistence.py::test_cl040_complete_route_plan_identity_is_deterministic` |
 
-## 7. 门禁
+## 7. 静态 GIS 土壤—机动迁移验收
+
+| ID | 行为 | Pytest 节点 |
+|---|---|---|
+| T01 | 分类土壤不伪造水分/工程类别 | `tests/test_static_gis_transfer.py::test_t01_soil_catalog_stays_categorical_without_default_moisture` |
+| T02 | TWI→D 截断且无效值保持未知 | `tests/test_static_gis_transfer.py::test_t02_twi_mapping_preserves_invalid_cells_and_clips` |
+| T03 | 水文阈值成对冻结、上游状态显式 | `tests/test_static_gis_transfer.py::test_t03_hydrology_policy_requires_frozen_threshold_pair` |
+| T04 | 100/110 m 双路线随请求压力切换 | `tests/test_static_gis_transfer.py::test_t04_wet_and_dry_requests_choose_different_budgeted_routes` |
+| T05 | 后轴参考矩形覆盖完整车辆尺寸 | `tests/test_static_gis_transfer.py::test_t05_rear_axle_reference_footprint_uses_all_vehicle_dimensions` |
+| T06 | 直线段执行连续整车扫掠 | `tests/test_static_gis_transfer.py::test_t06_straight_sweep_is_continuous_between_endpoint_poses` |
+| T07 | 圆弧满足最小半径或明确失败 | `tests/test_static_gis_transfer.py::test_t07_fillet_obeys_radius_or_reports_insufficient_space` |
+| T08 | 新模式水体硬阻断且行距不是净空 | `tests/test_static_gis_transfer.py::test_t08_strict_static_mode_blocks_water_and_does_not_use_rowspacing` |
+| T09 | 环境倍率独立于 travel_cost | `tests/test_static_gis_transfer.py::test_t09_environment_multiplier_uses_surface_and_drainage_not_travel_cost` |
+| T10 | 超过 15% 绕行预算的候选排除 | `tests/test_static_gis_transfer.py::test_t10_detour_budget_excludes_overlong_candidate` |
+| T11 | 小收益保留旧路、旧路失效立即切换 | `tests/test_static_gis_transfer.py::test_t11_hysteresis_retains_small_gain_but_invalid_old_route_switches` |
+| T12 | 投影静态栅格按 WGS84 H3 中心正确采样 | `tests/test_static_gis_transfer.py::test_t12_projected_static_raster_is_sampled_from_wgs84_centers` |
+
+## 8. 门禁
 
 唯一基线验收入口：
 

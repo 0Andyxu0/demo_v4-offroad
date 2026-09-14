@@ -14,6 +14,8 @@ import numpy.typing as npt
 import pandas as pd
 import rasterio
 from affine import Affine
+from rasterio.crs import CRS
+from rasterio.warp import transform as transform_coordinates
 from rasterio.windows import Window
 from shapely.geometry import MultiPolygon, Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
@@ -156,8 +158,7 @@ class H3GridBuilder:
             raise GridBuildError("dem, slope, and tri matrices must have the same shape.")
         cell_ids = _roi_polyfill_cells(roi_geometry, self.res_fine, self.max_cells)
         records = [
-            self._record_from_cell_center(cell_id, dem, slope, tri, affine)
-            for cell_id in cell_ids
+            self._record_from_cell_center(cell_id, dem, slope, tri, affine) for cell_id in cell_ids
         ]
         valid_records = [record for record in records if record is not None]
         if not allow_uncovered and len(valid_records) < len(records):
@@ -191,8 +192,7 @@ class H3GridBuilder:
                 or roi_geometry.intersects(_h3_polygon(c))
             ]
         records = [
-            self._record_from_cell_center(cell_id, dem, slope, tri, affine)
-            for cell_id in cell_ids
+            self._record_from_cell_center(cell_id, dem, slope, tri, affine) for cell_id in cell_ids
         ]
         valid_records = [record for record in records if record is not None]
         if not valid_records:
@@ -224,12 +224,14 @@ class H3GridBuilder:
                 bool(row.is_passable) and factor != inf
                 for row, factor in zip(frame.itertuples(index=False), factors, strict=True)
             ]
-            return frame
-        return _attach_vector_landcover(
-            frame,
-            landcover,
-            self.land_cover_factors,
-            self.default_landcover_factor,
+            return _attach_surface_response(frame)
+        return _attach_surface_response(
+            _attach_vector_landcover(
+                frame,
+                landcover,
+                self.land_cover_factors,
+                self.default_landcover_factor,
+            )
         )
 
     def attach_soil(
@@ -243,7 +245,57 @@ class H3GridBuilder:
         if soil is None:
             return _attach_empty_soil_columns(frame)
         codes = _dominant_soil_codes_or_fallback(soil, frame)
-        return _apply_soil_catalog(frame, codes, soil_catalog or {})
+        frame = _apply_soil_catalog(frame, codes, soil_catalog or {})
+        frame["soil_source"] = str(soil.path)
+        frame["source_support_m"] = _raster_support_m(soil, frame)
+        return frame
+
+    def attach_drainage(
+        self,
+        h3_df: pd.DataFrame,
+        drainage: RasterLayer | None,
+        twi: RasterLayer | None = None,
+        validity: RasterLayer | None = None,
+        boundary: RasterLayer | None = None,
+    ) -> pd.DataFrame:
+        """Attach cached static TWI/D evidence without a request pressure scenario."""
+        frame = _require_h3_frame(h3_df)
+        if drainage is None and twi is None and validity is None and boundary is None:
+            return frame
+        drainage_values = (
+            _sample_raster_values(drainage, frame)
+            if drainage is not None
+            else [float("nan")] * len(frame)
+        )
+        valid_values = (
+            _sample_raster_values(validity, frame) if validity is not None else [1.0] * len(frame)
+        )
+        boundary_values = (
+            _sample_raster_values(boundary, frame) if boundary is not None else [0.0] * len(frame)
+        )
+        twi_values = (
+            _sample_raster_values(twi, frame) if twi is not None else [float("nan")] * len(frame)
+        )
+        sensitivities: list[float | None] = []
+        twi_output: list[float | None] = []
+        valid_output: list[bool] = []
+        for d_value, twi_value, valid_value in zip(
+            drainage_values, twi_values, valid_values, strict=True
+        ):
+            evidence_valid = isfinite(valid_value) and valid_value > 0.0
+            valid_cell = evidence_valid and isfinite(d_value)
+            if valid_cell and not 0.0 <= d_value <= 1.0:
+                raise GridBuildError("drainage sensitivity raster values must be in [0, 1].")
+            valid_output.append(valid_cell)
+            sensitivities.append(float(d_value) if valid_cell else None)
+            twi_output.append(float(twi_value) if evidence_valid and isfinite(twi_value) else None)
+        frame["twi"] = twi_output
+        frame["drainage_sensitivity"] = sensitivities
+        frame["drainage_valid"] = valid_output
+        frame["drainage_boundary_affected"] = [
+            bool(isfinite(value) and value > 0.0) for value in boundary_values
+        ]
+        return frame
 
     def attach_roads(self, h3_df: pd.DataFrame, roads: gpd.GeoDataFrame | None) -> pd.DataFrame:
         """Mark sampled cells that intersect a road proximity buffer."""
@@ -425,6 +477,19 @@ def _require_h3_frame(h3_df: pd.DataFrame) -> pd.DataFrame:
         frame["score"] = 0.0
     if "cost_score" not in frame.columns:
         frame["cost_score"] = 1.0 - frame["score"].astype(float)
+    defaults: dict[str, object] = {
+        "soil_source": None,
+        "source_support_m": None,
+        "twi": None,
+        "drainage_sensitivity": None,
+        "drainage_valid": False,
+        "drainage_boundary_affected": False,
+        "surface_response": None,
+        "surface_evidence": None,
+    }
+    for column, value in defaults.items():
+        if column not in frame.columns:
+            frame[column] = pd.Series([value] * len(frame), index=frame.index)
     return frame
 
 
@@ -541,10 +606,7 @@ def _dominant_vector_landcover_details(
         current_is_road = best_code == 8 if best_code is not None else False
 
         if (is_obstacle and not current_is_obstacle and area > 0.05 * cell_area) or (
-            is_road
-            and not current_is_obstacle
-            and not current_is_road
-            and area > 0.10 * cell_area
+            is_road and not current_is_obstacle and not current_is_road and area > 0.10 * cell_area
         ):
             should_update = True
         elif (current_is_obstacle and not is_obstacle) or (
@@ -557,9 +619,7 @@ def _dominant_vector_landcover_details(
         if should_update:
             best_area = area
             best_code = code
-            best_depth = (
-                _optional_float(feature.get("depth")) if "depth" in feature.index else None
-            )
+            best_depth = _optional_float(feature.get("depth")) if "depth" in feature.index else None
             best_rowspacing = (
                 _optional_float(feature.get("rowspacing"))
                 if "rowspacing" in feature.index
@@ -616,6 +676,14 @@ def _h3_frame_from_records(records: list[dict[str, float | str]]) -> pd.DataFram
     grouped["soil_texture"] = None
     grouped["uscs"] = None
     grouped["soil_moisture"] = None
+    grouped["soil_source"] = None
+    grouped["source_support_m"] = None
+    grouped["twi"] = None
+    grouped["drainage_sensitivity"] = None
+    grouped["drainage_valid"] = False
+    grouped["drainage_boundary_affected"] = False
+    grouped["surface_response"] = None
+    grouped["surface_evidence"] = None
     grouped["has_road"] = False
     grouped["is_passable"] = True
     grouped["score"] = 0.0
@@ -680,15 +748,18 @@ def _oversize_roi_message(cell_count: int, max_cells: int) -> str:
 
 def _sample_raster_values(layer: RasterLayer, frame: pd.DataFrame) -> list[float]:
     with rasterio.open(layer.path) as src:
-        coordinates = [
-            (_row_float(row, "lng"), _row_float(row, "lat"))
-            for row in frame.itertuples(index=False)
-        ]
+        lng = [_row_float(row, "lng") for row in frame.itertuples(index=False)]
+        lat = [_row_float(row, "lat") for row in frame.itertuples(index=False)]
+        if src.crs != CRS.from_string(CRS_WGS84):
+            lng, lat = transform_coordinates(CRS.from_string(CRS_WGS84), src.crs, lng, lat)
+        coordinates = list(zip(lng, lat, strict=True))
         return [float(value[0]) for value in src.sample(coordinates)]
 
 
 def _dominant_soil_codes_or_fallback(layer: RasterLayer, frame: pd.DataFrame) -> list[int | None]:
     try:
+        if CRS.from_string(layer.crs) != CRS.from_string(CRS_WGS84):
+            raise GridBuildError("area-dominance soil sampling requires WGS84 raster geometry")
         if layer.width * layer.height > AREA_DOMINANCE_MAX_PIXELS:
             raise GridBuildError("soil raster is too large for area-dominance sampling")
         return _dominant_soil_codes(layer, frame)
@@ -766,6 +837,8 @@ def _h3_polygon(h3index: str) -> Polygon:
 def _attach_empty_soil_columns(frame: pd.DataFrame) -> pd.DataFrame:
     for column in ("soil_code", "soil_type", "soil_texture", "uscs", "soil_moisture"):
         frame[column] = None
+    frame["soil_source"] = None
+    frame["source_support_m"] = None
     return frame
 
 
@@ -851,8 +924,7 @@ def _point_near_road(
 ) -> bool:
     candidate_indexes = list(spatial_index.query(point.buffer(buffer_deg), predicate="intersects"))
     return any(
-        roads.geometry.iloc[int(index)].distance(point) <= buffer_deg
-        for index in candidate_indexes
+        roads.geometry.iloc[int(index)].distance(point) <= buffer_deg for index in candidate_indexes
     )
 
 
@@ -881,6 +953,14 @@ def _cells_from_frame(frame: pd.DataFrame) -> dict[str, H3Cell]:
             sinkage_m=_optional_float(getattr(row, "sinkage_m", None)),
             sinkage_resistance=_optional_float(getattr(row, "sinkage_resistance", None)),
             soil_mobility=_optional_float(getattr(row, "soil_mobility", None)),
+            soil_source=_optional_str(getattr(row, "soil_source", None)),
+            source_support_m=_optional_float(getattr(row, "source_support_m", None)),
+            twi=_optional_float(getattr(row, "twi", None)),
+            drainage_sensitivity=_optional_float(getattr(row, "drainage_sensitivity", None)),
+            drainage_valid=bool(getattr(row, "drainage_valid", False)),
+            drainage_boundary_affected=bool(getattr(row, "drainage_boundary_affected", False)),
+            surface_response=_optional_float(getattr(row, "surface_response", None)),
+            surface_evidence=_optional_str(getattr(row, "surface_evidence", None)),
             has_road=bool(row.has_road),
             parent_h3=str(row.parent_h3),
             is_passable=bool(row.is_passable),
@@ -964,3 +1044,33 @@ def _haversine_m(lat_a: float, lng_a: float, lat_b: float, lng_b: float) -> floa
     second_lat = radians(lat_b)
     root = sin(d_lat / 2.0) ** 2 + cos(first_lat) * cos(second_lat) * sin(d_lng / 2.0) ** 2
     return 2.0 * EARTH_RADIUS_M * atan2(sqrt(root), sqrt(max(0.0, 1.0 - root)))
+
+
+def _attach_surface_response(frame: pd.DataFrame) -> pd.DataFrame:
+    responses: list[float | None] = []
+    evidence: list[str | None] = []
+    for value in frame["landcover_code"]:
+        code = _optional_int(value)
+        if code == 8:
+            responses.append(0.0)
+            evidence.append("mapped_impervious_surface")
+        elif code in {1, 2, 3, 4, 7, 9}:
+            responses.append(1.0)
+            evidence.append("mapped_unpaved_surface")
+        else:
+            responses.append(None)
+            evidence.append(None)
+    frame["surface_response"] = responses
+    frame["surface_evidence"] = evidence
+    return frame
+
+
+def _raster_support_m(layer: RasterLayer, frame: pd.DataFrame) -> float:
+    with rasterio.open(layer.path) as src:
+        x_resolution = abs(float(src.transform.a))
+        y_resolution = abs(float(src.transform.e))
+        if src.crs is not None and src.crs.is_geographic:
+            center_lat = float(pd.to_numeric(frame["lat"]).mean())
+            x_resolution *= 111_320.0 * max(cos(radians(center_lat)), 0.01)
+            y_resolution *= 111_320.0
+        return max(x_resolution, y_resolution)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from math import isfinite
 from types import MappingProxyType
 
@@ -36,12 +36,8 @@ MISSION_PROFILES: tuple[str, ...] = (
     "economy",
     "resilient",
 )
-ROUTE_STATES: frozenset[str] = frozenset(
-    {"active", "safe_hold", "superseded", "invalidated"}
-)
-BLOCKAGE_STATES: frozenset[str] = frozenset(
-    {"tentative", "confirmed", "cleared", "expired"}
-)
+ROUTE_STATES: frozenset[str] = frozenset({"active", "safe_hold", "superseded", "invalidated"})
+BLOCKAGE_STATES: frozenset[str] = frozenset({"tentative", "confirmed", "cleared", "expired"})
 
 
 @dataclass(frozen=True)
@@ -59,6 +55,7 @@ class RouteCandidate:
     geojson: Mapping[str, object] = field(default_factory=dict)
     generation_profile: str = "unknown"
     replan_profile: str = "eta"
+    trajectory: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.candidate_id or not self.h3_path:
@@ -78,6 +75,12 @@ class RouteCandidate:
             MappingProxyType(dict(self.independence_evidence)),
         )
         object.__setattr__(self, "geojson", MappingProxyType(dict(self.geojson)))
+        trajectory = dict(self.trajectory)
+        if trajectory:
+            status = trajectory.get("status")
+            if status not in {"valid", "invalid", "not_evaluated", "incomplete"}:
+                raise ValueError("candidate trajectory status is invalid.")
+        object.__setattr__(self, "trajectory", MappingProxyType(trajectory))
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible mapping in canonical field order."""
@@ -93,6 +96,7 @@ class RouteCandidate:
             "geojson": dict(self.geojson),
             "generation_profile": self.generation_profile,
             "replan_profile": self.replan_profile,
+            "trajectory": dict(self.trajectory),
         }
 
 
@@ -109,6 +113,8 @@ class RoutePlan:
     static_input_hash: str
     graph_topology_hash: str
     candidates: tuple[RouteCandidate, ...]
+    planning_policy_hash: str = ""
+    scenario_hash: str = ""
     aggregation_stats: Mapping[str, object] = field(default_factory=dict)
     output_files: Mapping[str, str] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
@@ -140,7 +146,7 @@ class RoutePlan:
 
     def identity_payload(self) -> dict[str, object]:
         """Return deterministic fields participating in stable plan identity."""
-        return {
+        payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "mission_profile": self.mission_profile,
             "recommended_candidate_id": self.recommended_candidate_id,
@@ -152,6 +158,19 @@ class RoutePlan:
             "candidate_ids": [candidate.candidate_id for candidate in self.candidates],
             "candidate_roles": [list(candidate.roles) for candidate in self.candidates],
         }
+        if self.schema_version >= 2:
+            if not self.planning_policy_hash or not self.scenario_hash:
+                raise ValueError("schema-v2 plans require policy and scenario hashes.")
+            payload.update(
+                {
+                    "planning_policy_hash": self.planning_policy_hash,
+                    "scenario_hash": self.scenario_hash,
+                    "trajectory_ids": [
+                        candidate.trajectory.get("trajectory_id") for candidate in self.candidates
+                    ],
+                }
+            )
+        return payload
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete JSON-compatible public plan contract."""
@@ -166,6 +185,8 @@ class RoutePlan:
             "factor_model_hash": self.factor_model_hash,
             "static_input_hash": self.static_input_hash,
             "graph_topology_hash": self.graph_topology_hash,
+            "planning_policy_hash": self.planning_policy_hash,
+            "scenario_hash": self.scenario_hash,
             "candidates": [candidate.to_dict() for candidate in self.candidates],
             "aggregation_stats": dict(self.aggregation_stats),
             "output_files": dict(self.output_files),
@@ -189,6 +210,7 @@ class RouteSelection:
     state: str = "active"
     replan_version: int = 0
     selection_version: int = 1
+    active_trajectory: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.plan_id or not self.candidate_id or not self.active_h3_path:
@@ -199,13 +221,29 @@ class RouteSelection:
             raise ValueError(f"selection state must be one of {sorted(ROUTE_STATES)}.")
         if self.replan_version < 0 or self.selection_version <= 0:
             raise ValueError("selection versions are outside their valid ranges.")
+        object.__setattr__(
+            self,
+            "active_trajectory",
+            MappingProxyType(dict(self.active_trajectory)),
+        )
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible persisted selection mapping."""
-        payload = asdict(self)
-        payload["active_h3_path"] = list(self.active_h3_path)
-        payload["active_metrics"] = self.active_metrics.to_dict()
-        return payload
+        return {
+            "plan_id": self.plan_id,
+            "candidate_id": self.candidate_id,
+            "selected_role": self.selected_role,
+            "active_h3_path": list(self.active_h3_path),
+            "active_metrics": self.active_metrics.to_dict(),
+            "vehicle_hash": self.vehicle_hash,
+            "factor_model_hash": self.factor_model_hash,
+            "static_input_hash": self.static_input_hash,
+            "graph_topology_hash": self.graph_topology_hash,
+            "state": self.state,
+            "replan_version": self.replan_version,
+            "selection_version": self.selection_version,
+            "active_trajectory": dict(self.active_trajectory),
+        }
 
 
 @dataclass(frozen=True)

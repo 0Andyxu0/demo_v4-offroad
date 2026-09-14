@@ -23,6 +23,10 @@ from h3_offroad_planner.models import (
     RouteRequest,
     TileBuildRequest,
 )
+from h3_offroad_planner.preprocessing.hydrology import (
+    HydrologyConfig,
+    preprocess_hydrology,
+)
 from h3_offroad_planner.replanning import ReplanPolicy, replan_route
 from h3_offroad_planner.route_models import BlockageRecord, ReplanRequest, ReplanResult
 from h3_offroad_planner.route_persistence import load_route_graph_snapshot, select_route
@@ -32,6 +36,7 @@ from h3_offroad_planner.tiling import TILE_MANIFEST_NAME, build_h3_tile_cache
 __all__ = [
     "main",
     "run_delivery_payload",
+    "run_hydrology_payload",
     "run_route_payload",
     "run_replan_payload",
     "run_select_payload",
@@ -39,6 +44,20 @@ __all__ = [
 ]
 
 EXIT_REQUEST_ERROR: int = 2
+HYDROLOGY_FIELDS: frozenset[str] = frozenset(
+    {
+        "analysis_resolution_m",
+        "backend",
+        "dem_path",
+        "flow_method",
+        "grass_executable",
+        "mapping_t0",
+        "mapping_t1",
+        "output_dir",
+        "upstream_complete",
+        "version",
+    }
+)
 TILE_BUILD_FIELDS: frozenset[str] = frozenset(
     {
         "continue_on_error",
@@ -54,6 +73,10 @@ TILE_BUILD_FIELDS: frozenset[str] = frozenset(
         "sampling_mode",
         "soil_catalog_path",
         "soil_path",
+        "twi_path",
+        "drainage_path",
+        "drainage_validity_path",
+        "drainage_boundary_path",
         "tile_res",
     }
 )
@@ -85,6 +108,7 @@ ROUTE_FIELDS: frozenset[str] = frozenset(
         "max_candidate_paths",
         "candidate_limit",
         "penalty_factor",
+        "static_planning_path",
     }
 )
 SELECT_FIELDS: frozenset[str] = frozenset(
@@ -129,7 +153,14 @@ def _build_parser() -> argparse.ArgumentParser:
     """Create the delivery CLI parser."""
     parser = argparse.ArgumentParser(prog="h3-offroad-planner")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("build-tiles", "plan", "run", "select", "replan"):
+    for command in (
+        "preprocess-hydrology",
+        "build-tiles",
+        "plan",
+        "run",
+        "select",
+        "replan",
+    ):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--request", required=True, help="YAML request file path")
     return parser
@@ -160,6 +191,8 @@ def _call_with_progress(
 def _dispatch(command: str, request_path: Path) -> dict[str, object]:
     """Dispatch one validated CLI command from a YAML request file."""
     payload = _load_yaml_mapping(request_path)
+    if command == "preprocess-hydrology":
+        return run_hydrology_payload(payload)
     if command == "build-tiles":
         return cast(
             dict[str, object],
@@ -182,6 +215,27 @@ def _dispatch(command: str, request_path: Path) -> dict[str, object]:
 
 
 ProgressCallback = Callable[[str, int, str], None]
+
+
+def run_hydrology_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Run the configured offline GRASS hydrology preprocessing request."""
+    _reject_unknown_fields(payload, HYDROLOGY_FIELDS)
+    config = HydrologyConfig(
+        backend=_string_or_default(payload, "backend", "grass_r_watershed"),
+        flow_method=_string_or_default(payload, "flow_method", "mfd"),
+        analysis_resolution_m=_optional_float(payload, "analysis_resolution_m"),
+        mapping_t0=_optional_float(payload, "mapping_t0"),
+        mapping_t1=_optional_float(payload, "mapping_t1"),
+        upstream_complete=_optional_bool(payload, "upstream_complete"),
+        version=_string_or_default(payload, "version", "twi_drainage_v1"),
+    )
+    artifacts = preprocess_hydrology(
+        _required_string(payload, "dem_path"),
+        _required_string(payload, "output_dir"),
+        config,
+        grass_executable=_string_or_default(payload, "grass_executable", "grass"),
+    )
+    return {name: str(value) for name, value in vars(artifacts).items()}
 
 
 def run_tile_payload(
@@ -320,6 +374,10 @@ def _tile_request(payload: dict[str, object]) -> TileBuildRequest:
             output_dir=_required_string(payload, "output_dir"),
             soil_path=_optional_string(payload, "soil_path"),
             soil_catalog_path=_optional_string(payload, "soil_catalog_path"),
+            twi_path=_optional_string(payload, "twi_path"),
+            drainage_path=_optional_string(payload, "drainage_path"),
+            drainage_validity_path=_optional_string(payload, "drainage_validity_path"),
+            drainage_boundary_path=_optional_string(payload, "drainage_boundary_path"),
             road_path=_optional_string(payload, "road_path"),
             res_fine=_integer_or_default(payload, "res_fine", 13),
             tile_res=_integer_or_default(payload, "tile_res", 10),
@@ -366,6 +424,7 @@ def _route_request(payload: dict[str, object]) -> RouteRequest:
             max_candidate_paths=_integer_or_default(payload, "max_candidate_paths", 5),
             candidate_limit=_integer_or_default(payload, "candidate_limit", 24),
             penalty_factor=_float_or_default(payload, "penalty_factor", 0.25),
+            static_planning_path=_optional_string(payload, "static_planning_path"),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"invalid route request: {exc}") from exc
@@ -440,6 +499,15 @@ def _bool_or_default(payload: dict[str, object], key: str, default: bool) -> boo
     value = payload[key]
     if not isinstance(value, bool):
         raise ConfigError(f"request field {key!r} must be bool.")
+    return value
+
+
+def _optional_bool(payload: dict[str, object], key: str) -> bool | None:
+    if key not in payload or payload[key] is None:
+        return None
+    value = payload[key]
+    if not isinstance(value, bool):
+        raise ConfigError(f"request field {key!r} must be bool or null.")
     return value
 
 

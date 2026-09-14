@@ -1,0 +1,48 @@
+version: static_gis_route_v2
+
+soil:
+  mode: categorical_drainage
+  raster_path: D:/Workspace/demo_v1/data/soil_nanjing.tif
+  category_table_path: D:/Workspace/demo_v1/data/soil_nanjing.tif.vat.dbf
+  default_theta_v: null
+  sensitivity_policy: shared_assumption
+  shared_sensitivity: 1.0
+
+hydrology:
+  backend: grass_r_watershed
+  flow_method: mfd
+  analysis_resolution_m: null
+  mapping_t0: null
+  mapping_t1: null
+  unknown_drainage_range: [0.0, 1.0]
+
+environment:
+  model: surface_drainage_multiplier_v1
+  pressure_basis: synthetic_scenario
+  comparison_pressures: [0.0, 0.5, 1.0]
+  request_pressures: [0.5, 1.0]
+  unknown_surface_range: [0.0, 1.0]
+  unknown_drainage_range: [0.0, 1.0]
+
+vehicle_geometry:
+  reference_point: rear_axle_center
+  width_m: null
+  wheelbase_m: null
+  front_overhang_m: null
+  rear_overhang_m: null
+  min_turn_radius_m: null
+
+geometry:
+  simplify_tolerance_m: 0.05
+  geometry_tolerance_m: 0.01
+  map_error_m: 0.0
+  arc_step_deg: 10.0
+  max_arc_segments: 720
+
+decision:
+  detour_ratio: 0.15
+  clearance_target_m: 0.0
+  clearance_tolerance_m: 0.01
+  switch_relative_improvement: 0.05
+  candidate_limit: 24
+  display_limit: 5

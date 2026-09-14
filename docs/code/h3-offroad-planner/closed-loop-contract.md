@@ -127,3 +127,20 @@ Client/Web 默认在无 token 状态下启动，本地 H3、候选和活动路�
 `H3_OFFROAD_TIANDITU_TOKEN` 拥有最高优先级，`H3_OFFROAD_MAP_LAYER` 可覆盖图层。
 示例见 `configs/map.private.example.yaml`。token 不进入受跟踪源码、项目 YAML、
 RoutePlan、manifest 或公开成果。
+
+## 7. 静态 GIS 土壤—机动迁移扩展
+
+- `preprocess-hydrology` 只接受米制投影 DEM，并通过单一 GRASS `r.watershed` 后端生成
+  accumulation、drainage direction、TWI、有效性和边界影响缓存。`mapping_t0/t1` 必须成对
+  冻结；缺失时不生成 D，只保留诊断结果。
+- 分类土壤目录不再隐式推断 USCS、Bekker 类型或默认体积含水率。Tile 额外保存土壤来源、
+  支持尺度、TWI、D、有效性、边界影响、地表响应 U 及证据来源。
+- 启用 `static_planning_path` 后，水体在没有显式涉水模型时一律硬阻断；`rowspacing` 不作为
+  树木净空。环境等效距离 `J = sum(length * M)` 与 `travel_cost` 分离，未知 U/D 采用配置
+  上界进入稳健比较。
+- 连续轨迹以 `rear_axle_center` 为参考，由直线和相切圆弧组成；对车辆完整矩形包络做连续
+  扫掠碰撞与地图边界检查。车辆尺寸不完整时状态必须是 `not_evaluated`。
+- 决策先在几何有效候选池取 `L_ref`，再保留 `L <= (1 + detour_ratio) * L_ref`，按目标净空、
+  请求压力场景最坏 J、长度、稳定 ID 排序。旧路线有效且相对改进不超过滞后阈值时保留。
+- 新计划写 schema v2，身份包含策略哈希、场景哈希和 trajectory ID；schema v1 仍可读取。
+  `h3_path` 是引导与重规划语义，`trajectory` 是最终驾驶几何，两者不得互相覆盖。

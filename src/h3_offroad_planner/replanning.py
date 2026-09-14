@@ -9,11 +9,18 @@ from math import atan2, cos, inf, isfinite, radians, sin, sqrt
 from pathlib import Path
 from typing import cast
 
-from h3_offroad_planner.candidate_aggregation import CandidateAggregator
+from h3_offroad_planner.candidate_aggregation import (
+    CandidateAggregator,
+    select_robust_candidates,
+)
+from h3_offroad_planner.config import load_vehicle
+from h3_offroad_planner.dynamics.trajectory_geometry import build_and_validate_trajectory
 from h3_offroad_planner.factor_model import (
     FactorEvaluation,
+    StaticPlanningConfig,
     canonical_hash,
     evaluate_path_metrics,
+    load_static_planning_config,
 )
 from h3_offroad_planner.models import H3Graph, PlanningFailedError, PlanningInputError
 from h3_offroad_planner.models import Path as PlannerPath
@@ -133,6 +140,13 @@ def replan_route(
     current = _resolve_current(request, graph, evaluation)
     if current in confirmed:
         raise PlanningInputError("current vehicle cell cannot be a confirmed blockage.")
+    swept_dependencies = selection.active_trajectory.get("swept_dependency_cells", [])
+    swept_affected = isinstance(swept_dependencies, list) and bool(
+        confirmed.intersection(str(item) for item in swept_dependencies)
+    )
+    route_blockages = set(confirmed)
+    if swept_affected:
+        route_blockages.update(selection.active_h3_path[1:-1])
     goal = selection.active_h3_path[-1]
     unchanged_warning = _unchanged_warning(
         history,
@@ -164,14 +178,22 @@ def replan_route(
     try:
         repaired = DStarLiteReplanner(cost).replan(
             overlay,
-            confirmed,
+            route_blockages,
             PlannerPath([current, goal], 0.0),
         )
         metrics = evaluate_path_metrics(repaired.cells, evaluation)
+        trajectory = _replanned_trajectory(
+            tuple(repaired.cells),
+            selection,
+            graph,
+            evaluation,
+            output_dir,
+        )
         updated = replace(
             selection,
             active_h3_path=tuple(repaired.cells),
             active_metrics=metrics,
+            active_trajectory=trajectory,
             state="active",
             replan_version=selection.replan_version + 1,
         )
@@ -183,7 +205,7 @@ def replan_route(
             selection,
             graph,
             evaluation,
-            confirmed,
+            route_blockages,
             history,
             request.now_epoch_s,
             effective_policy,
@@ -233,27 +255,64 @@ def _global_fallback(
         policy.recent_failed_corridor_ttl_s,
     )
     blocked = frozenset(confirmed.union(recent_failed).union(failed_corridor))
+    static_planning = _load_replan_static_config(output_dir) if plan.schema_version >= 2 else None
     try:
-        raw = DeterministicParetoPlanner(context).plan(
-            current,
-            selection.active_h3_path[-1],
-            blocked,
+        raw = DeterministicParetoPlanner(
+            context,
+            max_paths=(5 if static_planning is None else static_planning.decision.display_limit),
+            candidate_limit=(
+                24 if static_planning is None else static_planning.decision.candidate_limit
+            ),
+            environment_pressures=(
+                () if static_planning is None else static_planning.environment.request_pressures
+            ),
+        ).plan(current, selection.active_h3_path[-1], blocked)
+        aggregation = CandidateAggregator(graph, context).aggregate(
+            raw,
+            plan.mission_profile,
+            5 if static_planning is None else static_planning.decision.display_limit,
+            preserve_pool=static_planning is not None,
         )
-        aggregation = CandidateAggregator(graph, context).aggregate(raw, plan.mission_profile, 5)
-        candidate = next(
-            item
-            for item in aggregation.candidates
-            if item.candidate_id == aggregation.recommended_candidate_id
-        )
+        candidates = aggregation.candidates
+        recommended_id = aggregation.recommended_candidate_id
+        robust_warnings: tuple[str, ...] = ()
+        if static_planning is not None:
+            vehicle = load_vehicle(str(Path(output_dir) / "effective_vehicle.yaml"))
+            candidates = tuple(
+                replace(
+                    item,
+                    trajectory=build_and_validate_trajectory(
+                        item.h3_path,
+                        graph,
+                        evaluation,
+                        vehicle,
+                        static_planning.environment,
+                        static_planning.geometry,
+                    ).to_dict(),
+                )
+                for item in candidates
+            )
+            candidates, recommended_id, _, robust_warnings = select_robust_candidates(
+                candidates,
+                static_planning.decision,
+                request_pressures=static_planning.environment.request_pressures,
+            )
+        candidate = next(item for item in candidates if item.candidate_id == recommended_id)
         updated = replace(
             selection,
             candidate_id=candidate.candidate_id,
             active_h3_path=candidate.h3_path,
             active_metrics=candidate.metrics,
+            active_trajectory=candidate.trajectory,
             state="active",
             replan_version=selection.replan_version + 1,
         )
-        return updated, _result(selection, updated, "global_fallback", aggregation.warnings)
+        return updated, _result(
+            selection,
+            updated,
+            "global_fallback",
+            tuple(dict.fromkeys((*aggregation.warnings, *robust_warnings))),
+        )
     except PlanningFailedError:
         invalidated = replace(selection, state="invalidated")
         return invalidated, _result(
@@ -263,6 +322,39 @@ def _global_fallback(
             warnings=("GLOBAL_ROUTE_UNAVAILABLE",),
             has_new_path=False,
         )
+
+
+def _load_replan_static_config(output_dir: str) -> StaticPlanningConfig:
+    path = Path(output_dir) / "effective_static_planning.yaml"
+    if not path.is_file():
+        raise PlanningInputError("schema-v2 replanning requires effective_static_planning.yaml.")
+    return load_static_planning_config(str(path))
+
+
+def _replanned_trajectory(
+    path: tuple[str, ...],
+    selection: RouteSelection,
+    graph: H3Graph,
+    evaluation: FactorEvaluation,
+    output_dir: str,
+) -> dict[str, object]:
+    if not selection.active_trajectory:
+        return {}
+    static_planning = _load_replan_static_config(output_dir)
+    vehicle = load_vehicle(str(Path(output_dir) / "effective_vehicle.yaml"))
+    trajectory = build_and_validate_trajectory(
+        path,
+        graph,
+        evaluation,
+        vehicle,
+        static_planning.environment,
+        static_planning.geometry,
+    )
+    if trajectory.status in {"invalid", "incomplete"}:
+        raise PlanningFailedError(
+            "replanned H3 guide failed continuous vehicle-geometry validation."
+        )
+    return trajectory.to_dict()
 
 
 def _merge_blockages(
@@ -381,9 +473,7 @@ def _persist_replan(
         "blockages": [asdict(record) for record in ordered],
         "failed_corridor_cells": sorted(failed_corridor),
         "failed_corridor_expires_at_epoch_s": (
-            now_epoch_s + policy.recent_failed_corridor_ttl_s
-            if failed_corridor
-            else None
+            now_epoch_s + policy.recent_failed_corridor_ttl_s if failed_corridor else None
         ),
     }
     _append_history_atomic(Path(output_dir) / "replan_history.jsonl", event)

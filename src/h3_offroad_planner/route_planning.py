@@ -3,19 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from math import atan2, cos, inf, radians, sin, sqrt
 from pathlib import Path
 from typing import cast
 
 import yaml  # type: ignore[import-untyped]
 
-from h3_offroad_planner.candidate_aggregation import CandidateAggregator
+from h3_offroad_planner.candidate_aggregation import (
+    CandidateAggregator,
+    select_robust_candidates,
+)
 from h3_offroad_planner.config import load_vehicle
+from h3_offroad_planner.dynamics.trajectory_geometry import (
+    TrajectoryResult,
+    build_and_validate_trajectory,
+)
 from h3_offroad_planner.factor_model import (
     FactorEvaluation,
+    canonical_hash,
     evaluate_factor_model,
     load_factor_model,
+    load_static_planning_config,
     write_effective_snapshots,
+    write_static_planning_snapshot,
 )
 from h3_offroad_planner.models import (
     ConfigError,
@@ -28,7 +39,7 @@ from h3_offroad_planner.models import (
 from h3_offroad_planner.planners.deterministic_pareto import DeterministicParetoPlanner
 from h3_offroad_planner.portsmap import PortsMapSearchContext
 from h3_offroad_planner.reachability import check_route_reachability
-from h3_offroad_planner.route_models import RoutePlan, plan_id_for_payload
+from h3_offroad_planner.route_models import RouteCandidate, RoutePlan, plan_id_for_payload
 from h3_offroad_planner.route_persistence import (
     delivery_output_paths,
     write_route_plan_outputs,
@@ -77,13 +88,30 @@ def run_route_plan(
     _restore_static_authority(graph, source_metadata)
     vehicle = load_vehicle(request.vehicle_path)
     factor_config = load_factor_model(request.factor_model_path)
+    static_planning = (
+        load_static_planning_config(request.static_planning_path)
+        if request.static_planning_path is not None
+        else None
+    )
+    if static_planning is not None and (
+        request.candidate_limit != static_planning.decision.candidate_limit
+        or request.max_candidate_paths != static_planning.decision.display_limit
+    ):
+        raise PlanningInputError(
+            "route candidate limits must match the versioned static planning policy."
+        )
     if progress is not None:
         progress(
             "global_plan",
             start_pct + 10,
             f"evaluating factor model on {len(graph.cells)} cells",
         )
-    evaluation = evaluate_factor_model(graph, vehicle, factor_config)
+    evaluation = evaluate_factor_model(
+        graph,
+        vehicle,
+        factor_config,
+        None if static_planning is None else static_planning.environment,
+    )
     start = _snap_evaluated(
         graph,
         evaluation,
@@ -110,6 +138,9 @@ def run_route_plan(
         max_paths=request.max_candidate_paths,
         candidate_limit=request.candidate_limit,
         penalty_factor=request.penalty_factor,
+        environment_pressures=(
+            () if static_planning is None else static_planning.environment.request_pressures
+        ),
     ).plan(start, goal, progress=progress)
     if progress is not None:
         progress(
@@ -121,45 +152,114 @@ def run_route_plan(
         raw_candidates,
         request.mission_profile,
         request.max_candidate_paths,
+        preserve_pool=static_planning is not None,
     )
+    candidates = aggregation.candidates
+    recommended_candidate_id = aggregation.recommended_candidate_id
+    robust_statistics: dict[str, object] = {}
+    robust_warnings: tuple[str, ...] = ()
+    if static_planning is not None:
+        candidates = tuple(
+            _with_trajectory(
+                candidate,
+                build_and_validate_trajectory(
+                    candidate.h3_path,
+                    graph,
+                    evaluation,
+                    vehicle,
+                    static_planning.environment,
+                    static_planning.geometry,
+                ),
+            )
+            for candidate in candidates
+        )
+        candidates, recommended_candidate_id, robust_statistics, robust_warnings = (
+            select_robust_candidates(
+                candidates,
+                static_planning.decision,
+                request_pressures=static_planning.environment.request_pressures,
+            )
+        )
     context.clear_pair_cache()
     if progress is not None:
         progress("evaluation", end_pct, "exporting route plan and thematic layers")
     paths = delivery_output_paths(request.output_dir)
+    schema_version = 2 if static_planning is not None else 1
+    policy_hash = "" if static_planning is None else canonical_hash(static_planning.to_dict())
+    scenario_hash = (
+        ""
+        if static_planning is None
+        else canonical_hash(list(static_planning.environment.request_pressures))
+    )
     identity = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "mission_profile": request.mission_profile,
-        "recommended_candidate_id": aggregation.recommended_candidate_id,
+        "recommended_candidate_id": recommended_candidate_id,
         "independence_reference_candidate_id": aggregation.independence_reference_candidate_id,
         "vehicle_hash": evaluation.vehicle_hash,
         "factor_model_hash": evaluation.factor_model_hash,
         "static_input_hash": evaluation.static_input_hash,
         "graph_topology_hash": evaluation.graph_topology_hash,
-        "candidate_ids": [candidate.candidate_id for candidate in aggregation.candidates],
-        "candidate_roles": [list(candidate.roles) for candidate in aggregation.candidates],
+        "candidate_ids": [candidate.candidate_id for candidate in candidates],
+        "candidate_roles": [list(candidate.roles) for candidate in candidates],
     }
+    if static_planning is not None:
+        identity.update(
+            {
+                "planning_policy_hash": policy_hash,
+                "scenario_hash": scenario_hash,
+                "trajectory_ids": [
+                    candidate.trajectory.get("trajectory_id") for candidate in candidates
+                ],
+            }
+        )
     plan = RoutePlan(
         plan_id=plan_id_for_payload(identity),
         mission_profile=request.mission_profile,
-        recommended_candidate_id=aggregation.recommended_candidate_id,
+        recommended_candidate_id=recommended_candidate_id,
         independence_reference_candidate_id=aggregation.independence_reference_candidate_id,
         vehicle_hash=evaluation.vehicle_hash,
         factor_model_hash=evaluation.factor_model_hash,
         static_input_hash=evaluation.static_input_hash,
         graph_topology_hash=evaluation.graph_topology_hash,
-        candidates=aggregation.candidates,
+        candidates=candidates,
+        planning_policy_hash=policy_hash,
+        scenario_hash=scenario_hash,
         aggregation_stats={
             **aggregation.statistics,
             "max_candidate_paths": request.max_candidate_paths,
             "candidate_limit": request.candidate_limit,
             "penalty_factor": request.penalty_factor,
+            **robust_statistics,
         },
         output_files=paths,
-        warnings=aggregation.warnings,
+        warnings=tuple(dict.fromkeys((*aggregation.warnings, *robust_warnings))),
+        schema_version=schema_version,
     )
     write_effective_snapshots(request.output_dir, vehicle, factor_config)
+    if static_planning is not None:
+        write_static_planning_snapshot(request.output_dir, static_planning)
     write_route_plan_outputs(plan, graph, request.output_dir, source_metadata)
     return plan
+
+
+def _with_trajectory(
+    candidate: RouteCandidate,
+    trajectory: TrajectoryResult,
+) -> RouteCandidate:
+    payload = trajectory.to_dict()
+    coordinates = payload["coordinates_wgs84"]
+    geojson = candidate.geojson
+    if isinstance(coordinates, list) and len(coordinates) >= 2:
+        geojson = {
+            "type": "Feature",
+            "properties": {
+                "h3_path": list(candidate.h3_path),
+                "trajectory_id": trajectory.trajectory_id,
+            },
+            "geometry": {"type": "LineString", "coordinates": coordinates},
+        }
+    return replace(candidate, trajectory=payload, geojson=geojson)
 
 
 def _validate_route_plan_planner(path: str) -> None:
@@ -177,8 +277,7 @@ def _validate_route_plan_planner(path: str) -> None:
     unknown = sorted(set(config) - {"global_planner"})
     if unknown:
         raise ConfigError(
-            "RoutePlan planner config contains task-owned or unsupported fields: "
-            f"{unknown}"
+            f"RoutePlan planner config contains task-owned or unsupported fields: {unknown}"
         )
     planner = config.get("global_planner")
     if planner != "DeterministicParetoPlanner":

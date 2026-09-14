@@ -21,6 +21,7 @@ DEFAULT_PENALTY_FACTOR: float = 0.25
 EPSILON: float = 1.0e-9
 PARETO_NAMES: tuple[str, ...] = (
     "distance",
+    "environment_distance",
     "eta",
     "terrain_risk",
     "travel_cost",
@@ -48,6 +49,10 @@ class GeneratedPath:
         """Return the five raw-unit values used for route-level Pareto comparison."""
         return {
             "distance": self.metrics.distance_m,
+            "environment_distance": max(
+                self.metrics.environment_distance_m.values(),
+                default=self.metrics.distance_m,
+            ),
             "eta": self.metrics.eta_s,
             "terrain_risk": self.metrics.terrain_risk,
             "travel_cost": self.metrics.travel_cost,
@@ -65,6 +70,7 @@ class DeterministicParetoPlanner:
         candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
         penalty_factor: float = DEFAULT_PENALTY_FACTOR,
         include_composite: bool = False,
+        environment_pressures: tuple[float, ...] = (),
     ) -> None:
         """Initialize deterministic profile and reuse-penalty candidate generation."""
         if not 1 <= max_paths <= 5:
@@ -78,6 +84,11 @@ class DeterministicParetoPlanner:
         self.candidate_limit = candidate_limit
         self.penalty_factor = penalty_factor
         self.include_composite = include_composite
+        if len(set(environment_pressures)) != len(environment_pressures) or any(
+            not isfinite(value) or value < 0.0 for value in environment_pressures
+        ):
+            raise ValueError("environment_pressures must be unique finite non-negative values.")
+        self.environment_pressures = environment_pressures
 
     def plan(
         self,
@@ -88,7 +99,11 @@ class DeterministicParetoPlanner:
     ) -> list[GeneratedPath]:
         """Return at most 24 exact unique raw candidates including a widest anchor."""
         scales = _robust_scales(self.context.evaluation)
-        profiles = _fixed_profiles(scales, include_composite=self.include_composite)
+        profiles = _fixed_profiles(
+            scales,
+            include_composite=self.include_composite,
+            environment_pressures=self.environment_pressures,
+        )
         candidates: dict[tuple[str, ...], GeneratedPath] = {}
         penalties: dict[str, int] = {}
         attempts_per_profile = max(1, min(self.max_paths, 3))
@@ -150,18 +165,27 @@ def _robust_scales(evaluation: FactorEvaluation) -> dict[str, float]:
         "terrain_risk": [edge.terrain_risk for edge in metrics if edge.terrain_risk > 0.0],
         "travel_cost": [edge.travel_cost for edge in metrics],
     }
-    return {
+    scales = {
         name: max(float(median(samples)) if samples else 1.0, EPSILON)
         for name, samples in values.items()
     }
+    environment_keys = sorted({key for edge in metrics for key in edge.environment_distance_m})
+    for key in environment_keys:
+        samples = [edge.environment_distance_m[key] for edge in metrics]
+        scales[f"environment:{key}"] = max(float(median(samples)), EPSILON)
+    return scales
 
 
 def _fixed_profiles(
     scales: dict[str, float],
     include_composite: bool = False,
+    environment_pressures: tuple[float, ...] = (),
 ) -> list[ScalarProfile]:
+    objective_scales = {
+        name: scales[name] for name in ("distance", "eta", "terrain_risk", "travel_cost")
+    }
     profiles = [
-        ScalarProfile({name: 1.0}, scales, name=name)
+        ScalarProfile({name: 1.0}, objective_scales, name=name)
         for name in ("distance", "eta", "terrain_risk", "travel_cost")
     ]
     if include_composite:
@@ -169,14 +193,30 @@ def _fixed_profiles(
             [
                 ScalarProfile(
                     dict.fromkeys(("distance", "eta", "terrain_risk", "travel_cost"), 0.25),
-                    scales,
+                    objective_scales,
                     "balanced",
                 ),
-                ScalarProfile({"distance": 0.4, "eta": 0.6}, scales, "distance_eta"),
-                ScalarProfile({"eta": 0.6, "terrain_risk": 0.4}, scales, "eta_risk"),
-                ScalarProfile({"terrain_risk": 0.5, "travel_cost": 0.5}, scales, "risk_cost"),
-                ScalarProfile({"distance": 0.4, "travel_cost": 0.6}, scales, "distance_cost"),
+                ScalarProfile({"distance": 0.4, "eta": 0.6}, objective_scales, "distance_eta"),
+                ScalarProfile({"eta": 0.6, "terrain_risk": 0.4}, objective_scales, "eta_risk"),
+                ScalarProfile(
+                    {"terrain_risk": 0.5, "travel_cost": 0.5}, objective_scales, "risk_cost"
+                ),
+                ScalarProfile(
+                    {"distance": 0.4, "travel_cost": 0.6}, objective_scales, "distance_cost"
+                ),
             ]
+        )
+    for pressure in environment_pressures:
+        key = f"{pressure:g}"
+        profiles.append(
+            ScalarProfile(
+                {},
+                objective_scales,
+                name=f"environment_w{key}",
+                environment_pressure=pressure,
+                environment_weight=1.0,
+                environment_scale=scales.get(f"environment:{key}", 1.0),
+            )
         )
     return profiles
 

@@ -65,7 +65,7 @@ def delivery_output_paths(output_dir: str) -> dict[str, str]:
 
 
 def _safe_replace_file(temporary: Path, target: Path) -> Path:
-    """Replace target with temporary, falling back to timestamped copy if target is locked by external processes."""
+    """Replace target, or use a timestamped copy when an external process locks it."""
     try:
         temporary.replace(target)
         return target
@@ -88,8 +88,8 @@ def _safe_replace_file(temporary: Path, target: Path) -> Path:
                 stacklevel=2,
             )
             return fallback
-        except OSError:
-            raise exc
+        except OSError as fallback_exc:
+            raise exc from fallback_exc
 
 
 def atomic_write_json(path: str | Path, payload: object) -> None:
@@ -130,6 +130,9 @@ def write_route_plan_outputs(
             "factor_model_hash": plan.factor_model_hash,
             "static_input_hash": plan.static_input_hash,
             "graph_topology_hash": plan.graph_topology_hash,
+            "planning_policy_hash": plan.planning_policy_hash,
+            "scenario_hash": plan.scenario_hash,
+            "selection_basis": dict(plan.aggregation_stats),
             "output_files": output_files,
             "graph_storage": {
                 "format": "gpkg",
@@ -168,6 +171,8 @@ def load_route_plan(path: str) -> RoutePlan:
         static_input_hash=_required_string(payload, "static_input_hash"),
         graph_topology_hash=_required_string(payload, "graph_topology_hash"),
         candidates=candidates,
+        planning_policy_hash=_string_or_empty(payload, "planning_policy_hash"),
+        scenario_hash=_string_or_empty(payload, "scenario_hash"),
         aggregation_stats=_mapping(payload, "aggregation_stats"),
         output_files=_string_mapping(payload, "output_files"),
         warnings=tuple(_string_sequence(payload, "warnings")),
@@ -193,6 +198,7 @@ def load_route_selection(path: str) -> RouteSelection:
         state=_required_string(payload, "state"),
         replan_version=_required_int(payload, "replan_version"),
         selection_version=_required_int(payload, "selection_version"),
+        active_trajectory=_optional_object_mapping(payload, "active_trajectory"),
     )
 
 
@@ -219,8 +225,7 @@ def _graph_from_json_snapshot(snapshot: Mapping[str, object]) -> H3Graph:
     if not isinstance(cells_raw, list) or not isinstance(edges_raw, list):
         raise PlanningInputError("graph snapshot cells and edges must be arrays.")
     cells = {
-        _required_string(item, "h3index"): _cell_from_mapping(item)
-        for item in _objects(cells_raw)
+        _required_string(item, "h3index"): _cell_from_mapping(item) for item in _objects(cells_raw)
     }
     edges = {}
     for item in _objects(edges_raw):
@@ -273,7 +278,20 @@ def _graph_from_gpkg(path: Path, storage: Mapping[str, object]) -> H3Graph:
     if missing:
         raise PlanningInputError(f"route graph cells omit fields: {sorted(missing)}")
     cells: dict[str, H3Cell] = {}
-    ordered_columns = [*sorted(required - {"geometry"}), "geometry"]
+    optional = {
+        "soil_source",
+        "source_support_m",
+        "twi",
+        "drainage_sensitivity",
+        "drainage_valid",
+        "drainage_boundary_affected",
+        "surface_response",
+        "surface_evidence",
+    }
+    ordered_columns = [
+        *sorted((required - {"geometry"}) | optional.intersection(frame.columns)),
+        "geometry",
+    ]
     for values in frame[ordered_columns].itertuples(
         index=False,
         name=None,
@@ -291,11 +309,7 @@ def _graph_from_gpkg(path: Path, storage: Mapping[str, object]) -> H3Graph:
             elevation=_gpkg_float(record["elevation"], "elevation"),
             slope=_gpkg_float(record["slope"], "slope"),
             tri=_gpkg_float(record["tri"], "tri"),
-            lc_factor=(
-                float("inf")
-                if infinite
-                else _gpkg_float(record["lc_factor"], "lc_factor")
-            ),
+            lc_factor=(float("inf") if infinite else _gpkg_float(record["lc_factor"], "lc_factor")),
             landcover_code=_gpkg_optional_int(record["landcover_code"]),
             landcover_type=_gpkg_optional_string(record["landcover_type"]),
             soil_code=_gpkg_optional_int(record["soil_code"]),
@@ -303,6 +317,14 @@ def _graph_from_gpkg(path: Path, storage: Mapping[str, object]) -> H3Graph:
             soil_texture=_gpkg_optional_string(record["soil_texture"]),
             uscs=_gpkg_optional_string(record["uscs"]),
             soil_moisture=_gpkg_optional_float(record["soil_moisture"]),
+            soil_source=_gpkg_optional_string(record.get("soil_source")),
+            source_support_m=_gpkg_optional_float(record.get("source_support_m")),
+            twi=_gpkg_optional_float(record.get("twi")),
+            drainage_sensitivity=_gpkg_optional_float(record.get("drainage_sensitivity")),
+            drainage_valid=bool(record.get("drainage_valid", False)),
+            drainage_boundary_affected=bool(record.get("drainage_boundary_affected", False)),
+            surface_response=_gpkg_optional_float(record.get("surface_response")),
+            surface_evidence=_gpkg_optional_string(record.get("surface_evidence")),
             has_road=bool(record["has_road"]),
             parent_h3=_gpkg_string(record["parent_h3"], "parent_h3", allow_empty=True),
             is_passable=bool(record["static_passable"]),
@@ -456,6 +478,7 @@ def select_route(
         static_input_hash=plan.static_input_hash,
         graph_topology_hash=plan.graph_topology_hash,
         selection_version=version,
+        active_trajectory=candidate.trajectory,
     )
     atomic_write_json(selection_path, selection.to_dict())
     feature = _candidate_feature(candidate)
@@ -483,6 +506,14 @@ def _cell_from_mapping(payload: Mapping[str, object]) -> H3Cell:
         soil_texture=_optional_string(payload, "soil_texture"),
         uscs=_optional_string(payload, "uscs"),
         soil_moisture=_optional_float(payload, "soil_moisture"),
+        soil_source=_optional_string(payload, "soil_source"),
+        source_support_m=_optional_float(payload, "source_support_m"),
+        twi=_optional_float(payload, "twi"),
+        drainage_sensitivity=_optional_float(payload, "drainage_sensitivity"),
+        drainage_valid=bool(payload.get("drainage_valid", False)),
+        drainage_boundary_affected=bool(payload.get("drainage_boundary_affected", False)),
+        surface_response=_optional_float(payload, "surface_response"),
+        surface_evidence=_optional_string(payload, "surface_evidence"),
         has_road=_required_bool(payload, "has_road"),
         parent_h3=_string_allow_empty(payload, "parent_h3"),
         is_passable=_required_bool(payload, "is_passable"),
@@ -502,8 +533,7 @@ def _edge_from_mapping(payload: Mapping[str, object]) -> H3Edge:
 
 def _active_feature(selection: RouteSelection, graph: H3Graph) -> dict[str, object]:
     coordinates = [
-        [graph.cells[cell_id].lng, graph.cells[cell_id].lat]
-        for cell_id in selection.active_h3_path
+        [graph.cells[cell_id].lng, graph.cells[cell_id].lat] for cell_id in selection.active_h3_path
     ]
     return {
         "type": "Feature",
@@ -676,6 +706,14 @@ def _static_facts_gdf(graph: H3Graph) -> gpd.GeoDataFrame:
                 "soil_texture": cell.soil_texture,
                 "uscs": cell.uscs,
                 "soil_moisture": cell.soil_moisture,
+                "soil_source": cell.soil_source,
+                "source_support_m": cell.source_support_m,
+                "twi": cell.twi,
+                "drainage_sensitivity": cell.drainage_sensitivity,
+                "drainage_valid": cell.drainage_valid,
+                "drainage_boundary_affected": cell.drainage_boundary_affected,
+                "surface_response": cell.surface_response,
+                "surface_evidence": cell.surface_evidence,
                 "has_road": cell.has_road,
                 "static_passable": cell.is_passable,
                 "authority_for_new_routing": True,
@@ -737,6 +775,13 @@ def _candidate_feature(candidate: RouteCandidate) -> dict[str, object]:
             "travel_cost": candidate.metrics.travel_cost,
             "generation_profile": candidate.generation_profile,
             "replan_profile": candidate.replan_profile,
+            "trajectory_status": candidate.trajectory.get("status", "not_evaluated"),
+            "trajectory_id": candidate.trajectory.get("trajectory_id"),
+            "environment_distance_m": json.dumps(
+                candidate.trajectory.get("environment_distance_m", {}),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         },
         "geometry": geometry,
     }
@@ -758,7 +803,15 @@ def _candidate_from_mapping(value: object) -> RouteCandidate:
         geojson=_mapping(payload, "geojson"),
         generation_profile=_required_string(payload, "generation_profile"),
         replan_profile=_required_string(payload, "replan_profile"),
+        trajectory=_optional_object_mapping(payload, "trajectory"),
     )
+
+
+def _optional_object_mapping(payload: Mapping[str, object], key: str) -> dict[str, object]:
+    value = payload.get(key, {})
+    if not isinstance(value, dict):
+        raise PlanningInputError(f"field {key!r} must be an object when present.")
+    return cast(dict[str, object], value)
 
 
 def _metrics_from_mapping(payload: Mapping[str, object]) -> PathMetrics:
@@ -775,6 +828,7 @@ def _metrics_from_mapping(payload: Mapping[str, object]) -> PathMetrics:
         safety_margin_min=_required_float(payload, "score_lower_min"),
         safety_margin_mean=_required_float(payload, "score_nominal_mean"),
         edge_count=_required_int(payload, "edge_count"),
+        environment_distance_m=_float_mapping(payload, "environment_distance_m"),
     )
 
 
@@ -838,6 +892,14 @@ def _required_string(payload: Mapping[str, object], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value:
         raise PlanningInputError(f"state field {key!r} must be a non-empty string.")
+    return value
+
+
+def _string_or_empty(payload: Mapping[str, object], key: str) -> str:
+    """Read an optional schema-v2 string while accepting legacy schema-v1 files."""
+    value = payload.get(key, "")
+    if not isinstance(value, str):
+        raise PlanningInputError(f"state field {key!r} must be a string when present.")
     return value
 
 

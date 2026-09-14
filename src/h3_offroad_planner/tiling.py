@@ -78,6 +78,10 @@ def build_h3_tile_cache(
     soil = preprocessor.load_soil(request.soil_path)
     soil_catalog = _load_soil_catalog(preprocessor, request)
     roads = preprocessor.load_road_network(request.road_path)
+    drainage = preprocessor.load_soil(request.drainage_path)
+    twi = preprocessor.load_soil(request.twi_path)
+    drainage_validity = preprocessor.load_soil(request.drainage_validity_path)
+    drainage_boundary = preprocessor.load_soil(request.drainage_boundary_path)
     tile_records = []
     total_tiles = len(tile_ids)
     start_pct, end_pct = progress_range
@@ -94,6 +98,10 @@ def build_h3_tile_cache(
                 soil,
                 soil_catalog,
                 roads,
+                drainage,
+                twi,
+                drainage_validity,
+                drainage_boundary,
             )
         )
         if progress is not None and (idx % stride == 0 or idx == total_tiles):
@@ -126,9 +134,7 @@ def _tile_ids_for_roi(roi_geometry: BaseGeometry, tile_res: int, max_tiles: int)
     candidates = _polygon_cells(roi_geometry, tile_res)
     candidates.update(_boundary_tile_candidates(roi_geometry, tile_res))
     tiles = sorted(
-        tile_id
-        for tile_id in candidates
-        if _h3_polygon(tile_id).intersects(roi_geometry)
+        tile_id for tile_id in candidates if _h3_polygon(tile_id).intersects(roi_geometry)
     )
     if not tiles:
         raise GridBuildError("ROI tile split produced no parent H3 tiles.")
@@ -149,6 +155,10 @@ def _build_tile_record(
     soil: RasterLayer | None,
     soil_catalog: dict[int, SoilProfile],
     roads: gpd.GeoDataFrame | None,
+    drainage: RasterLayer | None,
+    twi: RasterLayer | None,
+    drainage_validity: RasterLayer | None,
+    drainage_boundary: RasterLayer | None,
 ) -> dict[str, object]:
     output_path = _tile_output_path(request.output_dir, request.tile_res, tile_id)
     try:
@@ -163,6 +173,10 @@ def _build_tile_record(
             soil,
             soil_catalog,
             roads,
+            drainage,
+            twi,
+            drainage_validity,
+            drainage_boundary,
             output_path,
         )
     except (GISInputError, GridBuildError, OSError, ValueError) as exc:
@@ -183,6 +197,10 @@ def _completed_tile_record(
     soil: RasterLayer | None,
     soil_catalog: dict[int, SoilProfile],
     roads: gpd.GeoDataFrame | None,
+    drainage: RasterLayer | None,
+    twi: RasterLayer | None,
+    drainage_validity: RasterLayer | None,
+    drainage_boundary: RasterLayer | None,
     output_path: Path,
 ) -> dict[str, object]:
     dem, slope, tri, affine = terrain
@@ -196,6 +214,13 @@ def _completed_tile_record(
     h3_df = builder.attach_landcover(h3_df, landcover)
     h3_df = builder.attach_soil(h3_df, soil, soil_catalog)
     h3_df = builder.attach_roads(h3_df, roads)
+    h3_df = builder.attach_drainage(
+        h3_df,
+        drainage,
+        twi,
+        drainage_validity,
+        drainage_boundary,
+    )
     graph = builder.build_graph(h3_df)
     static_hash = static_input_hash(graph)
     static_frame = _static_fact_frame(h3_df, graph, request.sampling_mode, static_hash)
@@ -346,7 +371,14 @@ def _static_statistics(frame: pd.DataFrame) -> dict[str, object]:
             "q90": float(values.quantile(0.90)),
             "missing_ratio": float(values.isna().mean()),
         }
-    for column in ("landcover_code", "soil_code", "soil_moisture"):
+    for column in (
+        "landcover_code",
+        "soil_code",
+        "soil_moisture",
+        "twi",
+        "drainage_sensitivity",
+        "surface_response",
+    ):
         if column in frame.columns:
             statistics[column] = {"missing_ratio": float(frame[column].isna().mean())}
     return statistics
@@ -376,6 +408,10 @@ def _tile_manifest(
             "road": request.road_path,
             "soil": request.soil_path,
             "soil_catalog": request.soil_catalog_path,
+            "twi": request.twi_path,
+            "drainage": request.drainage_path,
+            "drainage_validity": request.drainage_validity_path,
+            "drainage_boundary": request.drainage_boundary_path,
         },
         "schema_version": 2,
         "tile_fact_authority": "vehicle_independent",

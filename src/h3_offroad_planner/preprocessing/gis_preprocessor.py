@@ -24,7 +24,6 @@ __all__ = ["GISPreprocessor", "RasterLayer", "RasterQuality"]
 
 DEGREES_TO_METERS: float = 111_320.0
 TARGET_CRS: str = "EPSG:4326"
-DEFAULT_SOIL_MOISTURE: float = 0.20
 WATER_SOIL_CODES: frozenset[int] = frozenset({18, 85})
 URBAN_SOIL_CODES: frozenset[int] = frozenset({84})
 PADDY_SOIL_CODES: frozenset[int] = frozenset({44, 55, 64, 80, 82, 90})
@@ -140,7 +139,7 @@ class GISPreprocessor:
         return self._raster_layer(_require_existing_path(path))
 
     def load_soil_catalog(self, path: str) -> dict[int, SoilProfile]:
-        """Load a soil code catalog from `Export_Output.txt` style CSV data."""
+        """Load raw categorical soil codes and names without engineering inference."""
         rows = _read_soil_catalog_rows(_require_existing_path(path))
         catalog: dict[int, SoilProfile] = {}
         for row in rows:
@@ -189,10 +188,6 @@ class GISPreprocessor:
         with rasterio.open(path) as src:
             if src.crs is None:
                 raise GISInputError(f"raster has no CRS: {path}")
-            if src.crs.to_string() != self.target_crs:
-                raise GISInputError(
-                    f"large raster must be pre-projected to {self.target_crs}: {path}"
-                )
             bounds = (
                 float(src.bounds.left),
                 float(src.bounds.bottom),
@@ -276,6 +271,8 @@ def _require_existing_path(path: str) -> Path:
 
 
 def _read_soil_catalog_rows(path: Path) -> list[dict[str, str]]:
+    if path.suffix.lower() == ".dbf":
+        return _read_dbf_rows(path)
     for encoding in ("utf-8-sig", "gbk"):
         try:
             with path.open("r", encoding=encoding, newline="") as file_obj:
@@ -297,18 +294,62 @@ def _parse_soil_catalog_row(row: dict[str, str]) -> tuple[int, str]:
 
 
 def _profile_from_soil_code(code: int, name_zh: str) -> SoilProfile:
-    texture, uscs, bekker_soil = _soil_texture_mapping(code)
     return SoilProfile(
         code=code,
         name_zh=name_zh,
-        soil_texture=texture,
-        uscs=uscs,
-        bekker_soil=bekker_soil,
-        soil_moisture=(
-            None if code in WATER_SOIL_CODES | URBAN_SOIL_CODES else DEFAULT_SOIL_MOISTURE
-        ),
-        is_passable=code not in WATER_SOIL_CODES,
+        soil_texture=None,
+        uscs=None,
+        bekker_soil=None,
+        soil_moisture=None,
+        is_passable=True,
     )
+
+
+def _read_dbf_rows(path: Path) -> list[dict[str, str]]:
+    """Read the small categorical DBF table, including UTF-8 field names."""
+    data = path.read_bytes()
+    if len(data) < 33:
+        raise GISInputError(f"soil DBF header is truncated: {path}")
+    record_count = int.from_bytes(data[4:8], "little")
+    header_length = int.from_bytes(data[8:10], "little")
+    record_length = int.from_bytes(data[10:12], "little")
+    if header_length < 33 or record_length <= 1 or len(data) < header_length:
+        raise GISInputError(f"soil DBF header is invalid: {path}")
+    fields: list[tuple[str, str, int]] = []
+    offset = 32
+    while offset + 32 <= header_length and data[offset] != 0x0D:
+        descriptor = data[offset : offset + 32]
+        raw_name = descriptor[:11].split(b"\0", 1)[0]
+        try:
+            name = raw_name.decode("utf-8")
+        except UnicodeDecodeError:
+            name = raw_name.decode("gbk")
+        fields.append((name, chr(descriptor[11]), int(descriptor[16])))
+        offset += 32
+    rows: list[dict[str, str]] = []
+    for index in range(record_count):
+        start = header_length + index * record_length
+        record = data[start : start + record_length]
+        if len(record) != record_length or record[:1] == b"*":
+            continue
+        position = 1
+        row: dict[str, str] = {}
+        for name, _, length in fields:
+            raw_value = record[position : position + length].strip(b" \0")
+            position += length
+            if not raw_value:
+                row[name] = ""
+                continue
+            for encoding in ("utf-8", "gbk"):
+                try:
+                    row[name] = raw_value.decode(encoding).strip()
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                raise GISInputError(f"soil DBF contains undecodable text: {path}")
+        rows.append(row)
+    return rows
 
 
 def _soil_texture_mapping(code: int) -> tuple[str | None, str | None, str | None]:

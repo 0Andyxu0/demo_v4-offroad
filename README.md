@@ -9,13 +9,14 @@
 - **双层高精格网基线**：默认采用父格网 **res11**（瓦片管理层）+ 子格网 **res14**（亚米级精确物理评估层），单瓦片包含约 343 个高精子六边形格网。
 - **物理裕度代价模型**：无主观权重的物理瓶颈评估（`safety_margin`），逐边精确计算通行时间（ETA）、行驶能耗代价与地形几何风险。
 - **确定性 Pareto 规划**：多目标（时间、距离、风险、代价）Pareto 最优前沿求解与角色偏好（Fastest、Safest、Energy-efficient、Balanced）路径分配。
+- **静态 GIS 土壤—机动迁移链**：分类土壤只保留来源事实；离线 GRASS 水文输出 TWI、排水敏感度 D 和有效性；路径阶段以独立环境等效距离 J、后轴参考车体连续扫掠、15% 绕行预算及 5% 切换滞后完成稳健选路。
 - **QDX 真实 GIS 深度适配**：
   - 支持 **CGCS2000 (EPSG:4490)** 坐标系自动识别与 WGS84 (EPSG:4326) 无损投影；
   - 自动遍历与融合 QDX 矢量用地数据（林地、草地、耕地、水体、灌木、建筑、荒地、道路网），智能过滤 `bound.shp`；
   - 自动提取并挂载树木深/冠径（`depth`）与行株距（`rowspacing`）等越野微地形参数；
   - 具备边缘瓦片容错与不规则边界连续覆盖能力。
 - **断点续算与分块瓦片缓存**：支持大型战区/作业区瓦片化离线构建（Parquet 格式），规划时动态空间相交加载。
-- **工业级工程标准**：遵循 Gate 1 架构与测试设计准则，通过严格的 320+ 自动化双盲测试套件（语句覆盖率 > 85%，分支覆盖率 > 70%，Mypy Strict 零错误）。
+- **工业级工程标准**：遵循 Gate 1 架构与测试设计准则，通过严格的 400+ 自动化测试套件、独立语句/分支覆盖率门槛和 Mypy Strict 检查。
 
 ---
 
@@ -27,6 +28,8 @@ demo_v4/
 │   ├── mvp81_qdx_delivery.yaml  # QDX 真实数据集全流程交付配置（res11+res14）
 │   ├── static_factor_model.yaml # 地表覆被与速度因子配置
 │   ├── vehicle.yaml             # 车辆物理参数配置
+│   ├── static_gis_planning.yaml # 静态环境、车辆几何与稳健决策策略
+│   ├── hydrology.example.yaml   # 离线 GRASS 水文处理示例
 │   └── deterministic_pareto_planner.yaml # 规划器多目标参数
 ├── data/                        # 示例与处理后数据
 │   └── qdx/                     # QDX 融合后矢量及测试数据
@@ -78,6 +81,16 @@ python scripts/prepare_qdx_dataset.py --qdx-dir "D:/Workspace/qdx数据" --outpu
 python -m h3_offroad_planner run --request configs/mvp81_qdx_delivery.yaml
 ```
 
+如需生成静态水文缓存，先复制并填写 `configs/hydrology.example.yaml` 中的米制投影 DEM、
+分析分辨率和已冻结 TWI 阈值，再运行：
+
+```powershell
+python -m h3_offroad_planner preprocess-hydrology --request configs/hydrology.example.yaml
+```
+
+`mapping_t0/mapping_t1` 未填写时只生成诊断 TWI，不把 `null` 当作中性 D。车辆宽度、轴距、
+前后悬缺失时仍保留 H3 候选，但连续轨迹明确标为 `not_evaluated`，不会伪造整车可通行结论。
+
 产物将输出至：
 - 瓦片缓存：`outputs/qdx_tiles/tile_manifest.json` 及 `outputs/qdx_tiles/tiles/`
 - 规划结果：`outputs/qdx_route/route_plan.json`、`route_candidates.gpkg` 等。
@@ -93,9 +106,9 @@ $env:PYTHONIOENCODING = "utf-8"
 python scripts/verify_baseline.py
 ```
 
-- **测试用例**：325+ 项 Spec-derived & Closed-loop 测试全部通过。
-- **代码覆盖率**：语句覆盖率 $\ge 85.7\%$，分支覆盖率 $\ge 71.6\%$。
-- **静态类型**：`mypy --strict` 零报错（45 个源文件）。
+- **测试用例**：401 项通过、2 项按环境条件跳过。
+- **代码覆盖率**：语句覆盖率 84.08%，分支覆盖率 70.09%。
+- **静态类型**：`mypy --strict` 零报错（48 个源文件）。
 - **代码规范**：`ruff` 零警告。
 
 ---
@@ -107,3 +120,4 @@ python scripts/verify_baseline.py
 - [ADR-023: QDX 真实数据集与 res11/res14 亚米级基线](docs/code/h3-offroad-planner/adr/ADR-023-qdx-dataset-and-res11-res14-baseline.md)
 - [需求与设计规范 Spec](docs/code/h3-offroad-planner/spec.md)
 - [Gate 1 量化设计门禁评分表](docs/code/h3-offroad-planner/gate1-design-score.md)
+- [静态 GIS 土壤—机动迁移实施方案](docs/code/h3-offroad-planner/static-gis-soil-motion-transfer-technical-plan.md)

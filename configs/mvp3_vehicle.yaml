@@ -7,3 +7,8 @@ ground_clearance_m: 0.4
 max_thrust_n: 8000.0
 tire_radius_m: 0.45
 min_turn_radius_m: 5.0
+reference_point: rear_axle_center
+width_m: null
+wheelbase_m: null
+front_overhang_m: null
+rear_overhang_m: null

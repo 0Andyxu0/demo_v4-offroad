@@ -1,0 +1,10 @@
+dem_path: D:/data/qdx_upstream_dem_metric.tif
+output_dir: D:/Workspace/demo_v4/outputs/qdx_hydrology
+backend: grass_r_watershed
+grass_executable: grass
+flow_method: mfd
+analysis_resolution_m: null
+mapping_t0: null
+mapping_t1: null
+upstream_complete: null
+version: twi_drainage_v1

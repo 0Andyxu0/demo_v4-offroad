@@ -9,6 +9,7 @@ import re
 import sys
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from threading import Thread
@@ -187,7 +188,9 @@ class ProjectSettingsDialog(QDialog):
         self._add_path_row(form, "route", "planner_config_path", "规划器配置", optional=False)
         self._add_path_row(form, "route", "vehicle_path", "车辆配置", optional=False)
         self._add_path_row(form, "route", "factor_model_path", "因子模型配置", optional=False)
-        self._add_path_row(form, "route", "output_dir", "路径输出目录", optional=False, directory=True)
+        self._add_path_row(
+            form, "route", "output_dir", "路径输出目录", optional=False, directory=True
+        )
 
         self._mission_profile = QComboBox()
         for label, value in (
@@ -241,9 +244,17 @@ class ProjectSettingsDialog(QDialog):
         tile_form = QFormLayout(tile_group)
         self._add_int_row(tile_form, "tile_build", "res_fine", "细层 H3 分辨率", 9, 0, 15)
         self._add_int_row(tile_form, "tile_build", "tile_res", "父层 H3 分辨率", 7, 0, 15)
-        self._add_int_row(tile_form, "tile_build", "max_tiles", "最大瓦片数", 1_000, 1, 2_000_000_000)
         self._add_int_row(
-            tile_form, "tile_build", "max_cells_per_tile", "单瓦片最大格网数", 100_000, 1, 2_000_000_000
+            tile_form, "tile_build", "max_tiles", "最大瓦片数", 1_000, 1, 2_000_000_000
+        )
+        self._add_int_row(
+            tile_form,
+            "tile_build",
+            "max_cells_per_tile",
+            "单瓦片最大格网数",
+            100_000,
+            1,
+            2_000_000_000,
         )
         sampling = QComboBox()
         sampling.addItem("中心采样", "center")
@@ -273,9 +284,7 @@ class ProjectSettingsDialog(QDialog):
             route_form, "route", "max_estimated_cells", "最大预估格网数", 500_000, 1, 2_000_000_000
         )
         self._add_int_row(route_form, "route", "max_candidate_paths", "返回候选数", 5, 1, 5)
-        self._add_int_row(
-            route_form, "route", "candidate_limit", "原始候选池上限", 24, 1, 24
-        )
+        self._add_int_row(route_form, "route", "candidate_limit", "原始候选池上限", 24, 1, 24)
         self._add_float_row(
             route_form,
             "route",
@@ -326,7 +335,9 @@ class ProjectSettingsDialog(QDialog):
 
     def _choose_path(self, editor: QLineEdit, field: str, directory: bool) -> None:
         if directory:
-            value = QFileDialog.getExistingDirectory(self, "选择输出目录", editor.text() or str(PROJECT_ROOT))
+            value = QFileDialog.getExistingDirectory(
+                self, "选择输出目录", editor.text() or str(PROJECT_ROOT)
+            )
         else:
             value, _ = QFileDialog.getOpenFileName(
                 self, "选择文件", editor.text() or str(PROJECT_ROOT), FILE_FILTERS[field]
@@ -347,7 +358,9 @@ class ProjectSettingsDialog(QDialog):
         editor = QSpinBox()
         editor.setRange(minimum, maximum)
         value = self._mapping(section).get(field, default)
-        editor.setValue(value if isinstance(value, int) and not isinstance(value, bool) else default)
+        editor.setValue(
+            value if isinstance(value, int) and not isinstance(value, bool) else default
+        )
         form.addRow(label, editor)
         self._int_inputs[(section, field)] = editor
 
@@ -368,7 +381,11 @@ class ProjectSettingsDialog(QDialog):
         editor.setDecimals(decimals)
         editor.setSingleStep(1.0 if decimals <= 2 else 0.01)
         value = self._mapping(section).get(field, default)
-        editor.setValue(float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default)
+        editor.setValue(
+            float(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+            else default
+        )
         form.addRow(label, editor)
         self._float_inputs[(section, field)] = editor
 
@@ -611,11 +628,7 @@ class DesktopMainWindow(QMainWindow):
             return
         suffix = f"，并写出研究区：{roi_path.name}" if roi_path is not None else ""
         unsupported = self._project.unsupported_fields()
-        warning = (
-            f" 未支持字段已原样保留：{', '.join(unsupported)}。"
-            if unsupported
-            else ""
-        )
+        warning = f" 未支持字段已原样保留：{', '.join(unsupported)}。" if unsupported else ""
         self._status_bar.showMessage(f"已导出：{target}{suffix}。{warning}")
 
     def _open_project_settings(self) -> None:
@@ -860,7 +873,11 @@ class DesktopMainWindow(QMainWindow):
                 break
             if kind == "progress" and isinstance(payload, tuple) and len(payload) == 3:
                 module, percent, message = payload
-                if isinstance(module, str) and isinstance(percent, int) and isinstance(message, str):
+                if (
+                    isinstance(module, str)
+                    and isinstance(percent, int)
+                    and isinstance(message, str)
+                ):
                     try:
                         self._on_progress(module, percent, message)
                     except Exception as exc:
@@ -996,9 +1013,7 @@ class DesktopMainWindow(QMainWindow):
             self.map_view.set_blockage_selection_enabled(False)
 
     def _has_fine_grid(self) -> bool:
-        return self._active_grid_level == "fine" and _grid_has_features(
-            self._selected_fine_grid
-        )
+        return self._active_grid_level == "fine" and _grid_has_features(self._selected_fine_grid)
 
     def _reset_grid_drilldown(self) -> None:
         self._active_grid_level = "parent"
@@ -1092,13 +1107,11 @@ class DesktopMainWindow(QMainWindow):
             return
         if "eta_s" in evaluation:
             reasons = ", ".join(
-                str(item)
-                for item in cast(list[object], evaluation.get("selection_reason", []))
+                str(item) for item in cast(list[object], evaluation.get("selection_reason", []))
             )
             upper = evaluation.get("eta_upper_s")
             eta_interval = (
-                f"{_format_minutes(evaluation.get('eta_lower_s'))}–"
-                f"{_format_minutes(upper)} min"
+                f"{_format_minutes(evaluation.get('eta_lower_s'))}–{_format_minutes(upper)} min"
                 if upper is not None
                 else f"≥ {_format_minutes(evaluation.get('eta_lower_s'))} min（上界无界）"
             )
@@ -1187,7 +1200,9 @@ def _execute_desktop_operation(
             tile_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ConfigError(f"failed to read tile manifest: {manifest_path}") from exc
-        progress("load_map", 85, f"loaded tile manifest ({len(tile_manifest.get('tiles', []))} tiles)")
+        progress(
+            "load_map", 85, f"loaded tile manifest ({len(tile_manifest.get('tiles', []))} tiles)"
+        )
         return {"tile_manifest": tile_manifest}
     if operation == "load_route":
         progress("load_route", 10, "reading persisted route artifacts...")
@@ -1206,35 +1221,41 @@ def _execute_desktop_operation(
         except (OSError, json.JSONDecodeError) as exc:
             raise ConfigError(f"failed to read route file: {route_path}") from exc
 
-        result: dict[str, object] = {}
+        load_result: dict[str, object] = {}
         if isinstance(route_data, dict) and "candidates" in route_data:
-            result["route_manifest"] = route_data
+            load_result["route_manifest"] = route_data
             adjacent_tile = route_path.parent / TILE_MANIFEST_NAME
             if adjacent_tile.is_file():
-                try:
-                    result["tile_manifest"] = json.loads(adjacent_tile.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
+                with suppress(Exception):
+                    load_result["tile_manifest"] = json.loads(
+                        adjacent_tile.read_text(encoding="utf-8")
+                    )
         elif isinstance(route_data, dict) and "output_files" in route_data:
             manifest_files = route_data.get("output_files", {})
             if isinstance(manifest_files, dict):
                 plan_file = manifest_files.get("route_plan")
                 if isinstance(plan_file, str) and Path(plan_file).is_file():
-                    result["route_manifest"] = json.loads(Path(plan_file).read_text(encoding="utf-8"))
+                    load_result["route_manifest"] = json.loads(
+                        Path(plan_file).read_text(encoding="utf-8")
+                    )
                 tile_file = manifest_files.get("tile_manifest")
                 if isinstance(tile_file, str) and Path(tile_file).is_file():
-                    result["tile_manifest"] = json.loads(Path(tile_file).read_text(encoding="utf-8"))
-            if "route_manifest" not in result:
+                    load_result["tile_manifest"] = json.loads(
+                        Path(tile_file).read_text(encoding="utf-8")
+                    )
+            if "route_manifest" not in load_result:
                 plan_file = route_path.parent / "route_plan.json"
                 if plan_file.is_file():
-                    result["route_manifest"] = json.loads(plan_file.read_text(encoding="utf-8"))
+                    load_result["route_manifest"] = json.loads(
+                        plan_file.read_text(encoding="utf-8")
+                    )
                 else:
-                    result["route_manifest"] = route_data
+                    load_result["route_manifest"] = route_data
         else:
-            result["route_manifest"] = route_data
+            load_result["route_manifest"] = route_data
 
         progress("load_route", 85, "loaded route artifacts into desktop workspace")
-        return result
+        return load_result
     if operation == "replan":
         progress("replan", 65, "started D* Lite route repair")
         request = _mapping(payload, "replan_request")
@@ -1389,6 +1410,7 @@ def _route_tooltip(evaluation: dict[str, object]) -> str:
 def run_desktop_client() -> int:
     """Start the PyQt5 desktop main interface and return the event-loop exit code."""
     import os
+
     os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
     os.environ.setdefault("QTWEBENGINE_DISABLE_GPU_SHADER_DISK_CACHE", "1")
     QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)  # type: ignore[attr-defined]

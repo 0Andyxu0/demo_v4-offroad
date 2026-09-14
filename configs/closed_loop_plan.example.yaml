@@ -3,6 +3,7 @@ parquet_path: outputs/mvp81_tiles/tile_manifest.json
 planner_config_path: configs/deterministic_pareto_planner.yaml
 vehicle_path: configs/vehicle.yaml
 factor_model_path: configs/static_factor_model.yaml
+static_planning_path: configs/static_gis_planning.yaml
 mission_profile: fastest
 max_candidate_paths: 5
 candidate_limit: 24

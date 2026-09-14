@@ -9,6 +9,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from queue import Empty, SimpleQueue
 from types import SimpleNamespace
 
@@ -693,4 +694,3 @@ def test_desktop_load_map_and_load_route_operations(
     assert window.progress_bar.value() == 100
 
     window.close()
-
