@@ -444,5 +444,4 @@ mypy strict 通过
 - [当前架构](architecture.md)
 - [API 设计](api-design.md)
 - [测试规格](test-specs.md)
-- [ADR-013：单车静态因子 RoutePlan 闭环](adr/ADR-013-static-factor-routeplan-dstar-closed-loop.md)
 - [实施成果报告](next-engine-closed-loop-implementation-report.md)

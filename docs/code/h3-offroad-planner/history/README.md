@@ -7,4 +7,4 @@
 - `implementation/`：已完成工程批次的计划和实施快照。
 
 当前有效基线以父目录的 `README.md`、`architecture.md`、`api-design.md`、
-`closed-loop-contract.md`、`test-specs.md` 以及 `adr/ADR-022-*.md` 为准。
+`closed-loop-contract.md` 和 `test-specs.md` 为准。

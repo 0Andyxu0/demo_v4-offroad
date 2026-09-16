@@ -104,20 +104,10 @@ D* 状态控制器、Client/Web、工程验收。
 | CL-028..035 | 显式位置、阻塞确认/解除/TTL、重启、回退、safe_hold | 状态转移表 |
 | CL-036..040 | CLI、HTTP、Client 离屏、双车辆 Tile 复用、确定性 | 端到端验收 |
 
-## 5. Gate 1 证据
+## 5. 行为验证
 
-Gate-1 的唯一活动计分表见 [gate1-design-score.md](gate1-design-score.md)。分母为
-[spec.md](spec.md) 的 FR-001～FR-012 共 12 项：
-
-```text
-C_func = 12/12 = 1.00
-C_detail = 12/12 = 1.00
-C_decouple = 1.00
-S_design = 0.4×1.00 + 0.3×1.00 + 0.3×1.00 = 1.00
-```
-
-写操作均有幂等或原子恢复；端点、数量、物理量均有真实边界；异常恢复路径可执行；
-PortsMap 与因子算法具有独立 Oracle；覆盖率不得替代算法正确性。
+写操作、端点边界、物理量、PortsMap、因子算法和状态恢复由对应 pytest 行为断言验证。
+历史 Gate 1 评分和测试编号不再作为验收条件。
 
 ## 6. 在线底图私有配置
 

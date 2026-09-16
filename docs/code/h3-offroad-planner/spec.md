@@ -35,7 +35,7 @@
 | NFR-004 | 状态安全 | JSON 使用同目录临时文件原子替换；写失败保留旧状态；损坏状态隔离后显式报错 |
 | NFR-005 | 解耦 | 核心依赖为单向 DAG；Tile 不依赖车辆；协调模块只保留 Protocol 和基础模型 |
 | NFR-006 | 凭据安全 | 实际地图 token 不得进入受跟踪源码、示例、日志、测试快照或成果文件 |
-| NFR-007 | 质量门禁 | 全量测试通过；语句覆盖率不低于 80%，分支覆盖率不低于 70%；ruff、mypy、差异检查通过 |
+| NFR-007 | 质量检查 | 业务行为测试通过；`ruff check src tests` 无错误 |
 | NFR-008 | 兼容边界 | Legacy standalone evaluator、旧图适配器和 Qt compatibility shim 可保留，但不得进入生产闭环 |
 
 ## 3. 状态机

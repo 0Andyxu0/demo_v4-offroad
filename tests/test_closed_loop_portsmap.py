@@ -71,6 +71,107 @@ def test_cl015_portsmap_cache_keeps_only_latest_context_per_parent(
     assert context._pair_cache == {}
 
 
+def test_base_pair_cache_reuses_only_unmodified_cross_request_searches(
+    vehicle: VehicleProfile,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+    identity = "test-static-build-and-config"
+
+    first = PortsMapSearchContext(graph, evaluation, base_cache_identity=identity)
+    expected = first.search("a", "f", profile)
+
+    warm = PortsMapSearchContext(graph, evaluation, base_cache_identity=identity)
+
+    def unexpected_search(*args: object, **kwargs: object) -> object:
+        raise AssertionError("warm base pairs should come from the cross-request cache")
+
+    monkeypatch.setattr(warm, "_fine_tile_search", unexpected_search)
+    actual = warm.search("a", "f", profile)
+
+    assert actual.h3_path == expected.h3_path
+    assert actual.scalar_cost == expected.scalar_cost
+    assert actual.cache_hits > 0
+    assert warm.base_cache_hits > 0
+
+
+@pytest.mark.parametrize(
+    ("blocked", "penalties", "penalty_factor"),
+    [
+        (frozenset({"b"}), {}, 0.0),
+        (frozenset(), {"b": 1}, 0.25),
+    ],
+)
+def test_base_pair_cache_excludes_blocked_and_penalized_searches(
+    vehicle: VehicleProfile,
+    monkeypatch: pytest.MonkeyPatch,
+    blocked: frozenset[str],
+    penalties: Mapping[str, int],
+    penalty_factor: float,
+) -> None:
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+    context = PortsMapSearchContext(
+        graph,
+        evaluation,
+        base_cache_identity="test-protected-overlay",
+    )
+    original = context._fine_tile_search
+    calls = 0
+
+    def counted_search(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(context, "_fine_tile_search", counted_search)
+    context.search(
+        "a",
+        "f",
+        profile,
+        blocked=blocked,
+        exploration_penalties=penalties,
+        penalty_factor=penalty_factor,
+    )
+
+    assert calls > 0
+
+
+def test_base_pair_cache_rejects_a_different_project_identity(
+    vehicle: VehicleProfile,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+    PortsMapSearchContext(
+        graph,
+        evaluation,
+        base_cache_identity="identity-a",
+    ).search("a", "f", profile)
+    changed = PortsMapSearchContext(
+        graph,
+        evaluation,
+        base_cache_identity="identity-b",
+    )
+    original = changed._fine_tile_search
+    calls = 0
+
+    def counted_search(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(changed, "_fine_tile_search", counted_search)
+    changed.search("a", "f", profile)
+
+    assert calls > 0
+    assert changed.base_cache_hits == 0
+
+
 def test_cl014_portsmap_limit_is_explicit(vehicle: VehicleProfile) -> None:
     """CL-014: exact construction exceeding a limit never returns a corridor approximation."""
     graph = _ports_graph()

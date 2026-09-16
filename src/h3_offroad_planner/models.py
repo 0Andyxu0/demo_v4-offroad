@@ -468,6 +468,9 @@ class TileBuildRequest:
     twi_path: str | None = None
     drainage_validity_path: str | None = None
     drainage_boundary_path: str | None = None
+    vehicle_path: str | None = None
+    factor_model_path: str | None = None
+    static_planning_path: str | None = None
     res_fine: int = 14
     tile_res: int = 11
     max_tiles: int = 1_000
@@ -488,6 +491,9 @@ class TileBuildRequest:
         _require_optional_path("twi_path", self.twi_path)
         _require_optional_path("drainage_validity_path", self.drainage_validity_path)
         _require_optional_path("drainage_boundary_path", self.drainage_boundary_path)
+        _require_optional_path("vehicle_path", self.vehicle_path)
+        _require_optional_path("factor_model_path", self.factor_model_path)
+        _require_optional_path("static_planning_path", self.static_planning_path)
         if self.drainage_path is None and any(
             value is not None
             for value in (self.twi_path, self.drainage_validity_path, self.drainage_boundary_path)

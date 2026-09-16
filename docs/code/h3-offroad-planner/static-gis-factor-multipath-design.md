@@ -1,7 +1,7 @@
 # 静态 GIS 因子模型与多路径交互规划设计（历史草案）
 
 > 本草案已由 2026-07-16 的 [closed-loop-contract.md](closed-loop-contract.md) 和
-> 2026-07-17 的 [ADR-021](adr/ADR-021-physical-margin-evaluator.md) 取代。
+> 2026-07-17 的物理瓶颈裕度决策取代。
 > 下文关于相对评分、因子区间和高阶风险的内容只记录已退役的加权多指标评估器，不是当前
 > 运行时合同。当前固定四个可加目标和五种角色；不存在 `highest_data_reliability`/
 > “最高数据可靠性”角色，数据质量只降低 confidence 并生成诊断。

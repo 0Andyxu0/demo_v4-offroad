@@ -78,6 +78,9 @@ TILE_BUILD_FIELDS: frozenset[str] = frozenset(
         "drainage_validity_path",
         "drainage_boundary_path",
         "tile_res",
+        "vehicle_path",
+        "factor_model_path",
+        "static_planning_path",
     }
 )
 ROUTE_FIELDS: frozenset[str] = frozenset(
@@ -202,11 +205,14 @@ def _dispatch(command: str, request_path: Path) -> dict[str, object]:
         )
     if command == "plan":
         plan = _call_with_progress(
-            run_route_plan, _route_request(payload), progress=_console_progress
+            run_route_plan,
+            _route_request(payload),
+            progress=_console_progress,
+            export_gpkg=True,
         )
         return cast(dict[str, object], plan.to_dict())  # type: ignore[attr-defined]
     if command == "run":
-        return run_delivery_payload(payload, progress=_console_progress)
+        return run_delivery_payload(payload, progress=_console_progress, export_gpkg=True)
     if command == "select":
         return run_select_payload(payload)
     if command == "replan":
@@ -301,10 +307,17 @@ def run_replan_payload(payload: dict[str, object]) -> dict[str, object]:
 def run_delivery_payload(
     payload: dict[str, object],
     progress: ProgressCallback | None = None,
+    *,
+    export_gpkg: bool = False,
 ) -> dict[str, object]:
     """Build a tile cache and route through its manifest in one delivery request."""
     _report_progress(progress, "validate", 5, "validated combined delivery request")
-    tile_request = _tile_request(_required_mapping(payload, "tile_build"))
+    route_payload = dict(_required_mapping(payload, "route"))
+    tile_payload = dict(_required_mapping(payload, "tile_build"))
+    for key in ("vehicle_path", "factor_model_path", "static_planning_path"):
+        if key in route_payload:
+            tile_payload[key] = route_payload[key]
+    tile_request = _tile_request(tile_payload)
     _report_progress(progress, "build_map", 10, "started trafficability-map build")
     tile_manifest = cast(
         dict[str, object],
@@ -316,7 +329,6 @@ def run_delivery_payload(
         ),
     )
     _report_progress(progress, "build_map", 50, "completed trafficability-map build")
-    route_payload = dict(_required_mapping(payload, "route"))
     route_payload["parquet_path"] = str(Path(tile_request.output_dir) / TILE_MANIFEST_NAME)
     _report_progress(progress, "global_plan", 75, "started global route planning")
     plan = _call_with_progress(
@@ -324,6 +336,7 @@ def run_delivery_payload(
         _route_request(route_payload),
         progress=progress,
         progress_range=(75, 95),
+        export_gpkg=export_gpkg,
     )
     route_manifest = cast(dict[str, object], plan.to_dict())  # type: ignore[attr-defined]
     _report_progress(progress, "evaluation", 95, "exported route and thematic outputs")
@@ -378,9 +391,12 @@ def _tile_request(payload: dict[str, object]) -> TileBuildRequest:
             drainage_path=_optional_string(payload, "drainage_path"),
             drainage_validity_path=_optional_string(payload, "drainage_validity_path"),
             drainage_boundary_path=_optional_string(payload, "drainage_boundary_path"),
+            vehicle_path=_optional_string(payload, "vehicle_path"),
+            factor_model_path=_optional_string(payload, "factor_model_path"),
+            static_planning_path=_optional_string(payload, "static_planning_path"),
             road_path=_optional_string(payload, "road_path"),
-            res_fine=_integer_or_default(payload, "res_fine", 13),
-            tile_res=_integer_or_default(payload, "tile_res", 10),
+            res_fine=_integer_or_default(payload, "res_fine", 14),
+            tile_res=_integer_or_default(payload, "tile_res", 11),
             max_tiles=_integer_or_default(payload, "max_tiles", 1_000),
             max_cells_per_tile=_integer_or_default(payload, "max_cells_per_tile", 100_000),
             sampling_mode=_string_or_default(payload, "sampling_mode", "center"),
@@ -407,8 +423,8 @@ def _route_request(payload: dict[str, object]) -> RouteRequest:
             goal_lng=_optional_float(payload, "goal_lng"),
             endpoint_layer_path=_optional_string(payload, "endpoint_layer_path"),
             roi_layer_path=_optional_string(payload, "roi_layer_path"),
-            res_fine=_integer_or_default(payload, "res_fine", 13),
-            res_coarse=_integer_or_default(payload, "res_coarse", 10),
+            res_fine=_integer_or_default(payload, "res_fine", 14),
+            res_coarse=_integer_or_default(payload, "res_coarse", 11),
             theme_attributes=_string_list_or_default(
                 payload, "theme_attributes", ["score", "cost_score"]
             ),

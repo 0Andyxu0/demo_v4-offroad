@@ -25,6 +25,7 @@ from h3_offroad_planner.route_models import (
     RoutePlan,
     RouteSelection,
 )
+from h3_offroad_planner.routing_index import open_routing_index
 
 __all__ = [
     "atomic_write_json",
@@ -32,7 +33,9 @@ __all__ = [
     "load_route_plan",
     "load_route_selection",
     "load_route_graph_snapshot",
+    "load_active_route_feature",
     "select_route",
+    "write_routes_gpkg",
     "write_route_plan_outputs",
     "write_active_route_state",
 ]
@@ -43,25 +46,25 @@ LEGACY_DUPLICATE_OUTPUTS: tuple[str, ...] = (
     "route_candidates.geojson",
     "route_recommended.geojson",
     "style_manifest.json",
+    "selected_route.geojson",
+    "active_route.geojson",
 )
 
 
 def delivery_output_paths(output_dir: str) -> dict[str, str]:
     """Return the fixed file contract for one complete delivery directory."""
     root = Path(output_dir)
-    names = (
-        "effective_vehicle.yaml",
-        "effective_factor_model.yaml",
-        "tile_manifest.json",
-        "route_manifest.json",
-        "route_plan.json",
-        "routes.gpkg",
-        "route_selection.json",
-        "selected_route.geojson",
-        "active_route.geojson",
-        "replan_history.jsonl",
-    )
-    return {Path(name).stem: str(root / name) for name in names}
+    return {
+        "effective_vehicle": str(root / "effective_vehicle.yaml"),
+        "effective_factor_model": str(root / "effective_factor_model.yaml"),
+        "tile_manifest": str(root / "tile_manifest.json"),
+        "route_manifest": str(root / "route_manifest.json"),
+        "route_plan": str(root / "route_plan.json"),
+        "routes": str(root / "routes.gpkg"),
+        "routes_geojson": str(root / "routes.geojson"),
+        "route_selection": str(root / "route_selection.json"),
+        "replan_history": str(root / "replan_history.jsonl"),
+    }
 
 
 def _safe_replace_file(temporary: Path, target: Path) -> Path:
@@ -108,10 +111,36 @@ def write_route_plan_outputs(
     graph: H3Graph,
     output_dir: str,
     tile_manifest: Mapping[str, object] | None = None,
+    *,
+    export_gpkg: bool = True,
 ) -> dict[str, str]:
     """Write RoutePlan JSON, GeoJSON, GPKG and style/manifest artifacts atomically."""
     paths = delivery_output_paths(output_dir)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    if tile_manifest is not None and tile_manifest.get("artifact_kind") == "h3_routing_index":
+        atomic_write_json(paths["route_plan"], plan.to_dict())
+        atomic_write_json(paths["routes_geojson"], _candidate_collection(plan.candidates))
+        output_files = dict(plan.output_files)
+        graph_storage = {
+            "format": "routing_index",
+            "path": str(
+                tile_manifest.get("routing_index_manifest", tile_manifest["source_manifest"])
+            ),
+            "build_id": str(tile_manifest["build_id"]),
+            "active_parent_h3": _object_list(tile_manifest, "active_parent_h3"),
+            "resolution_fine": graph.resolution_fine,
+            "resolution_coarse": graph.resolution_coarse,
+        }
+        atomic_write_json(
+            paths["route_manifest"],
+            _route_manifest_payload(plan, output_files, graph_storage, tile_manifest),
+        )
+        if export_gpkg:
+            write_routes_gpkg(paths["routes"], plan)
+        else:
+            Path(paths["routes"]).unlink(missing_ok=True)
+        _remove_legacy_duplicate_outputs(Path(output_dir))
+        return paths
     actual_routes_path = _write_routes_gpkg(paths["routes"], graph, plan)
     paths["routes"] = actual_routes_path
     output_files = dict(plan.output_files)
@@ -149,6 +178,46 @@ def write_route_plan_outputs(
         atomic_write_json(paths["tile_manifest"], cleaned)
     _remove_legacy_duplicate_outputs(Path(output_dir))
     return paths
+
+
+def write_routes_gpkg(path: str, plan: RoutePlan) -> str:
+    """Write the public one-layer route GeoPackage contract."""
+    output = Path(path)
+    temporary = output.with_name(f".{output.stem}.tmp.gpkg")
+    if temporary.exists():
+        temporary.unlink()
+    _candidate_gdf(plan.candidates).to_file(
+        temporary, layer="route_candidates", driver="GPKG"
+    )
+    return str(_safe_replace_file(temporary, output))
+
+
+def _route_manifest_payload(
+    plan: RoutePlan,
+    output_files: Mapping[str, str],
+    graph_storage: Mapping[str, object],
+    source_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "schema_version": 3,
+        "plan_id": plan.plan_id,
+        "planner_name": plan.planner_name,
+        "candidate_count": len(plan.candidates),
+        "recommended_candidate_id": plan.recommended_candidate_id,
+        "routing_index_build_id": source_metadata.get("build_id"),
+        "active_parent_h3": _object_list(source_metadata, "active_parent_h3"),
+        "evidence_status": source_metadata.get("evidence_status", "INCOMPLETE"),
+        "missing_physical_inputs": _object_list(source_metadata, "missing_physical_inputs"),
+        "vehicle_hash": plan.vehicle_hash,
+        "factor_model_hash": plan.factor_model_hash,
+        "static_input_hash": plan.static_input_hash,
+        "graph_topology_hash": plan.graph_topology_hash,
+        "planning_policy_hash": plan.planning_policy_hash,
+        "scenario_hash": plan.scenario_hash,
+        "selection_basis": dict(plan.aggregation_stats),
+        "output_files": dict(output_files),
+        "graph_storage": dict(graph_storage),
+    }
 
 
 def load_route_plan(path: str) -> RoutePlan:
@@ -202,6 +271,26 @@ def load_route_selection(path: str) -> RouteSelection:
     )
 
 
+def load_active_route_feature(path: str | Path) -> dict[str, object]:
+    """Return the single active feature from routes.geojson."""
+    requested = Path(path)
+    if not requested.is_file():
+        legacy = requested.with_name("active_route.geojson")
+        if legacy.is_file():
+            return _load_json_object(legacy, isolate_corrupt=False)
+    collection = _load_json_object(requested, isolate_corrupt=False)
+    features = collection.get("features")
+    if not isinstance(features, list):
+        raise PlanningInputError("routes.geojson must contain a features array.")
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties")
+        if isinstance(properties, dict) and properties.get("is_active") is True:
+            return cast(dict[str, object], feature)
+    raise PlanningInputError("routes.geojson does not contain an active route.")
+
+
 def load_route_graph_snapshot(path: str) -> H3Graph:
     """Restore a graph from compact GPKG storage or a legacy JSON snapshot."""
     manifest_path = Path(path)
@@ -210,7 +299,13 @@ def load_route_graph_snapshot(path: str) -> H3Graph:
     if isinstance(snapshot, dict):
         return _graph_from_json_snapshot(cast(dict[str, object], snapshot))
     storage = _mapping(payload, "graph_storage")
-    if _required_string(storage, "format") != "gpkg":
+    storage_format = _required_string(storage, "format")
+    if storage_format == "routing_index":
+        index = open_routing_index(_required_string(storage, "path"))
+        if index.build_id != _required_string(storage, "build_id"):
+            raise PlanningInputError("route manifest routing-index build ID is stale.")
+        return index.load_graph(set(_string_sequence(storage, "active_parent_h3")))
+    if storage_format != "gpkg":
         raise PlanningInputError("route graph storage format must be 'gpkg'.")
     graph_path = Path(_required_string(storage, "path"))
     if not graph_path.is_absolute():
@@ -417,9 +512,13 @@ def write_active_route_state(
     graph: H3Graph,
     blockages: tuple[BlockageRecord, ...],
 ) -> None:
-    """Atomically replace active GeoJSON and corresponding GPKG state layers."""
+    """Atomically update active state in the single lightweight candidate file."""
     root = Path(output_dir)
     feature = _active_feature(selection, graph)
+    routes_geojson = root / "routes.geojson"
+    if routes_geojson.is_file():
+        _update_route_collection(routes_geojson, selection.candidate_id, feature)
+        return
     atomic_write_json(root / "active_route.geojson", feature)
     gpkg = root / "routes.gpkg"
     if not gpkg.exists():
@@ -465,6 +564,13 @@ def select_route(
             and existing.candidate_id == candidate.candidate_id
             and existing.selected_role == selected_role
         ):
+            routes_geojson = root / "routes.geojson"
+            if routes_geojson.is_file():
+                _update_route_collection(
+                    routes_geojson,
+                    candidate.candidate_id,
+                    _candidate_feature(candidate),
+                )
             return existing
     version = 1 if existing is None else existing.selection_version + 1
     selection = RouteSelection(
@@ -482,9 +588,13 @@ def select_route(
     )
     atomic_write_json(selection_path, selection.to_dict())
     feature = _candidate_feature(candidate)
-    atomic_write_json(root / "selected_route.geojson", feature)
-    atomic_write_json(root / "active_route.geojson", feature)
-    _replace_active_gpkg_layers(root / "routes.gpkg", feature)
+    routes_geojson = root / "routes.geojson"
+    if routes_geojson.is_file():
+        _update_route_collection(routes_geojson, candidate.candidate_id, feature)
+    else:
+        atomic_write_json(root / "selected_route.geojson", feature)
+        atomic_write_json(root / "active_route.geojson", feature)
+        _replace_active_gpkg_layers(root / "routes.gpkg", feature)
     return selection
 
 
@@ -735,6 +845,50 @@ def _candidate_gdf(candidates: tuple[RouteCandidate, ...]) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(records, geometry=geometries, crs=CRS_WGS84)
 
 
+def _candidate_collection(candidates: tuple[RouteCandidate, ...]) -> dict[str, object]:
+    return {
+        "type": "FeatureCollection",
+        "features": [_candidate_feature(candidate) for candidate in candidates],
+    }
+
+
+def _update_route_collection(
+    path: Path,
+    active_candidate_id: str,
+    active_feature: Mapping[str, object],
+) -> None:
+    collection = _load_json_object(path, isolate_corrupt=False)
+    raw_features = collection.get("features")
+    if not isinstance(raw_features, list):
+        raise PlanningInputError("routes.geojson must contain a features array.")
+    active_geometry = active_feature.get("geometry")
+    active_properties = active_feature.get("properties")
+    updated: list[object] = []
+    found = False
+    for item in raw_features:
+        if not isinstance(item, dict):
+            raise PlanningInputError("routes.geojson features must be objects.")
+        feature = dict(item)
+        properties_raw = feature.get("properties")
+        if not isinstance(properties_raw, dict):
+            raise PlanningInputError("routes.geojson feature properties must be objects.")
+        properties = dict(properties_raw)
+        selected = properties.get("candidate_id") == active_candidate_id
+        if selected:
+            found = True
+            if isinstance(active_properties, Mapping):
+                properties.update(active_properties)
+            if isinstance(active_geometry, Mapping):
+                feature["geometry"] = dict(active_geometry)
+        properties["is_selected"] = selected
+        properties["is_active"] = selected
+        feature["properties"] = properties
+        updated.append(feature)
+    if not found:
+        raise PlanningInputError("active candidate is absent from routes.geojson.")
+    atomic_write_json(path, {"type": "FeatureCollection", "features": updated})
+
+
 def _empty_route_gdf() -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(
         {
@@ -766,6 +920,8 @@ def _candidate_feature(candidate: RouteCandidate) -> dict[str, object]:
             "candidate_id": candidate.candidate_id,
             "roles": ",".join(candidate.roles),
             "is_recommended": candidate.is_recommended,
+            "is_selected": False,
+            "is_active": False,
             "eta_s": candidate.metrics.eta_s,
             "eta_lower_s": candidate.metrics.eta_lower_s,
             "eta_upper_s": candidate.metrics.eta_upper_s,
@@ -773,10 +929,7 @@ def _candidate_feature(candidate: RouteCandidate) -> dict[str, object]:
             "score_lower_min": candidate.metrics.safety_margin_min,
             "terrain_risk": candidate.metrics.terrain_risk,
             "travel_cost": candidate.metrics.travel_cost,
-            "generation_profile": candidate.generation_profile,
-            "replan_profile": candidate.replan_profile,
             "trajectory_status": candidate.trajectory.get("status", "not_evaluated"),
-            "trajectory_id": candidate.trajectory.get("trajectory_id"),
             "environment_distance_m": json.dumps(
                 candidate.trajectory.get("environment_distance_m", {}),
                 sort_keys=True,
@@ -886,6 +1039,11 @@ def _mapping(payload: Mapping[str, object], key: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise PlanningInputError(f"state field {key!r} must be an object.")
     return cast(dict[str, object], value)
+
+
+def _object_list(payload: Mapping[str, object], key: str) -> list[object]:
+    value = payload.get(key, [])
+    return list(value) if isinstance(value, (list, tuple)) else []
 
 
 def _required_string(payload: Mapping[str, object], key: str) -> str:

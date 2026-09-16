@@ -22,6 +22,7 @@ from h3_offroad_planner.route_persistence import (
     load_route_selection,
     select_route,
     write_route_plan_outputs,
+    write_routes_gpkg,
 )
 
 
@@ -148,6 +149,81 @@ def test_cl027_gpkg_candidate_metrics_match_route_plan(
         )
         assert record["terrain_risk"] == pytest.approx(candidate.metrics.terrain_risk)
         assert record["travel_cost"] == pytest.approx(candidate.metrics.travel_cost)
+
+
+def test_indexed_plan_uses_light_outputs_and_one_layer_export(
+    tmp_path: Path,
+    vehicle: VehicleProfile,
+) -> None:
+    graph, plan = _plan_fixture(tmp_path, vehicle)
+    index_manifest = tmp_path / "routing_index" / "builds" / "build-1" / "routing_index.json"
+    source = {
+        "artifact_kind": "h3_routing_index",
+        "source_manifest": str(tmp_path / "routing_index" / "current.json"),
+        "routing_index_manifest": str(index_manifest),
+        "build_id": "build-1",
+        "active_parent_h3": ["pa", "pb"],
+        "evidence_status": "INCOMPLETE",
+        "missing_physical_inputs": ["vehicle.width_m"],
+    }
+
+    write_route_plan_outputs(
+        plan,
+        graph,
+        str(tmp_path),
+        source,
+        export_gpkg=False,
+    )
+
+    assert (tmp_path / "route_plan.json").is_file()
+    assert (tmp_path / "route_manifest.json").is_file()
+    assert (tmp_path / "routes.geojson").is_file()
+    assert not (tmp_path / "routes.gpkg").exists()
+    manifest = json.loads((tmp_path / "route_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 3
+    assert manifest["graph_storage"] == {
+        "format": "routing_index",
+        "path": str(index_manifest),
+        "build_id": "build-1",
+        "active_parent_h3": ["pa", "pb"],
+        "resolution_fine": graph.resolution_fine,
+        "resolution_coarse": graph.resolution_coarse,
+    }
+
+    selection = select_route(str(tmp_path / "route_plan.json"), role="fastest_eta")
+    collection = json.loads((tmp_path / "routes.geojson").read_text(encoding="utf-8"))
+    active = [
+        feature
+        for feature in collection["features"]
+        if feature["properties"]["is_active"]
+    ]
+    assert [feature["properties"]["candidate_id"] for feature in active] == [
+        selection.candidate_id
+    ]
+    assert not (tmp_path / "routes.gpkg").exists()
+
+    write_routes_gpkg(str(tmp_path / "routes.gpkg"), plan)
+    assert list(gpd.list_layers(tmp_path / "routes.gpkg")["name"]) == ["route_candidates"]
+    exported = gpd.read_file(tmp_path / "routes.gpkg", layer="route_candidates")
+    assert {
+        "candidate_id",
+        "roles",
+        "is_recommended",
+        "is_selected",
+        "is_active",
+        "eta_s",
+        "eta_lower_s",
+        "eta_upper_s",
+        "distance_m",
+        "score_lower_min",
+        "terrain_risk",
+        "travel_cost",
+        "trajectory_status",
+        "environment_distance_m",
+    }.issubset(exported.columns)
+    assert {"generation_profile", "replan_profile", "trajectory_id"}.isdisjoint(
+        exported.columns
+    )
 
 
 def test_cl040_complete_route_plan_identity_is_deterministic(

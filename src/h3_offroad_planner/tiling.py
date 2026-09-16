@@ -28,6 +28,7 @@ from h3_offroad_planner.models import (
     TileBuildRequest,
 )
 from h3_offroad_planner.preprocessing import GISPreprocessor, RasterLayer, RasterQuality
+from h3_offroad_planner.routing_index import build_routing_index
 
 __all__ = ["build_h3_tile_cache"]
 
@@ -108,6 +109,17 @@ def build_h3_tile_cache(
             pct = start_pct + int(pct_span * (idx / total_tiles))
             progress("build_map", pct, f"building tile cache: [{idx}/{total_tiles}]")
     manifest = _tile_manifest(request, tile_records, dem_quality)
+    if not any(record["status"] == "failed" for record in tile_records) and any(
+        record["status"] in {"completed", "skipped"} for record in tile_records
+    ):
+        routing_index = build_routing_index(
+            manifest,
+            vehicle_path=request.vehicle_path,
+            factor_model_path=request.factor_model_path,
+            static_planning_path=request.static_planning_path,
+        )
+        manifest["routing_index_build_id"] = routing_index["build_id"]
+        manifest["routing_index_current"] = "routing_index/current.json"
     GISExporter.write_manifest(str(Path(request.output_dir) / TILE_MANIFEST_NAME), manifest)
     return manifest
 

@@ -65,7 +65,8 @@ from h3_offroad_planner.models import (
     PlanningFailedError,
     PlanningInputError,
 )
-from h3_offroad_planner.tiling import TILE_MANIFEST_NAME
+from h3_offroad_planner.route_persistence import load_active_route_feature
+from h3_offroad_planner.tiling import TILE_CACHE_KIND, TILE_MANIFEST_NAME
 from h3_offroad_planner.web_console import serialize_tile_grid, serialize_webgis_result
 
 __all__ = [
@@ -242,8 +243,8 @@ class ProjectSettingsDialog(QDialog):
         root = QVBoxLayout(page)
         tile_group = QGroupBox("瓦片构建")
         tile_form = QFormLayout(tile_group)
-        self._add_int_row(tile_form, "tile_build", "res_fine", "细层 H3 分辨率", 9, 0, 15)
-        self._add_int_row(tile_form, "tile_build", "tile_res", "父层 H3 分辨率", 7, 0, 15)
+        self._add_int_row(tile_form, "tile_build", "res_fine", "细层 H3 分辨率", 14, 0, 15)
+        self._add_int_row(tile_form, "tile_build", "tile_res", "父层 H3 分辨率", 11, 0, 15)
         self._add_int_row(
             tile_form, "tile_build", "max_tiles", "最大瓦片数", 1_000, 1, 2_000_000_000
         )
@@ -268,8 +269,8 @@ class ProjectSettingsDialog(QDialog):
 
         route_group = QGroupBox("路径规划")
         route_form = QFormLayout(route_group)
-        self._add_int_row(route_form, "route", "res_fine", "细层 H3 分辨率", 9, 0, 15)
-        self._add_int_row(route_form, "route", "res_coarse", "父层 H3 分辨率", 7, 0, 15)
+        self._add_int_row(route_form, "route", "res_fine", "细层 H3 分辨率", 14, 0, 15)
+        self._add_int_row(route_form, "route", "res_coarse", "父层 H3 分辨率", 11, 0, 15)
         self._add_float_row(
             route_form,
             "route",
@@ -785,6 +786,16 @@ class DesktopMainWindow(QMainWindow):
                 return
             self._project.tile_build["output_dir"] = str(manifest_file.parent)
             self._project.route["parquet_path"] = str(manifest_file)
+            with suppress(Exception):
+                manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                if isinstance(manifest_data, dict):
+                    m_fine = manifest_data.get("res_fine")
+                    m_coarse = manifest_data.get("tile_res")
+                    if isinstance(m_fine, int) and isinstance(m_coarse, int):
+                        self._project.route["res_fine"] = m_fine
+                        self._project.route["res_coarse"] = m_coarse
+                        self._project.tile_build["res_fine"] = m_fine
+                        self._project.tile_build["tile_res"] = m_coarse
             self._refresh_project_summary()
             payload: dict[str, object] = {"tile_manifest_path": str(manifest_file)}
         elif operation == "load_route":
@@ -914,6 +925,16 @@ class DesktopMainWindow(QMainWindow):
             self._on_failed("desktop worker returned an invalid result.")
             return
         self._last_result = cast(dict[str, object], result)
+        tile_manifest = self._last_result.get("tile_manifest")
+        if isinstance(tile_manifest, dict):
+            m_fine = tile_manifest.get("res_fine")
+            m_coarse = tile_manifest.get("tile_res")
+            if isinstance(m_fine, int) and isinstance(m_coarse, int):
+                self._project.route["res_fine"] = m_fine
+                self._project.route["res_coarse"] = m_coarse
+                self._project.tile_build["res_fine"] = m_fine
+                self._project.tile_build["tile_res"] = m_coarse
+                self._refresh_project_summary()
         self._reset_grid_drilldown()
         self._draw_parent_grid()
         self._candidate_routes = _candidate_routes_from_result(self._last_result)
@@ -1263,12 +1284,7 @@ def _execute_desktop_operation(
         selection_path = request.get("selection_path")
         if not isinstance(selection_path, str) or not selection_path:
             raise ConfigError("replan_request.selection_path must be a non-empty string.")
-        active_path = Path(selection_path).parent / "active_route.geojson"
-        if not active_path.is_file():
-            raise ConfigError("replan did not produce active_route.geojson.")
-        active = json.loads(active_path.read_text(encoding="utf-8"))
-        if not isinstance(active, dict):
-            raise ConfigError("active_route.geojson must contain a GeoJSON object.")
+        active = load_active_route_feature(Path(selection_path).parent / "routes.geojson")
         progress("evaluation", 95, "loaded persisted active-route metrics")
         return {"replan_result": typed_result, "active_route_geojson": active}
     if operation == "plan":
@@ -1322,12 +1338,22 @@ def _mapping(payload: dict[str, object], key: str) -> dict[str, object]:
 
 def _set_route_tile_manifest(route: dict[str, object], tile: dict[str, object]) -> None:
     source = route.get("parquet_path")
-    if isinstance(source, str) and source:
-        return
-    output_dir = tile.get("output_dir")
-    if not isinstance(output_dir, str) or not output_dir:
-        raise ConfigError("route operation requires route.parquet_path or tile_build.output_dir.")
-    route["parquet_path"] = str(Path(output_dir) / TILE_MANIFEST_NAME)
+    if not (isinstance(source, str) and source):
+        output_dir = tile.get("output_dir")
+        if not isinstance(output_dir, str) or not output_dir:
+            raise ConfigError("route operation requires route.parquet_path or tile_build.output_dir.")
+        source = str(Path(output_dir) / TILE_MANIFEST_NAME)
+        route["parquet_path"] = source
+    manifest_path = Path(str(source))
+    if manifest_path.is_file():
+        with suppress(Exception):
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("artifact_kind") == TILE_CACHE_KIND:
+                m_fine = data.get("res_fine")
+                m_coarse = data.get("tile_res")
+                if isinstance(m_fine, int) and isinstance(m_coarse, int):
+                    route["res_fine"] = m_fine
+                    route["res_coarse"] = m_coarse
 
 
 def _short_path(value: object) -> str:

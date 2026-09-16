@@ -7,6 +7,7 @@ import json
 import sys
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from email.message import Message
 from functools import lru_cache
 from http import HTTPStatus
@@ -41,6 +42,8 @@ from h3_offroad_planner.models import (
     PlanningFailedError,
     PlanningInputError,
 )
+from h3_offroad_planner.route_persistence import load_active_route_feature
+from h3_offroad_planner.tiling import TILE_CACHE_KIND
 
 __all__ = [
     "create_web_console",
@@ -264,13 +267,10 @@ def _run_replan_operation(payload: dict[str, object]) -> dict[str, object]:
     selection_path = payload.get("selection_path")
     if not isinstance(selection_path, str) or not selection_path:
         raise ConfigError("selection_path must be a non-empty string.")
-    active_path = Path(selection_path).parent / "active_route.geojson"
     try:
-        active = json.loads(active_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ConfigError("replan active_route.geojson is unavailable or invalid.") from exc
-    if not isinstance(active, dict):
-        raise ConfigError("replan active_route.geojson must contain an object.")
+        active = load_active_route_feature(Path(selection_path).parent / "routes.geojson")
+    except (OSError, PlanningInputError) as exc:
+        raise ConfigError("replan routes.geojson has no active route.") from exc
     return serialize_webgis_result(
         {"replan_result": result, "active_route_geojson": cast(dict[str, object], active)}
     )
@@ -279,15 +279,26 @@ def _run_replan_operation(payload: dict[str, object]) -> dict[str, object]:
 def _set_route_tile_manifest(payload: dict[str, object]) -> None:
     """Use the configured tile-cache manifest for a route-only WebGIS action."""
     route = _mapping(payload, "route")
-    if isinstance(route.get("parquet_path"), str) and route["parquet_path"]:
-        return
-    tile = _mapping(payload, "tile_build")
-    output_dir = tile.get("output_dir")
-    if not isinstance(output_dir, str) or not output_dir:
-        raise ConfigError(
-            "route-only operations require route.parquet_path or tile_build.output_dir."
-        )
-    route["parquet_path"] = str(Path(output_dir) / TILE_MANIFEST_NAME)
+    source = route.get("parquet_path")
+    if not (isinstance(source, str) and source):
+        tile = _mapping(payload, "tile_build")
+        output_dir = tile.get("output_dir")
+        if not isinstance(output_dir, str) or not output_dir:
+            raise ConfigError(
+                "route-only operations require route.parquet_path or tile_build.output_dir."
+            )
+        source = str(Path(output_dir) / TILE_MANIFEST_NAME)
+        route["parquet_path"] = source
+    manifest_path = Path(str(source))
+    if manifest_path.is_file():
+        with suppress(Exception):
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("artifact_kind") == TILE_CACHE_KIND:
+                m_fine = data.get("res_fine")
+                m_coarse = data.get("tile_res")
+                if isinstance(m_fine, int) and isinstance(m_coarse, int):
+                    route["res_fine"] = m_fine
+                    route["res_coarse"] = m_coarse
 
 
 def _apply_map_selection(payload: dict[str, object], request: dict[str, object]) -> None:

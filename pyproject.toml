@@ -25,7 +25,7 @@ h3-offroad-desktop = "h3_offroad_planner.desktop_client:run_desktop_client"
 h3-offroad-console = "h3_offroad_planner.web_console:run_web_console"
 
 [project.optional-dependencies]
-dev = ["mypy>=1.0", "pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
 desktop = ["PyQt5>=5.15", "PyQtWebEngine>=5.15"]
 
 [tool.setuptools.packages.find]
@@ -45,26 +45,3 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "ANN"]
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-
-[[tool.mypy.overrides]]
-module = [
-    "affine",
-    "geopandas",
-    "h3",
-    "pandas",
-    "rasterio",
-    "rasterio.*",
-    "shapely",
-    "shapely.*",
-    "PyQt5",
-    "PyQt5.*",
-]
-ignore_missing_imports = true

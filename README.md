@@ -16,7 +16,7 @@
   - 自动提取并挂载树木深/冠径（`depth`）与行株距（`rowspacing`）等越野微地形参数；
   - 具备边缘瓦片容错与不规则边界连续覆盖能力。
 - **断点续算与分块瓦片缓存**：支持大型战区/作业区瓦片化离线构建（Parquet 格式），规划时动态空间相交加载。
-- **工业级工程标准**：遵循 Gate 1 架构与测试设计准则，通过严格的 400+ 自动化测试套件、独立语句/分支覆盖率门槛和 Mypy Strict 检查。
+- **直接质量检查**：保留业务行为测试与 Ruff，不再以覆盖率、类型反省或文档编号充当功能正确性门禁。
 
 ---
 
@@ -35,10 +35,8 @@ demo_v4/
 │   └── qdx/                     # QDX 融合后矢量及测试数据
 ├── docs/code/h3-offroad-planner/ # 技术基线与规范文档
 │   ├── README.md                # 技术基线与演进索引
-│   ├── adr/                     # 架构决策记录（ADR-001 ~ ADR-023）
 │   ├── spec.md                  # 系统工程需求规范
-│   ├── architecture.md          # 全局架构设计
-│   └── gate1-design-score.md    # Gate 1 量化评分（1.00 / 1.00）
+│   └── architecture.md          # 全局架构设计
 ├── src/h3_offroad_planner/      # 核心算法源码
 │   ├── grid/                    # H3 网格构建与矢量/栅格属性挂载
 │   ├── preprocessing/           # GIS 栅格与矢量预处理（CGCS2000/EPSG:4490 转换）
@@ -48,7 +46,6 @@ demo_v4/
 │   ├── dynamic_replanning.py    # D* Lite 动态重规划
 │   └── exporting.py             # GPKG / JSON / GeoJSON 导出
 ├── scripts/                     # 运维与验证脚本
-│   ├── verify_baseline.py       # 基线完整门禁自动化验证
 │   └── prepare_qdx_dataset.py   # QDX 原始数据校验与预处理工具
 └── tests/                       # 自动化测试集（含 QDX 双盲测试）
 ```
@@ -97,27 +94,22 @@ python -m h3_offroad_planner preprocess-hydrology --request configs/hydrology.ex
 
 ---
 
-## 🧪 基线门禁与质量验收
+## 🧪 日常开发检查
 
-执行项目全量基线验证脚本（包含测试覆盖率、类型检查、代码规范与架构合规性）：
+只保留直接验证行为和代码错误的两条命令：
 
 ```powershell
-$env:PYTHONIOENCODING = "utf-8"
-python scripts/verify_baseline.py
+python -m pytest -q
+python -m ruff check src tests
 ```
 
-- **测试用例**：401 项通过、2 项按环境条件跳过。
-- **代码覆盖率**：语句覆盖率 84.08%，分支覆盖率 70.09%。
-- **静态类型**：`mypy --strict` 零报错（48 个源文件）。
-- **代码规范**：`ruff` 零警告。
+不再执行覆盖率阈值、Mypy strict、ADR/CL 编号检查、自制 AST 审计或强制 GUI 启动。
 
 ---
 
 ## 📖 详细技术文档
 
-更多详细技术规格与架构决策请参考：
+更多详细技术规格请参考：
 - [技术基线索引](docs/code/h3-offroad-planner/README.md)
-- [ADR-023: QDX 真实数据集与 res11/res14 亚米级基线](docs/code/h3-offroad-planner/adr/ADR-023-qdx-dataset-and-res11-res14-baseline.md)
 - [需求与设计规范 Spec](docs/code/h3-offroad-planner/spec.md)
-- [Gate 1 量化设计门禁评分表](docs/code/h3-offroad-planner/gate1-design-score.md)
 - [静态 GIS 土壤—机动迁移实施方案](docs/code/h3-offroad-planner/static-gis-soil-motion-transfer-technical-plan.md)

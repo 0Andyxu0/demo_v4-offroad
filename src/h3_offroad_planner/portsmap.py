@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from heapq import heappop, heappush
+from heapq import heappop, heappush, heapreplace
 from math import atan2, cos, inf, isfinite, radians, sin, sqrt
+from threading import Lock
 
 from h3_offroad_planner.factor_model import (
     DirectedEdgeMetrics,
@@ -28,6 +29,13 @@ __all__ = [
 
 EPSILON: float = 1.0e-12
 OBJECTIVE_NAMES: tuple[str, ...] = ("distance", "eta", "terrain_risk", "travel_cost")
+BASE_PAIR_CACHE_LIMIT: int = 8_192
+_BASE_PAIR_CACHE: dict[
+    tuple[str, str, str, str, str],
+    tuple[tuple[str, tuple[str, ...], float], ...],
+] = {}
+_BASE_PAIR_CACHE_RANKS: list[tuple[int, tuple[str, str, str, str, str]]] = []
+_BASE_PAIR_CACHE_LOCK = Lock()
 
 
 class PortsMapLimitError(PlanningFailedError):
@@ -195,6 +203,7 @@ class PortsMapSearchContext:
         evaluation: FactorEvaluation,
         max_ports: int = 20_000,
         max_port_pairs: int = 200_000,
+        base_cache_identity: str | None = None,
     ) -> None:
         """Initialize an immutable base graph/evaluation search context."""
         if set(graph.cells) != set(evaluation.node_metrics):
@@ -205,6 +214,7 @@ class PortsMapSearchContext:
         self.evaluation = evaluation
         self.max_ports = max_ports
         self.max_port_pairs = max_port_pairs
+        self.base_cache_identity = base_cache_identity
         if graph.parent_children:
             self._parent_children = graph.parent_children
         else:
@@ -222,6 +232,8 @@ class PortsMapSearchContext:
             set[str],
         ] = {}
         self._cache_hits = 0
+        self._base_cache_hits = 0
+        self._base_cache_misses = 0
         coord_scale = 1.0
         if evaluation.directed_edges:
             sample_ratios: list[float] = []
@@ -252,6 +264,27 @@ class PortsMapSearchContext:
         self._computed_sources.clear()
         self._base_topology_cache.clear()
         self._parent_keys.clear()
+
+    @property
+    def cache_hits(self) -> int:
+        """Return all request-local and cross-request Port-pair cache hits."""
+        return self._cache_hits
+
+    @property
+    def base_cache_hits(self) -> int:
+        """Return cross-request immutable base Port-pair cache hits."""
+        return self._base_cache_hits
+
+    @property
+    def base_cache_size(self) -> int:
+        """Return the current bounded cross-request cache entry count."""
+        with _BASE_PAIR_CACHE_LOCK:
+            return len(_BASE_PAIR_CACHE)
+
+    @property
+    def base_cache_misses(self) -> int:
+        """Return eligible base searches not served by the cross-request cache."""
+        return self._base_cache_misses
 
     def build_topology(
         self,
@@ -484,27 +517,47 @@ class PortsMapSearchContext:
         if source in sources_done:
             self._cache_hits += 1
         else:
-            allowed = {
-                cell_id
-                for cell_id in self._parent_children.get(parent, ())
-                if cell_id not in blocked
-            }
-            targets = set(port_ids)
-            targets.discard(source)
-            effective_penalties = penalties if local_penalty_key else {}
-            effective_penalty_factor = penalty_factor if local_penalty_key else 0.0
-            fine_best = self._fine_tile_search(
-                source,
-                allowed,
+            base_key = self._base_pair_key(
+                parent,
                 profile,
-                effective_penalties,
-                effective_penalty_factor,
-                targets=targets,
+                port_hash,
+                source,
+                blocked,
+                local_penalty_key,
+                penalty_factor,
             )
-            for target in port_ids:
-                if source == target or target not in fine_best:
-                    continue
-                cost, path = fine_best[target]
+            base_pairs = _base_pair_cache_get(base_key) if base_key is not None else None
+            if base_pairs is None:
+                if base_key is not None:
+                    self._base_cache_misses += 1
+                allowed = {
+                    cell_id
+                    for cell_id in self._parent_children.get(parent, ())
+                    if cell_id not in blocked
+                }
+                targets = set(port_ids)
+                targets.discard(source)
+                effective_penalties = penalties if local_penalty_key else {}
+                effective_penalty_factor = penalty_factor if local_penalty_key else 0.0
+                fine_best = self._fine_tile_search(
+                    source,
+                    allowed,
+                    profile,
+                    effective_penalties,
+                    effective_penalty_factor,
+                    targets=targets,
+                )
+                base_pairs = tuple(
+                    (target, fine_best[target][1], fine_best[target][0])
+                    for target in port_ids
+                    if source != target and target in fine_best
+                )
+                if base_key is not None:
+                    _base_pair_cache_put(base_key, base_pairs)
+            else:
+                self._cache_hits += 1
+                self._base_cache_hits += 1
+            for target, path, cost in base_pairs:
                 cached[(source, target)] = PortPairPath(parent, source, target, path, cost)
             sources_done.add(source)
 
@@ -516,6 +569,25 @@ class PortsMapSearchContext:
             if pair is not None:
                 edges.append((target, pair.h3_path, pair.scalar_cost))
         return edges
+
+    def _base_pair_key(
+        self,
+        parent: str,
+        profile: ScalarProfile,
+        port_hash: str,
+        source: str,
+        blocked: frozenset[str],
+        local_penalty_key: tuple[tuple[str, int], ...],
+        penalty_factor: float,
+    ) -> tuple[str, str, str, str, str] | None:
+        if (
+            self.base_cache_identity is None
+            or blocked
+            or local_penalty_key
+            or penalty_factor > 0.0
+        ):
+            return None
+        return (self.base_cache_identity, parent, profile.signature, port_hash, source)
 
     def _parent_port_pairs(
         self,
@@ -787,6 +859,34 @@ class PortsMapSearchContext:
     def _parent(self, cell_id: str) -> str:
         parent = self.graph.cells[cell_id].parent_h3
         return parent if parent else cell_id
+
+
+def _base_pair_cache_get(
+    key: tuple[str, str, str, str, str],
+) -> tuple[tuple[str, tuple[str, ...], float], ...] | None:
+    with _BASE_PAIR_CACHE_LOCK:
+        return _BASE_PAIR_CACHE.get(key)
+
+
+def _base_pair_cache_put(
+    key: tuple[str, str, str, str, str],
+    value: tuple[tuple[str, tuple[str, ...], float], ...],
+) -> None:
+    with _BASE_PAIR_CACHE_LOCK:
+        if key in _BASE_PAIR_CACHE:
+            _BASE_PAIR_CACHE[key] = value
+            return
+        rank = -int(canonical_hash(key)[:16], 16)
+        if len(_BASE_PAIR_CACHE) < BASE_PAIR_CACHE_LIMIT:
+            _BASE_PAIR_CACHE[key] = value
+            heappush(_BASE_PAIR_CACHE_RANKS, (rank, key))
+            return
+        worst_rank, worst_key = _BASE_PAIR_CACHE_RANKS[0]
+        if rank <= worst_rank:
+            return
+        _BASE_PAIR_CACHE.pop(worst_key)
+        _BASE_PAIR_CACHE[key] = value
+        heapreplace(_BASE_PAIR_CACHE_RANKS, (rank, key))
 
 
 def _directed_neighbors(

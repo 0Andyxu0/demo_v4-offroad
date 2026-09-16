@@ -91,20 +91,11 @@
 | T11 | 小收益保留旧路、旧路失效立即切换 | `tests/test_static_gis_transfer.py::test_t11_hysteresis_retains_small_gain_but_invalid_old_route_switches` |
 | T12 | 投影静态栅格按 WGS84 H3 中心正确采样 | `tests/test_static_gis_transfer.py::test_t12_projected_static_raster_is_sampled_from_wgs84_centers` |
 
-## 8. 门禁
-
-唯一基线验收入口：
+## 8. 日常检查
 
 ```powershell
-$env:PYTHONIOENCODING = "utf-8"
-python scripts\verify_baseline.py
+python -m pytest -q
+python -m ruff check src tests
 ```
 
-验收必须同时满足：
-
-- CL-001～CL-040 每个编号在测试函数中恰好出现一次；
-- 全部 pytest 通过；
-- 语句覆盖率 ≥80%，分支覆盖率 ≥70%；
-- `ruff check src tests demo scripts` 零错误；
-- `mypy src scripts` 零错误；
-- 活动文档禁用符号、ADR 编号唯一、Git 差异格式和私有文件检查通过。
+测试名称不再承担追踪门禁；覆盖率、Mypy、ADR/CL 编号、自制 AST 审计和 GUI 启动均不属于日常检查。

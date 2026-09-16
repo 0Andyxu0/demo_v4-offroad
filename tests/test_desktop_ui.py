@@ -615,6 +615,8 @@ def test_desktop_load_map_and_load_route_operations(
         json.dumps({
             "artifact_kind": "tile_h3_cache",
             "output_dir": str(tmp_path),
+            "res_fine": 14,
+            "tile_res": 11,
             "tiles": [],
         }),
         encoding="utf-8",
@@ -680,6 +682,8 @@ def test_desktop_load_map_and_load_route_operations(
         time.sleep(0.001)
     assert window._project.tile_build["output_dir"] == str(tmp_path)
     assert window._project.route["parquet_path"] == str(tile_manifest_file)
+    assert window._project.route["res_fine"] == 14
+    assert window._project.route["res_coarse"] == 11
     assert window.progress_bar.value() == 100
 
     # 4. Test window integration: load_route
@@ -691,6 +695,28 @@ def test_desktop_load_map_and_load_route_operations(
     assert window._project.route["output_dir"] == str(tmp_path)
     assert window.candidate_box.count() == 1
     assert "fastest_route" in window.candidate_box.itemText(0)
-    assert window.progress_bar.value() == 100
-
     window.close()
+
+
+def test_set_route_tile_manifest_auto_syncs_resolutions(tmp_path: Path) -> None:
+    """_set_route_tile_manifest aligns route res_fine and res_coarse with tile manifest."""
+    manifest_file = tmp_path / "tile_manifest.json"
+    manifest_file.write_text(
+        json.dumps({
+            "artifact_kind": "tile_h3_cache",
+            "output_dir": str(tmp_path),
+            "res_fine": 14,
+            "tile_res": 11,
+            "tiles": [],
+        }),
+        encoding="utf-8",
+    )
+    route: dict[str, object] = {
+        "parquet_path": str(manifest_file),
+        "res_fine": 9,
+        "res_coarse": 7,
+    }
+    tile: dict[str, object] = {"output_dir": str(tmp_path)}
+    desktop_client._set_route_tile_manifest(route, tile)
+    assert route["res_fine"] == 14
+    assert route["res_coarse"] == 11

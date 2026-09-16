@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Mapping
+from heapq import heappop, heappush
 from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
+from time import perf_counter
 from typing import cast
 
 import geopandas as gpd
@@ -33,6 +36,11 @@ from h3_offroad_planner.models import (
     Path as PlannerPath,
 )
 from h3_offroad_planner.planners import PlannerFactory
+from h3_offroad_planner.routing_index import (
+    ROUTING_INDEX_KIND,
+    RoutingIndex,
+    open_routing_index,
+)
 
 __all__ = [
     "estimate_h3_cells_for_roi",
@@ -180,7 +188,10 @@ def _load_route_graph(
     source_metadata: dict[str, object],
     progress: Callable[[str, int, str], None] | None = None,
     progress_range: tuple[int, int] = (75, 84),
+    corridor_ring: int = 1,
 ) -> tuple[H3Graph, dict[str, object]]:
+    if _is_routing_index_metadata(source_metadata):
+        return _load_index_route_graph(request, source_metadata, corridor_ring)
     if _is_tile_cache_metadata(source_metadata):
         return _load_tile_route_graph(
             request, roi_geometry, source_metadata, progress=progress, progress_range=progress_range
@@ -194,11 +205,20 @@ def _load_route_graph(
 def _source_metadata(parquet_path: str) -> dict[str, object]:
     source_path = Path(parquet_path)
     if source_path.suffix.lower() == ".json":
+        if source_path.name == "current.json" and source_path.parent.name == "routing_index":
+            return _routing_index_metadata(source_path)
         metadata = _read_source_manifest(source_path)
-        if not _is_tile_cache_metadata(metadata):
+        if _is_tile_cache_metadata(metadata):
+            current = source_path.parent / "routing_index" / "current.json"
+            if current.is_file():
+                indexed = _routing_index_metadata(current)
+                if indexed["static_input_hash"] != metadata.get("static_input_hash"):
+                    raise PlanningInputError("routing index does not match the tile manifest.")
+                indexed["tile_source_manifest"] = str(source_path)
+                return indexed
+        elif not _is_routing_index_metadata(metadata):
             raise PlanningInputError(
-                "JSON route sources must be tile cache manifests with "
-                "artifact_kind='tile_h3_cache'."
+                "JSON route sources must be a tile cache manifest or routing index."
             )
         return metadata
     sidecar_path = _parquet_manifest_path(parquet_path)
@@ -229,6 +249,229 @@ def _is_tile_cache_metadata(source_metadata: JsonObject) -> bool:
     return source_metadata.get("artifact_kind") == TILE_CACHE_KIND
 
 
+def _is_routing_index_metadata(source_metadata: JsonObject) -> bool:
+    return source_metadata.get("artifact_kind") == ROUTING_INDEX_KIND
+
+
+def _routing_index_metadata(path: Path) -> JsonObject:
+    resolved = path.resolve()
+    index = open_routing_index(resolved)
+    metadata = dict(index.manifest)
+    metadata["source_manifest"] = str(resolved)
+    metadata["routing_index_manifest"] = str(index.build_dir / "routing_index.json")
+    return metadata
+
+
+def _load_index_route_graph(
+    request: RouteRequest,
+    source_metadata: JsonObject,
+    corridor_ring: int,
+) -> tuple[H3Graph, JsonObject]:
+    if corridor_ring not in {1, 2}:
+        raise ValueError("routing-index corridor ring must be 1 or 2.")
+    res_fine = _metadata_int(source_metadata, "res_fine")
+    res_coarse = _metadata_int(source_metadata, "res_coarse")
+    if request.res_fine != res_fine or request.res_coarse != res_coarse:
+        raise PlanningInputError(
+            "RouteRequest resolutions do not match the loaded routing index "
+            f"({res_fine}/{res_coarse})."
+        )
+    index_started = perf_counter()
+    index = open_routing_index(_metadata_str(source_metadata, "source_manifest"))
+    index_open_elapsed = perf_counter() - index_started
+    endpoints = _request_endpoints(request)
+    if request.input_mode != "coordinates":
+        raise PlanningInputError("routing-index planning accepts start and goal coordinates only.")
+    coarse_started = perf_counter()
+    skeletons = _coarse_skeletons(
+        index,
+        _single_endpoint(endpoints, "start"),
+        _single_endpoint(endpoints, "goal"),
+    )
+    coarse_elapsed = perf_counter() - coarse_started
+    active = _expanded_corridor_parents(index, skeletons, corridor_ring)
+    load_started = perf_counter()
+    frame = index.load_cells(active)
+    load_elapsed = perf_counter() - load_started
+    graph_started = perf_counter()
+    graph = H3GridBuilder(res_fine=res_fine, res_coarse=res_coarse).build_graph(frame)
+    metadata = dict(source_metadata)
+    metadata.update(
+        {
+            "routing_index_build_id": index.build_id,
+            "source_loaded_tile_count": len(active),
+            "source_loaded_file_count": 1,
+            "source_raw_row_count": len(frame),
+            "source_tiles": sorted(active),
+            "active_parent_h3": sorted(active),
+            "corridor_ring": corridor_ring,
+            "coarse_skeletons": skeletons,
+            "performance": {
+                "index_open_s": index_open_elapsed,
+                "coarse_search_s": coarse_elapsed,
+                "corridor_load_s": load_elapsed,
+                "graph_build_s": perf_counter() - graph_started,
+            },
+        }
+    )
+    return graph, metadata
+
+
+def _coarse_skeletons(
+    index: RoutingIndex,
+    start: RouteEndpoint,
+    goal: RouteEndpoint,
+) -> dict[str, list[str]]:
+    frame = index.coarse_graph.drop_duplicates(subset=["parent_a", "parent_b"])
+    nodes = set(frame["parent_a"].astype(str)).union(frame["parent_b"].astype(str))
+    if not nodes:
+        raise GridBuildError("routing-index coarse graph is empty.")
+    resolution = _metadata_int(dict(index.manifest), "res_coarse")
+    start_parent = _snap_parent(nodes, start, resolution)
+    goal_parent = _snap_parent(nodes, goal, resolution)
+    adjacency: dict[str, list[tuple[str, dict[str, float]]]] = defaultdict(list)
+    for row in frame.itertuples(index=False):
+        first = str(row.parent_a)
+        second = str(row.parent_b)
+        metrics = {
+            "distance": float(str(row.distance_m)),
+            "slope": float(str(row.slope_mean)),
+            "tri": float(str(row.tri_mean)),
+            "road": float(str(row.road_fraction)),
+            "passable": float(str(row.passable_fraction)),
+            "environment": float(str(row.environment_proxy)),
+        }
+        adjacency[first].append((second, metrics))
+        adjacency[second].append((first, metrics))
+    skeletons: dict[str, list[str]] = {}
+    profiles = ("distance", "eta_road", "terrain_travel", "environment")
+    for profile in profiles:
+        skeletons[profile] = _coarse_shortest_path(
+            adjacency, start_parent, goal_parent, profile, frozenset()
+        )
+    skeletons["widest"] = _coarse_widest_path(adjacency, start_parent, goal_parent)
+    blocked = frozenset(skeletons["distance"][1:-1])
+    try:
+        skeletons["independent_backup"] = _coarse_shortest_path(
+            adjacency, start_parent, goal_parent, "distance", blocked
+        )
+    except GridBuildError:
+        skeletons["independent_backup"] = []
+    return skeletons
+
+
+def _snap_parent(nodes: set[str], endpoint: RouteEndpoint, resolution: int) -> str:
+    direct = str(h3.latlng_to_cell(endpoint.lat, endpoint.lng, resolution))
+    if direct in nodes:
+        return direct
+    return min(
+        nodes,
+        key=lambda cell: _haversine_m(
+            endpoint.lat,
+            endpoint.lng,
+            float(h3.cell_to_latlng(cell)[0]),
+            float(h3.cell_to_latlng(cell)[1]),
+        ),
+    )
+
+
+def _coarse_shortest_path(
+    adjacency: Mapping[str, list[tuple[str, dict[str, float]]]],
+    start: str,
+    goal: str,
+    profile: str,
+    blocked: frozenset[str],
+) -> list[str]:
+    queue: list[tuple[float, str]] = [(0.0, start)]
+    costs = {start: 0.0}
+    previous: dict[str, str] = {}
+    while queue:
+        cost, current = heappop(queue)
+        if cost != costs.get(current):
+            continue
+        if current == goal:
+            path = [goal]
+            while path[-1] != start:
+                path.append(previous[path[-1]])
+            return list(reversed(path))
+        for neighbor, metrics in adjacency.get(current, []):
+            if neighbor in blocked and neighbor not in {start, goal}:
+                continue
+            candidate = cost + _coarse_weight(metrics, profile)
+            if candidate < costs.get(neighbor, float("inf")):
+                costs[neighbor] = candidate
+                previous[neighbor] = current
+                heappush(queue, (candidate, neighbor))
+    raise GridBuildError(f"coarse routing index has no {profile} path between endpoints.")
+
+
+def _coarse_weight(metrics: Mapping[str, float], profile: str) -> float:
+    distance = metrics["distance"]
+    if profile == "eta_road":
+        return distance / (1.0 + 2.0 * metrics["road"])
+    if profile == "terrain_travel":
+        return distance * (1.0 + metrics["slope"] / 30.0 + metrics["tri"] / 10.0)
+    if profile == "environment":
+        return distance * (1.0 + metrics["environment"])
+    return distance
+
+
+def _coarse_widest_path(
+    adjacency: Mapping[str, list[tuple[str, dict[str, float]]]],
+    start: str,
+    goal: str,
+) -> list[str]:
+    queue: list[tuple[float, float, float, str]] = [(-1.0, 0.0, 0.0, start)]
+    best = {start: (-1.0, 0.0, 0.0)}
+    previous: dict[str, str] = {}
+    while queue:
+        negative_margin, risk, distance, current = heappop(queue)
+        if best.get(current) != (negative_margin, risk, distance):
+            continue
+        if current == goal:
+            path = [goal]
+            while path[-1] != start:
+                path.append(previous[path[-1]])
+            return list(reversed(path))
+        current_margin = -negative_margin
+        for neighbor, metrics in adjacency.get(current, []):
+            proxy = min(
+                metrics["passable"],
+                max(0.0, 1.0 - metrics["slope"] / 30.0),
+                max(0.0, 1.0 - metrics["tri"] / 10.0),
+            )
+            candidate = (
+                -min(current_margin, proxy),
+                risk + metrics["slope"] + metrics["tri"],
+                distance + metrics["distance"],
+            )
+            if candidate < best.get(neighbor, (float("inf"),) * 3):
+                best[neighbor] = candidate
+                previous[neighbor] = current
+                heappush(queue, (*candidate, neighbor))
+    raise GridBuildError("coarse routing index has no widest path between endpoints.")
+
+
+def _expanded_corridor_parents(
+    index: RoutingIndex,
+    skeletons: Mapping[str, list[str]],
+    ring: int,
+) -> set[str]:
+    available = set(index.coarse_graph["parent_a"].astype(str)).union(
+        index.coarse_graph["parent_b"].astype(str)
+    )
+    backbone = {parent for path in skeletons.values() for parent in path}
+    active = {
+        str(neighbor)
+        for parent in backbone
+        for neighbor in h3.grid_disk(parent, ring)
+        if str(neighbor) in available
+    }
+    if not active:
+        raise GridBuildError("coarse skeleton expansion selected no indexed parents.")
+    return active
+
+
 def _load_tile_route_graph(
     request: RouteRequest,
     roi_geometry: BaseGeometry,
@@ -236,6 +479,7 @@ def _load_tile_route_graph(
     progress: Callable[[str, int, str], None] | None = None,
     progress_range: tuple[int, int] = (75, 84),
 ) -> tuple[H3Graph, JsonObject]:
+    load_started = perf_counter()
     res_fine = _metadata_int(source_metadata, "res_fine")
     tile_res = _metadata_int(source_metadata, "tile_res")
     if request.res_fine != res_fine or request.res_coarse != tile_res:
@@ -253,13 +497,21 @@ def _load_tile_route_graph(
         progress=progress,
         progress_range=progress_range,
     )
+    load_finished = perf_counter()
     if progress is not None:
         progress("global_plan", progress_range[1], f"building graph from {len(selected)} tiles")
     graph = H3GridBuilder(res_fine=res_fine, res_coarse=tile_res).build_graph(
         pd.concat(frames, ignore_index=True).drop_duplicates(subset="h3index")
     )
     filtered = _filter_graph_by_roi(graph, roi_geometry)
-    return filtered, _tile_route_metadata(source_metadata, selected, res_fine, tile_res)
+    metadata = _tile_route_metadata(source_metadata, selected, res_fine, tile_res)
+    metadata["source_raw_row_count"] = sum(len(frame) for frame in frames)
+    metadata["source_loaded_file_count"] = len(selected)
+    metadata["performance"] = {
+        "corridor_load_s": load_finished - load_started,
+        "graph_build_s": perf_counter() - load_finished,
+    }
+    return filtered, metadata
 
 
 def _selected_tile_records(

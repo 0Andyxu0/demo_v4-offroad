@@ -13,7 +13,7 @@ from h3_offroad_planner.factor_model import (
     FactorModelConfig,
     evaluate_factor_model,
 )
-from h3_offroad_planner.models import PlanningInputError, VehicleProfile
+from h3_offroad_planner.models import H3Graph, PlanningInputError, VehicleProfile
 from h3_offroad_planner.replanning import (
     ReplanPolicy,
     _FrozenRoleCost,
@@ -179,6 +179,63 @@ def test_cl031_restart_snapshot_and_hash_mismatch_guard(
             restored_graph,
             changed_model,
         )
+
+
+def test_indexed_restart_and_blockage_replan_do_not_require_gpkg(
+    tmp_path: Path,
+    vehicle: VehicleProfile,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, plan = _plan_fixture(tmp_path, vehicle)
+
+    class FakeIndex:
+        build_id = "build-1"
+
+        def load_graph(self, parents: set[str]) -> H3Graph:
+            assert parents == {"pa", "pb", "ps", "pg"}
+            return graph
+
+    monkeypatch.setattr(
+        "h3_offroad_planner.route_persistence.open_routing_index",
+        lambda _path: FakeIndex(),
+    )
+    source = {
+        "artifact_kind": "h3_routing_index",
+        "source_manifest": str(tmp_path / "routing_index" / "current.json"),
+        "routing_index_manifest": str(tmp_path / "build-1" / "routing_index.json"),
+        "build_id": "build-1",
+        "active_parent_h3": ["pa", "pb", "ps", "pg"],
+    }
+    write_route_plan_outputs(
+        plan,
+        graph,
+        str(tmp_path),
+        source,
+        export_gpkg=False,
+    )
+    selection = select_route(str(tmp_path / "route_plan.json"), role="fastest_eta")
+    restored = load_route_graph_snapshot(str(tmp_path / "route_manifest.json"))
+    evaluation = evaluate_factor_model(restored, vehicle, FactorModelConfig())
+    blocked = selection.active_h3_path[1]
+
+    result = replan_route(
+        ReplanRequest(
+            selection_path=str(tmp_path / "route_selection.json"),
+            blockage_observations=(
+                _blockage("indexed-block", blocked, "tentative", 1.0, trusted=True),
+            ),
+            current_h3=selection.active_h3_path[0],
+            now_epoch_s=1.0,
+        ),
+        restored,
+        evaluation,
+    )
+
+    assert result.algorithm == "DStarLite"
+    assert blocked not in load_route_selection(
+        str(tmp_path / "route_selection.json")
+    ).active_h3_path
+    assert not (tmp_path / "routes.gpkg").exists()
 
 
 def test_cl032_confirmation_count_promotes_tentative_record(
