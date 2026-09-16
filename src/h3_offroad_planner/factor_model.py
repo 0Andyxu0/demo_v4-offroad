@@ -357,6 +357,7 @@ class WeatherConfig:
     theta_dry: float | None = None
     theta_wet: float | None = None
     calibration_status: str = "unspecified"
+    api_reference_mm: float | None = None
 
     def __post_init__(self) -> None:
         if self.provider != "open-meteo":
@@ -377,6 +378,10 @@ class WeatherConfig:
             and not 0.0 <= self.theta_dry < self.theta_wet <= 1.0
         ):
             raise ConfigError("theta calibration must satisfy 0 <= dry < wet <= 1.")
+        if self.api_reference_mm is not None and (
+            not isfinite(self.api_reference_mm) or self.api_reference_mm <= 0.0
+        ):
+            raise ConfigError("api_reference_mm must be finite and positive.")
         if self.calibration_status not in {
             "unspecified",
             "provisional_cldas_spatial_20260101",
@@ -703,6 +708,7 @@ def load_static_planning_config(path: str) -> StaticPlanningConfig:
         theta_dry=_mapping_optional_float(weather_data, "theta_dry"),
         theta_wet=_mapping_optional_float(weather_data, "theta_wet"),
         calibration_status=str(weather_data.get("calibration_status", "unspecified")),
+        api_reference_mm=_mapping_optional_float(weather_data, "api_reference_mm"),
     )
     geometry = GeometryConfig(
         simplify_tolerance_m=_mapping_float(geometry_data, "simplify_tolerance_m", 0.05),
@@ -1677,3 +1683,4 @@ def _atomic_yaml_write(path: Path, payload: object) -> None:
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
         yaml.safe_dump(payload, stream, allow_unicode=True, sort_keys=True)
     temporary.replace(path)
+
