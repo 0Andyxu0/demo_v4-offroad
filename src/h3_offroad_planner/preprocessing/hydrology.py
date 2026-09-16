@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from math import isfinite
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import numpy as np
 import numpy.typing as npt
@@ -108,6 +109,18 @@ def preprocess_hydrology(
         )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    grass_config = output / ".grass_config"
+    grass_config.mkdir(parents=True, exist_ok=True)
+    grass_home = output / ".grass_home"
+    grass_home.mkdir(parents=True, exist_ok=True)
+    grass_tmp = output / ".grass_tmp"
+    grass_tmp.mkdir(parents=True, exist_ok=True)
+    os.environ["GRASS_CONFIG_DIR"] = str(grass_config)
+    os.environ["HOME"] = str(grass_home)
+    os.environ["USERPROFILE"] = str(grass_home)
+    os.environ["TEMP"] = str(grass_tmp)
+    os.environ["TMP"] = str(grass_tmp)
+    os.environ["TMPDIR"] = str(grass_tmp)
     analysis_dem = _prepare_metric_dem(dem, output, config.analysis_resolution_m)
     paths = {
         "accumulation": output / "accumulation.tif",
@@ -118,53 +131,53 @@ def preprocess_hydrology(
         "boundary": output / "boundary_influence.tif",
         "manifest": output / "hydrology_manifest.json",
     }
-    with TemporaryDirectory(prefix="h3-hydrology-", dir=output) as temporary:
-        location = Path(temporary) / "location"
-        _run_grass([executable, "-c", str(analysis_dem), str(location), "-e"])
-        mapset = str(location / "PERMANENT")
+    temporary = Path(tempfile.mkdtemp(prefix="h3-hydrology-", dir=output))
+    location = Path(temporary) / "location"
+    _run_grass([executable, "-c", str(analysis_dem), str(location), "-e"])
+    mapset = str(location / "PERMANENT")
+    _run_grass(
+        [
+            executable,
+            mapset,
+            "--exec",
+            "r.in.gdal",
+            f"input={analysis_dem}",
+            "output=dem",
+            "--overwrite",
+        ]
+    )
+    region = [executable, mapset, "--exec", "g.region", "raster=dem"]
+    if config.analysis_resolution_m is not None:
+        region.append(f"res={config.analysis_resolution_m}")
+    _run_grass(region)
+    watershed = [
+        executable,
+        mapset,
+        "--exec",
+        "r.watershed",
+        "elevation=dem",
+        "accumulation=accumulation",
+        "drainage=drainage_direction",
+        "tci=twi",
+        "--overwrite",
+    ]
+    if config.flow_method == "d8":
+        watershed.append("-s")
+    _run_grass(watershed)
+    for name in ("accumulation", "drainage_direction", "twi"):
         _run_grass(
             [
                 executable,
                 mapset,
                 "--exec",
-                "r.in.gdal",
-                f"input={analysis_dem}",
-                "output=dem",
+                "r.out.gdal",
+                f"input={name}",
+                f"output={paths[name]}",
+                "format=GTiff",
+                "createopt=COMPRESS=DEFLATE",
                 "--overwrite",
             ]
         )
-        region = [executable, mapset, "--exec", "g.region", "raster=dem"]
-        if config.analysis_resolution_m is not None:
-            region.append(f"res={config.analysis_resolution_m}")
-        _run_grass(region)
-        watershed = [
-            executable,
-            mapset,
-            "--exec",
-            "r.watershed",
-            "elevation=dem",
-            "accumulation=accumulation",
-            "drainage=drainage_direction",
-            "tci=twi",
-            "--overwrite",
-        ]
-        if config.flow_method == "d8":
-            watershed.append("-s")
-        _run_grass(watershed)
-        for name in ("accumulation", "drainage_direction", "twi"):
-            _run_grass(
-                [
-                    executable,
-                    mapset,
-                    "--exec",
-                    "r.out.gdal",
-                    f"input={name}",
-                    f"output={paths[name]}",
-                    "format=GTiff",
-                    "createopt=COMPRESS=DEFLATE",
-                    "--overwrite",
-                ]
-            )
     _write_masks_and_drainage(paths, config)
     manifest = _manifest_payload(dem, analysis_dem, paths, config, executable)
     paths["manifest"].write_text(
@@ -185,7 +198,9 @@ def preprocess_hydrology(
 
 
 def _run_grass(command: list[str]) -> None:
-    completed = subprocess.run(command, capture_output=True, check=False, text=True)
+    completed = subprocess.run(
+        command, capture_output=True, check=False, text=True, encoding="utf-8", errors="replace"
+    )
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise GISInputError(f"GRASS hydrology command failed: {detail}")
