@@ -25,7 +25,7 @@ h3-offroad-desktop = "h3_offroad_planner.desktop_client:run_desktop_client"
 h3-offroad-console = "h3_offroad_planner.web_console:run_web_console"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = ["mypy>=1.0", "pytest>=8.0", "ruff>=0.4"]
 desktop = ["PyQt5>=5.15", "PyQtWebEngine>=5.15"]
 
 [tool.setuptools.packages.find]
@@ -38,6 +38,10 @@ h3_offroad_planner = ["web/*.html"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = ["--basetemp=pytest_temp"]
+
+[[tool.mypy.overrides]]
+module = ["geopandas.*", "rasterio.*", "shapely.*", "h3.*", "affine.*"]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py311"
