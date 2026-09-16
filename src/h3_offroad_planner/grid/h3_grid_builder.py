@@ -27,7 +27,7 @@ __all__ = ["H3GridBuilder"]
 
 EARTH_RADIUS_M: float = 6_371_000.0
 DEFAULT_ROAD_BUFFER_DEG: float = 0.001
-AREA_DOMINANCE_MAX_SAMPLES: int = 250_000
+AREA_DOMINANCE_MAX_PIXELS: int = 250_000
 LOGGER = logging.getLogger(__name__)
 CRS_WGS84: str = "EPSG:4326"
 LANDCOVER_CODE_COLUMNS: tuple[str, ...] = (
@@ -760,8 +760,8 @@ def _dominant_soil_codes_or_fallback(layer: RasterLayer, frame: pd.DataFrame) ->
     try:
         if CRS.from_string(layer.crs) != CRS.from_string(CRS_WGS84):
             raise GridBuildError("area-dominance soil sampling requires WGS84 raster geometry")
-        if len(frame) > AREA_DOMINANCE_MAX_SAMPLES:
-            raise GridBuildError("too many H3 cells for area-dominance sampling")
+        if layer.width * layer.height > AREA_DOMINANCE_MAX_PIXELS:
+            raise GridBuildError("soil raster is too large for area-dominance sampling")
         return _dominant_soil_codes(layer, frame)
     except (GridBuildError, rasterio.errors.RasterioError, ValueError) as exc:
         LOGGER.warning("Falling back to soil center sampling: %s", exc)

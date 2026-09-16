@@ -294,12 +294,19 @@ def _parse_soil_catalog_row(row: dict[str, str]) -> tuple[int, str]:
 
 
 def _profile_from_soil_code(code: int, name_zh: str) -> SoilProfile:
+    """Create a SoilProfile with a provisional engineering USCS inference.
+
+    The mapping is derived from the local Chinese soil-type catalog and common
+    geotechnical approximations.  It is not a substitute for laboratory or
+    field classification and is marked as provisional in generated artifacts.
+    """
+    soil_texture, uscs, bekker_soil = _soil_texture_mapping(code)
     return SoilProfile(
         code=code,
         name_zh=name_zh,
-        soil_texture=None,
-        uscs=None,
-        bekker_soil=None,
+        soil_texture=soil_texture,
+        uscs=uscs,
+        bekker_soil=bekker_soil,
         soil_moisture=None,
         is_passable=True,
     )
