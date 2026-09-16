@@ -52,6 +52,8 @@ def test_cl013_portsmap_reuses_identical_parent_pair_context(vehicle: VehiclePro
     second = context.search("a", "f", profile)
     assert first.h3_path == second.h3_path
     assert second.cache_hits > first.cache_hits
+    assert context.fine_search_calls > 0
+    assert context.visited_parent_count > 0
 
 
 def test_cl015_portsmap_cache_keeps_only_latest_context_per_parent(

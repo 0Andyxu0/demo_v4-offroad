@@ -158,6 +158,10 @@ def test_deterministic_planner_validation_and_empty_scale_guard() -> None:
         )
     with pytest.raises(ValueError, match="penalty_factor"):
         DeterministicParetoPlanner(context, penalty_factor=-1.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="attempts_per_profile"):
+        DeterministicParetoPlanner(  # type: ignore[arg-type]
+            context, attempts_per_profile=0
+        )
     valid_metrics = _generated("a", 1, 1, 1, 1, 0.5).metrics
     with pytest.raises(ValueError, match="non-empty"):
         GeneratedPath((), valid_metrics, "x", 1.0)
@@ -166,6 +170,31 @@ def test_deterministic_planner_validation_and_empty_scale_guard() -> None:
     evaluation = FactorEvaluation({}, {}, "v", "f", "s", "g")
     with pytest.raises(PlanningFailedError, match="passable edges"):
         _robust_scales(evaluation)
+
+
+def test_fast_five_searches_each_base_profile_once(vehicle: VehicleProfile) -> None:
+    graph = _corridor_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    context = PortsMapSearchContext(graph, evaluation)
+    planner = DeterministicParetoPlanner(
+        context,
+        attempts_per_profile=1,
+        environment_pressures=(),
+    )
+
+    raw = planner.plan("s", "g")
+    result = CandidateAggregator(graph, context).aggregate(raw, "fastest", 5)
+
+    assert planner.profile_search_count == 4
+    assert len(raw) <= 5
+    assert not any(path.generation_profile.startswith("environment_w") for path in raw)
+    assert {
+        "fastest_eta",
+        "shortest_distance",
+        "max_passability_margin",
+        "minimum_travel_cost",
+        "independent_backup",
+    } == {role for candidate in result.candidates for role in candidate.roles}
 
 
 def test_cl020_pareto_front_crowding_and_widest_preservation() -> None:
@@ -390,4 +419,3 @@ def test_deterministic_planner_emits_sub_progress(vehicle: VehicleProfile) -> No
     )
     assert any("searching profile [1/" in msg for _, _, msg in events)
     assert any(msg == "searching widest bottleneck route" for _, _, msg in events)
-

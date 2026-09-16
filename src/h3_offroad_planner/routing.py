@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from heapq import heappop, heappush
-from math import atan2, cos, radians, sin, sqrt
+from math import atan2, cos, isfinite, radians, sin, sqrt
 from pathlib import Path
 from time import perf_counter
 from typing import cast
@@ -189,9 +189,15 @@ def _load_route_graph(
     progress: Callable[[str, int, str], None] | None = None,
     progress_range: tuple[int, int] = (75, 84),
     corridor_ring: int = 1,
+    max_widest_detour_ratio: float | None = None,
 ) -> tuple[H3Graph, dict[str, object]]:
     if _is_routing_index_metadata(source_metadata):
-        return _load_index_route_graph(request, source_metadata, corridor_ring)
+        return _load_index_route_graph(
+            request,
+            source_metadata,
+            corridor_ring,
+            max_widest_detour_ratio=max_widest_detour_ratio,
+        )
     if _is_tile_cache_metadata(source_metadata):
         return _load_tile_route_graph(
             request, roi_geometry, source_metadata, progress=progress, progress_range=progress_range
@@ -266,6 +272,8 @@ def _load_index_route_graph(
     request: RouteRequest,
     source_metadata: JsonObject,
     corridor_ring: int,
+    *,
+    max_widest_detour_ratio: float | None = None,
 ) -> tuple[H3Graph, JsonObject]:
     if corridor_ring not in {1, 2}:
         raise ValueError("routing-index corridor ring must be 1 or 2.")
@@ -283,10 +291,11 @@ def _load_index_route_graph(
     if request.input_mode != "coordinates":
         raise PlanningInputError("routing-index planning accepts start and goal coordinates only.")
     coarse_started = perf_counter()
-    skeletons = _coarse_skeletons(
+    skeletons, coarse_diagnostics = _coarse_skeletons(
         index,
         _single_endpoint(endpoints, "start"),
         _single_endpoint(endpoints, "goal"),
+        max_widest_detour_ratio=max_widest_detour_ratio,
     )
     coarse_elapsed = perf_counter() - coarse_started
     active = _expanded_corridor_parents(index, skeletons, corridor_ring)
@@ -306,6 +315,7 @@ def _load_index_route_graph(
             "active_parent_h3": sorted(active),
             "corridor_ring": corridor_ring,
             "coarse_skeletons": skeletons,
+            **coarse_diagnostics,
             "performance": {
                 "index_open_s": index_open_elapsed,
                 "coarse_search_s": coarse_elapsed,
@@ -321,7 +331,13 @@ def _coarse_skeletons(
     index: RoutingIndex,
     start: RouteEndpoint,
     goal: RouteEndpoint,
-) -> dict[str, list[str]]:
+    *,
+    max_widest_detour_ratio: float | None = None,
+) -> tuple[dict[str, list[str]], JsonObject]:
+    if max_widest_detour_ratio is not None and (
+        not isfinite(max_widest_detour_ratio) or max_widest_detour_ratio < 0.0
+    ):
+        raise ValueError("max_widest_detour_ratio must be finite and non-negative.")
     frame = index.coarse_graph.drop_duplicates(subset=["parent_a", "parent_b"])
     nodes = set(frame["parent_a"].astype(str)).union(frame["parent_b"].astype(str))
     if not nodes:
@@ -349,7 +365,16 @@ def _coarse_skeletons(
         skeletons[profile] = _coarse_shortest_path(
             adjacency, start_parent, goal_parent, profile, frozenset()
         )
-    skeletons["widest"] = _coarse_widest_path(adjacency, start_parent, goal_parent)
+    widest = _coarse_widest_path(adjacency, start_parent, goal_parent)
+    shortest_distance = _coarse_path_distance(adjacency, skeletons["distance"])
+    widest_distance = _coarse_path_distance(adjacency, widest)
+    widest_limit = (
+        None
+        if max_widest_detour_ratio is None
+        else shortest_distance * (1.0 + max_widest_detour_ratio)
+    )
+    widest_included = widest_limit is None or widest_distance <= widest_limit
+    skeletons["widest"] = widest if widest_included else []
     blocked = frozenset(skeletons["distance"][1:-1])
     try:
         skeletons["independent_backup"] = _coarse_shortest_path(
@@ -357,7 +382,28 @@ def _coarse_skeletons(
         )
     except GridBuildError:
         skeletons["independent_backup"] = []
-    return skeletons
+    return skeletons, {
+        "coarse_widest_included": widest_included,
+        "coarse_widest_parent_count": len(widest),
+        "coarse_widest_distance_m": widest_distance,
+        "coarse_widest_limit_m": widest_limit,
+    }
+
+
+def _coarse_path_distance(
+    adjacency: Mapping[str, list[tuple[str, dict[str, float]]]],
+    path: list[str],
+) -> float:
+    total = 0.0
+    for current, neighbor in zip(path[:-1], path[1:], strict=True):
+        metrics = next(
+            (edge for target, edge in adjacency.get(current, []) if target == neighbor),
+            None,
+        )
+        if metrics is None:
+            raise GridBuildError(f"coarse path contains a missing edge: {current}->{neighbor}.")
+        total += metrics["distance"]
+    return total
 
 
 def _snap_parent(nodes: set[str], endpoint: RouteEndpoint, resolution: int) -> str:

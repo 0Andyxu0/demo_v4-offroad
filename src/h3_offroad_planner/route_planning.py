@@ -112,6 +112,18 @@ def _run_route_plan_once(
     if request.factor_model_path is None:
         raise PlanningInputError("factor_model_path is required for the RoutePlan flow.")
     _validate_route_plan_planner(request.planner_config_path)
+    static_planning = (
+        load_static_planning_config(request.static_planning_path)
+        if request.static_planning_path is not None
+        else None
+    )
+    if static_planning is not None and (
+        request.candidate_limit != static_planning.decision.candidate_limit
+        or request.max_candidate_paths != static_planning.decision.display_limit
+    ):
+        raise PlanningInputError(
+            "route candidate limits must match the versioned static planning policy."
+        )
     endpoints = _request_endpoints(request)
     roi_geometry, _ = _resolve_roi(request, endpoints)
     estimated_cells = estimate_h3_cells_for_roi(roi_geometry, request.res_fine)
@@ -122,6 +134,8 @@ def _run_route_plan_once(
         progress("global_plan", start_pct, "loading route graph and corridor tiles")
     phase_started = perf_counter()
     source_metadata = _source_metadata(request.parquet_path)
+    fast_five = source_metadata.get("artifact_kind") == "h3_routing_index"
+    search_policy = "fast_five_v1" if fast_five else "full_pareto_v1"
     timings["index_open_s"] = perf_counter() - phase_started
     graph, source_metadata = _load_route_graph(
         request,
@@ -130,6 +144,11 @@ def _run_route_plan_once(
         progress=progress,
         progress_range=(start_pct, start_pct + 9),
         corridor_ring=corridor_ring,
+        max_widest_detour_ratio=(
+            static_planning.decision.detour_ratio
+            if fast_five and static_planning is not None
+            else None
+        ),
     )
     source_timings = source_metadata.get("performance", {})
     if isinstance(source_timings, dict):
@@ -145,18 +164,6 @@ def _run_route_plan_once(
     _restore_static_authority(graph, source_metadata)
     vehicle = load_vehicle(request.vehicle_path)
     factor_config = load_factor_model(request.factor_model_path)
-    static_planning = (
-        load_static_planning_config(request.static_planning_path)
-        if request.static_planning_path is not None
-        else None
-    )
-    if static_planning is not None and (
-        request.candidate_limit != static_planning.decision.candidate_limit
-        or request.max_candidate_paths != static_planning.decision.display_limit
-    ):
-        raise PlanningInputError(
-            "route candidate limits must match the versioned static planning policy."
-        )
     if progress is not None:
         progress(
             "global_plan",
@@ -209,15 +216,19 @@ def _run_route_plan_once(
     )
     if progress is not None:
         progress("global_plan", start_pct + 14, "searching Pareto candidate routes")
-    raw_candidates = DeterministicParetoPlanner(
+    planner = DeterministicParetoPlanner(
         context,
         max_paths=request.max_candidate_paths,
         candidate_limit=request.candidate_limit,
         penalty_factor=request.penalty_factor,
         environment_pressures=(
-            () if static_planning is None else static_planning.environment.request_pressures
+            ()
+            if fast_five or static_planning is None
+            else static_planning.environment.request_pressures
         ),
-    ).plan(start, goal, progress=progress)
+        attempts_per_profile=1 if fast_five else None,
+    )
+    raw_candidates = planner.plan(start, goal, progress=progress)
     if progress is not None:
         progress(
             "global_plan",
@@ -329,6 +340,8 @@ def _run_route_plan_once(
             "max_candidate_paths": request.max_candidate_paths,
             "candidate_limit": request.candidate_limit,
             "penalty_factor": request.penalty_factor,
+            "search_policy": search_policy,
+            "profile_search_count": planner.profile_search_count,
             **robust_statistics,
         },
         output_files=output_files,
@@ -382,6 +395,12 @@ def _run_route_plan_once(
             "returned_candidate_count": len(candidates),
             "corridor_ring": _mapping_int(source_metadata, "corridor_ring", 0),
             "active_parent_count": _mapping_list_len(source_metadata, "active_parent_h3"),
+            "search_policy": search_policy,
+            "profile_search_count": planner.profile_search_count,
+            "fine_search_calls": context.fine_search_calls,
+            "visited_parent_count": context.visited_parent_count,
+            "coarse_widest_included": source_metadata.get("coarse_widest_included"),
+            "coarse_widest_parent_count": source_metadata.get("coarse_widest_parent_count"),
             "pair_cache_hits": context.cache_hits,
             "base_pair_cache_hits": context.base_cache_hits,
             "base_pair_cache_misses": context.base_cache_misses,

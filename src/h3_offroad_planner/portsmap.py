@@ -234,6 +234,8 @@ class PortsMapSearchContext:
         self._cache_hits = 0
         self._base_cache_hits = 0
         self._base_cache_misses = 0
+        self._fine_search_calls = 0
+        self._visited_parents: set[str] = set()
         coord_scale = 1.0
         if evaluation.directed_edges:
             sample_ratios: list[float] = []
@@ -285,6 +287,16 @@ class PortsMapSearchContext:
     def base_cache_misses(self) -> int:
         """Return eligible base searches not served by the cross-request cache."""
         return self._base_cache_misses
+
+    @property
+    def fine_search_calls(self) -> int:
+        """Return all request-local fine-grid searches, including overlays."""
+        return self._fine_search_calls
+
+    @property
+    def visited_parent_count(self) -> int:
+        """Return unique parents expanded by exact macro searches."""
+        return len(self._visited_parents)
 
     def build_topology(
         self,
@@ -629,6 +641,7 @@ class PortsMapSearchContext:
         penalty_factor: float,
         targets: set[str] | None = None,
     ) -> dict[str, tuple[float, tuple[str, ...]]]:
+        self._fine_search_calls += 1
         if source not in allowed:
             return {}
         heap: list[tuple[float, str]] = [(0.0, source)]
@@ -795,6 +808,7 @@ class PortsMapSearchContext:
             # 2. Internal-parent edges
             parent = self._parent(current)
             visited_parents.add(parent)
+            self._visited_parents.add(parent)
             if precomputed_adjacency is not None:
                 outgoing.extend(precomputed_adjacency.get(current, []))
             else:

@@ -71,6 +71,7 @@ class DeterministicParetoPlanner:
         penalty_factor: float = DEFAULT_PENALTY_FACTOR,
         include_composite: bool = False,
         environment_pressures: tuple[float, ...] = (),
+        attempts_per_profile: int | None = None,
     ) -> None:
         """Initialize deterministic profile and reuse-penalty candidate generation."""
         if not 1 <= max_paths <= 5:
@@ -79,11 +80,19 @@ class DeterministicParetoPlanner:
             raise ValueError("candidate_limit must be in [max_paths, 24].")
         if not isfinite(penalty_factor) or penalty_factor < 0.0:
             raise ValueError("penalty_factor must be finite and non-negative.")
+        if attempts_per_profile is not None and not 1 <= attempts_per_profile <= 3:
+            raise ValueError("attempts_per_profile must be in [1, 3].")
         self.context = context
         self.max_paths = max_paths
         self.candidate_limit = candidate_limit
         self.penalty_factor = penalty_factor
         self.include_composite = include_composite
+        self.attempts_per_profile = (
+            max(1, min(max_paths, 3))
+            if attempts_per_profile is None
+            else attempts_per_profile
+        )
+        self.profile_search_count = 0
         if len(set(environment_pressures)) != len(environment_pressures) or any(
             not isfinite(value) or value < 0.0 for value in environment_pressures
         ):
@@ -106,12 +115,11 @@ class DeterministicParetoPlanner:
         )
         candidates: dict[tuple[str, ...], GeneratedPath] = {}
         penalties: dict[str, int] = {}
-        attempts_per_profile = max(1, min(self.max_paths, 3))
         total_profiles = len(profiles)
         for idx, profile in enumerate(profiles, 1):
             if len(candidates) >= self.candidate_limit:
                 break
-            for attempt in range(attempts_per_profile):
+            for attempt in range(self.attempts_per_profile):
                 if len(candidates) >= self.candidate_limit:
                     break
                 if progress is not None:
@@ -119,8 +127,9 @@ class DeterministicParetoPlanner:
                         "global_plan",
                         89,
                         f"searching profile [{idx}/{total_profiles}: {profile.name}] "
-                        f"(attempt {attempt + 1}/{attempts_per_profile})",
+                        f"(attempt {attempt + 1}/{self.attempts_per_profile})",
                     )
+                self.profile_search_count += 1
                 result = self.context.search(
                     start,
                     goal,
