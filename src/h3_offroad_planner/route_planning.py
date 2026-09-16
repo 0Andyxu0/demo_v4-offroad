@@ -300,7 +300,12 @@ def _run_route_plan_once(
     role_warnings: tuple[str, ...] = ()
     if source_metadata.get("artifact_kind") == "h3_routing_index":
         role_warnings = _routing_role_warnings(
-            {role for candidate in candidates for role in candidate.roles}
+            {role for candidate in candidates for role in candidate.roles},
+            require_independent_backup=(
+                static_planning.decision.require_independent_backup
+                if static_planning is not None
+                else False
+            ),
         )
     if progress is not None:
         progress("evaluation", end_pct, "exporting route plan and thematic layers")
@@ -431,7 +436,11 @@ def _run_route_plan_once(
     return plan
 
 
-def _routing_role_warnings(assigned_roles: set[str]) -> tuple[str, ...]:
+def _routing_role_warnings(
+    assigned_roles: set[str],
+    *,
+    require_independent_backup: bool = False,
+) -> tuple[str, ...]:
     """Validate the four metric roles and soften independent-backup absence."""
     missing_core_roles = sorted(
         {
@@ -446,6 +455,10 @@ def _routing_role_warnings(assigned_roles: set[str]) -> tuple[str, ...]:
             f"ROUTING_INDEX_ROLE_COVERAGE_INSUFFICIENT:{missing_core_roles}"
         )
     if "independent_backup" not in assigned_roles:
+        if require_independent_backup:
+            raise PlanningFailedError(
+                "ROUTING_INDEX_ROLE_COVERAGE_INSUFFICIENT:['independent_backup']"
+            )
         return ("INDEPENDENT_BACKUP_UNAVAILABLE",)
     return ()
 

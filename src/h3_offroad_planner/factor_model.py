@@ -416,6 +416,7 @@ class DecisionConfig:
     switch_relative_improvement: float = 0.05
     candidate_limit: int = 24
     display_limit: int = 5
+    require_independent_backup: bool = False
 
     def __post_init__(self) -> None:
         for name in ("detour_ratio", "clearance_target_m", "clearance_tolerance_m"):
@@ -428,6 +429,8 @@ class DecisionConfig:
             raise ConfigError("display_limit must be in [1, 5].")
         if not self.display_limit <= self.candidate_limit <= 24:
             raise ConfigError("candidate_limit must be in [display_limit, 24].")
+        if not isinstance(self.require_independent_backup, bool):
+            raise ConfigError("require_independent_backup must be a boolean.")
 
 
 @dataclass(frozen=True)
@@ -717,6 +720,9 @@ def load_static_planning_config(path: str) -> StaticPlanningConfig:
         ),
         candidate_limit=_mapping_int(decision_data, "candidate_limit", 24),
         display_limit=_mapping_int(decision_data, "display_limit", 5),
+        require_independent_backup=_mapping_bool(
+            decision_data, "require_independent_backup", False
+        ),
     )
     return StaticPlanningConfig(
         environment=environment,

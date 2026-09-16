@@ -1,4 +1,4 @@
-version: static_gis_route_v2
+﻿version: static_gis_route_v2
 
 soil:
   mode: categorical_drainage
@@ -64,3 +64,5 @@ decision:
   switch_relative_improvement: 0.05
   candidate_limit: 24
   display_limit: 5
+  require_independent_backup: false
+

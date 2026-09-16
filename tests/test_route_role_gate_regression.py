@@ -30,3 +30,18 @@ def test_routing_role_gate_still_rejects_missing_core_role() -> None:
 
     with pytest.raises(PlanningFailedError, match="ROUTING_INDEX_ROLE_COVERAGE_INSUFFICIENT"):
         route_planning._routing_role_warnings(assigned)
+
+
+def test_routing_role_gate_can_require_independent_backup() -> None:
+    assigned = {
+        "fastest_eta",
+        "shortest_distance",
+        "max_passability_margin",
+        "minimum_travel_cost",
+    }
+
+    with pytest.raises(PlanningFailedError, match="independent_backup"):
+        route_planning._routing_role_warnings(
+            assigned,
+            require_independent_backup=True,
+        )
