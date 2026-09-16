@@ -46,6 +46,7 @@ __all__ = [
     "load_static_planning_config",
     "static_input_hash",
     "StaticPlanningConfig",
+    "WeatherConfig",
     "write_effective_snapshots",
     "write_static_planning_snapshot",
 ]
@@ -308,7 +309,7 @@ class EnvironmentConfig:
     def __post_init__(self) -> None:
         if self.model != "surface_drainage_multiplier_v1":
             raise ConfigError("unsupported environment model version.")
-        if self.pressure_basis != "synthetic_scenario":
+        if self.pressure_basis not in {"synthetic_scenario", "model_snapshot_v1"}:
             raise ConfigError("unsupported environment pressure_basis.")
         for name, values in (
             ("comparison_pressures", self.comparison_pressures),
@@ -339,6 +340,49 @@ class EnvironmentConfig:
             "unknown_surface_range": list(self.unknown_surface_range),
             "shared_sensitivity": self.shared_sensitivity,
         }
+
+
+@dataclass(frozen=True)
+class WeatherConfig:
+    """Bounded request-time weather lookup and optional moisture calibration."""
+
+    enabled: bool = False
+    provider: str = "open-meteo"
+    endpoint: str = "https://api.open-meteo.com/v1/forecast"
+    model: str = "best_match"
+    timeout_s: float = 3.0
+    ttl_s: float = 1800.0
+    failure_ttl_s: float = 60.0
+    max_age_s: float = 10800.0
+    theta_dry: float | None = None
+    theta_wet: float | None = None
+    calibration_status: str = "unspecified"
+
+    def __post_init__(self) -> None:
+        if self.provider != "open-meteo":
+            raise ConfigError("unsupported weather provider.")
+        if not self.endpoint.startswith("https://"):
+            raise ConfigError("weather endpoint must use https.")
+        if not self.model:
+            raise ConfigError("weather model must be non-empty.")
+        for name in ("timeout_s", "ttl_s", "failure_ttl_s", "max_age_s"):
+            value = getattr(self, name)
+            if not isfinite(value) or value <= 0.0:
+                raise ConfigError(f"{name} must be finite and positive.")
+        if (self.theta_dry is None) != (self.theta_wet is None):
+            raise ConfigError("theta_dry and theta_wet must be provided together.")
+        if (
+            self.theta_dry is not None
+            and self.theta_wet is not None
+            and not 0.0 <= self.theta_dry < self.theta_wet <= 1.0
+        ):
+            raise ConfigError("theta calibration must satisfy 0 <= dry < wet <= 1.")
+        if self.calibration_status not in {
+            "unspecified",
+            "provisional_cldas_spatial_20260101",
+            "field_validated",
+        }:
+            raise ConfigError("unsupported weather calibration_status.")
 
 
 @dataclass(frozen=True)
@@ -391,18 +435,26 @@ class StaticPlanningConfig:
     """Versioned request policy for the three static-GIS planning increments."""
 
     environment: EnvironmentConfig = EnvironmentConfig()
+    weather: WeatherConfig = WeatherConfig()
     geometry: GeometryConfig = GeometryConfig()
     decision: DecisionConfig = DecisionConfig()
+    soil: Mapping[str, object] = MappingProxyType({})
+    hydrology: Mapping[str, object] = MappingProxyType({})
     version: str = "static_gis_route_v2"
 
     def __post_init__(self) -> None:
         if self.version != "static_gis_route_v2":
             raise ConfigError("unsupported static planning version.")
+        object.__setattr__(self, "soil", MappingProxyType(dict(self.soil)))
+        object.__setattr__(self, "hydrology", MappingProxyType(dict(self.hydrology)))
 
     def to_dict(self) -> dict[str, object]:
         return {
             "version": self.version,
+            "soil": dict(self.soil),
+            "hydrology": dict(self.hydrology),
             "environment": self.environment.to_dict(),
+            "weather": asdict(self.weather),
             "geometry": asdict(self.geometry),
             "decision": asdict(self.decision),
         }
@@ -596,6 +648,7 @@ def load_static_planning_config(path: str) -> StaticPlanningConfig:
         "soil",
         "hydrology",
         "environment",
+        "weather",
         "vehicle_geometry",
         "geometry",
         "decision",
@@ -605,6 +658,7 @@ def load_static_planning_config(path: str) -> StaticPlanningConfig:
         raise ConfigError(f"static planning file contains unsupported fields: {unknown}")
     _validate_static_source_sections(data)
     environment_data = _optional_mapping(data, "environment")
+    weather_data = _optional_mapping(data, "weather")
     decision_data = _optional_mapping(data, "decision")
     geometry_data = _optional_mapping(data, "geometry")
     environment = EnvironmentConfig(
@@ -632,6 +686,21 @@ def load_static_planning_config(path: str) -> StaticPlanningConfig:
             _mapping_float(_optional_mapping(data, "soil"), "shared_sensitivity", 1.0),
         ),
     )
+    weather = WeatherConfig(
+        enabled=_mapping_bool(weather_data, "enabled", False),
+        provider=str(weather_data.get("provider", "open-meteo")),
+        endpoint=str(
+            weather_data.get("endpoint", "https://api.open-meteo.com/v1/forecast")
+        ),
+        model=str(weather_data.get("model", "best_match")),
+        timeout_s=_mapping_float(weather_data, "timeout_s", 3.0),
+        ttl_s=_mapping_float(weather_data, "ttl_s", 1800.0),
+        failure_ttl_s=_mapping_float(weather_data, "failure_ttl_s", 60.0),
+        max_age_s=_mapping_float(weather_data, "max_age_s", 10800.0),
+        theta_dry=_mapping_optional_float(weather_data, "theta_dry"),
+        theta_wet=_mapping_optional_float(weather_data, "theta_wet"),
+        calibration_status=str(weather_data.get("calibration_status", "unspecified")),
+    )
     geometry = GeometryConfig(
         simplify_tolerance_m=_mapping_float(geometry_data, "simplify_tolerance_m", 0.05),
         geometry_tolerance_m=_mapping_float(geometry_data, "geometry_tolerance_m", 0.01),
@@ -651,8 +720,11 @@ def load_static_planning_config(path: str) -> StaticPlanningConfig:
     )
     return StaticPlanningConfig(
         environment=environment,
+        weather=weather,
         geometry=geometry,
         decision=decision,
+        soil=_optional_mapping(data, "soil"),
+        hydrology=_optional_mapping(data, "hydrology"),
         version=str(data.get("version", "static_gis_route_v2")),
     )
 
@@ -661,11 +733,22 @@ def _validate_static_source_sections(data: Mapping[str, object]) -> None:
     soil = _optional_mapping(data, "soil")
     if soil and soil.get("mode", "categorical_drainage") != "categorical_drainage":
         raise ConfigError("soil mode must be 'categorical_drainage'.")
-    if soil and soil.get("default_theta_v") is not None:
-        raise ConfigError("default_theta_v must remain null in categorical drainage mode.")
+    default_theta_v = soil.get("default_theta_v")
+    if default_theta_v is not None and (
+        isinstance(default_theta_v, bool)
+        or not isinstance(default_theta_v, (int, float))
+        or not 0.0 <= float(default_theta_v) <= 1.0
+    ):
+        raise ConfigError("default_theta_v must be null or a value in [0, 1].")
     hydrology = _optional_mapping(data, "hydrology")
     if hydrology and hydrology.get("backend", "grass_r_watershed") != "grass_r_watershed":
         raise ConfigError("hydrology backend must be 'grass_r_watershed'.")
+    mapping_t0 = _mapping_optional_float(hydrology, "mapping_t0")
+    mapping_t1 = _mapping_optional_float(hydrology, "mapping_t1")
+    if (mapping_t0 is None) != (mapping_t1 is None):
+        raise ConfigError("mapping_t0 and mapping_t1 must be provided together.")
+    if mapping_t0 is not None and mapping_t1 is not None and mapping_t1 <= mapping_t0:
+        raise ConfigError("hydrology mapping must satisfy mapping_t1 > mapping_t0.")
     vehicle = _optional_mapping(data, "vehicle_geometry")
     if vehicle and vehicle.get("reference_point", "rear_axle_center") != "rear_axle_center":
         raise ConfigError("vehicle_geometry reference_point must be rear_axle_center.")
@@ -698,6 +781,25 @@ def _mapping_float(data: Mapping[str, object], key: str, default: float) -> floa
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"static planning field {key!r} must be numeric.")
     return float(value)
+
+
+def _mapping_optional_float(data: Mapping[str, object], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"static planning field {key!r} must be numeric or null.")
+    numeric = float(value)
+    if not isfinite(numeric):
+        raise ConfigError(f"static planning field {key!r} must be finite.")
+    return numeric
+
+
+def _mapping_bool(data: Mapping[str, object], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"static planning field {key!r} must be boolean.")
+    return value
 
 
 def _mapping_int(data: Mapping[str, object], name: str, default: int) -> int:

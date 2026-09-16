@@ -68,7 +68,6 @@ class _FakeMap(QWidget):
 
     def set_endpoints(self, start: object, goal: object) -> None:
         self.calls.append(("endpoints", (start, goal)))
-
     def set_blocked_cells(self, cells: list[str]) -> None:
         self.calls.append(("blocked", list(cells)))
 
@@ -80,6 +79,34 @@ class _FakeMap(QWidget):
 
     def draw_route(self, geojson: dict[str, object] | None, tooltip: str) -> None:
         self.calls.append(("route", (geojson, tooltip)))
+
+
+def test_route_status_message_exposes_environment_and_evidence_state() -> None:
+    message = desktop_client._route_status_message(
+        {
+            "route_status": {
+                "warnings": [
+                    "ENVIRONMENT_PRESSURE_UNCALIBRATED",
+                    "PHYSICAL_EVIDENCE_INCOMPLETE",
+                ],
+                "environment_pressure_basis": "synthetic_scenario",
+            }
+        }
+    )
+
+    assert "干湿阈值未标定" in message
+    assert "物理证据仍不完整" in message
+
+    cached = desktop_client._route_status_message(
+        {
+            "route_status": {
+                "warnings": [],
+                "environment_pressure_basis": "model_snapshot_v1",
+                "environment_snapshot": {"cache_hit": True},
+            }
+        }
+    )
+    assert "环境快照来自缓存" in cached
 
 
 def _project() -> DesktopProjectState:

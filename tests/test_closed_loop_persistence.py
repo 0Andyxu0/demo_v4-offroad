@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import geopandas as gpd
@@ -156,6 +157,19 @@ def test_indexed_plan_uses_light_outputs_and_one_layer_export(
     vehicle: VehicleProfile,
 ) -> None:
     graph, plan = _plan_fixture(tmp_path, vehicle)
+    snapshot = {
+        "provider": "open-meteo",
+        "degraded": True,
+        "degradation_reason": "timeout",
+    }
+    plan = replace(
+        plan,
+        aggregation_stats={
+            **plan.aggregation_stats,
+            "environment_snapshot": snapshot,
+            "environment_snapshot_hash": "snapshot-hash",
+        },
+    )
     index_manifest = tmp_path / "routing_index" / "builds" / "build-1" / "routing_index.json"
     source = {
         "artifact_kind": "h3_routing_index",
@@ -181,6 +195,11 @@ def test_indexed_plan_uses_light_outputs_and_one_layer_export(
     assert not (tmp_path / "routes.gpkg").exists()
     manifest = json.loads((tmp_path / "route_manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == 3
+    assert manifest["environment_snapshot"] == snapshot
+    assert manifest["environment_snapshot_hash"] == "snapshot-hash"
+    assert load_route_plan(str(tmp_path / "route_plan.json")).aggregation_stats[
+        "environment_snapshot_hash"
+    ] == "snapshot-hash"
     assert manifest["graph_storage"] == {
         "format": "routing_index",
         "path": str(index_manifest),

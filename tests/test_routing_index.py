@@ -57,6 +57,50 @@ def test_failed_build_keeps_current_pointer(
     assert json.loads(before)["build_id"] == built["build_id"]
 
 
+def test_evidence_completeness_requires_static_hydrology_not_default_moisture() -> None:
+    sources = {
+        key: f"{key}.tif"
+        for key in (
+            "soil",
+            "soil_catalog",
+            "twi",
+            "drainage",
+            "drainage_validity",
+            "drainage_boundary",
+        )
+    }
+    project = {
+        "snapshot": {
+            "vehicle": {
+                "width_m": 2.0,
+                "wheelbase_m": 3.0,
+                "front_overhang_m": 1.0,
+                "rear_overhang_m": 1.0,
+            },
+            "static_planning": {
+                "soil": {"default_theta_v": None},
+                "hydrology": {
+                    "mapping_t0": 2.0,
+                    "mapping_t1": 5.0,
+                    "upstream_complete": True,
+                },
+            },
+        }
+    }
+
+    assert routing_index._missing_evidence({"static_sources": sources}, project) == []
+
+    sources["twi"] = None
+    assert routing_index._missing_evidence({"static_sources": sources}, project) == [
+        "static_sources.twi"
+    ]
+
+    project["snapshot"]["static_planning"]["hydrology"]["upstream_complete"] = False
+    assert "hydrology.upstream_complete" in routing_index._missing_evidence(
+        {"static_sources": sources}, project
+    )
+
+
 def _tile_manifest(tmp_path: Path) -> tuple[dict[str, object], tuple[str, str]]:
     first = str(h3.latlng_to_cell(31.99, 118.99, 11))
     second = min(str(value) for value in h3.grid_ring(first, 1))

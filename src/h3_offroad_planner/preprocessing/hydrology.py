@@ -121,10 +121,11 @@ def preprocess_hydrology(
     with TemporaryDirectory(prefix="h3-hydrology-", dir=output) as temporary:
         location = Path(temporary) / "location"
         _run_grass([executable, "-c", str(analysis_dem), str(location), "-e"])
+        mapset = str(location / "PERMANENT")
         _run_grass(
             [
                 executable,
-                str(location),
+                mapset,
                 "--exec",
                 "r.in.gdal",
                 f"input={analysis_dem}",
@@ -132,13 +133,13 @@ def preprocess_hydrology(
                 "--overwrite",
             ]
         )
-        region = [executable, str(location), "--exec", "g.region", "raster=dem"]
+        region = [executable, mapset, "--exec", "g.region", "raster=dem"]
         if config.analysis_resolution_m is not None:
             region.append(f"res={config.analysis_resolution_m}")
         _run_grass(region)
         watershed = [
             executable,
-            str(location),
+            mapset,
             "--exec",
             "r.watershed",
             "elevation=dem",
@@ -154,7 +155,7 @@ def preprocess_hydrology(
             _run_grass(
                 [
                     executable,
-                    str(location),
+                    mapset,
                     "--exec",
                     "r.out.gdal",
                     f"input={name}",

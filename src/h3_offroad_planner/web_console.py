@@ -477,6 +477,15 @@ def _serialize_route_plan(
         "route_geojson": recommended_geojson,
         "route_evaluation": recommended_evaluation,
         "candidate_routes": candidate_routes,
+        "route_status": {
+            "warnings": plan.get("warnings", []),
+            "environment_snapshot": cast(dict[str, object], plan.get("aggregation_stats", {})).get(
+                "environment_snapshot", {}
+            ),
+            "environment_pressure_basis": cast(
+                dict[str, object], plan.get("aggregation_stats", {})
+            ).get("environment_pressure_basis"),
+        },
     }
 
 

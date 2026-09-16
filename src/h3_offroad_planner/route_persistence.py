@@ -198,6 +198,10 @@ def _route_manifest_payload(
     graph_storage: Mapping[str, object],
     source_metadata: Mapping[str, object],
 ) -> dict[str, object]:
+    environment_snapshot = plan.aggregation_stats.get("environment_snapshot", {})
+    environment_snapshot_hash = plan.aggregation_stats.get(
+        "environment_snapshot_hash", ""
+    )
     return {
         "schema_version": 3,
         "plan_id": plan.plan_id,
@@ -214,6 +218,8 @@ def _route_manifest_payload(
         "graph_topology_hash": plan.graph_topology_hash,
         "planning_policy_hash": plan.planning_policy_hash,
         "scenario_hash": plan.scenario_hash,
+        "environment_snapshot": environment_snapshot,
+        "environment_snapshot_hash": environment_snapshot_hash,
         "selection_basis": dict(plan.aggregation_stats),
         "output_files": dict(output_files),
         "graph_storage": dict(graph_storage),

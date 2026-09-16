@@ -1,14 +1,20 @@
-name: demo-truck
-mass_kg: 6500.0
-max_climb_angle_deg: 30.0
-max_speed_kmh: 60.0
-tire_width_m: 0.35
-ground_clearance_m: 0.45
+# IVECO Daily 4x4, 7 t GVM, single cab, 3480 mm wheelbase (2024 AU/NZ spec).
+# The configured 2968 kg is the published standard-configuration kerb mass.
+# max_thrust_n is a conservative planner traction cap; the manufacturer does not
+# publish homologated wheel thrust. Tire radius is derived from 265/70 R19.5.
+name: iveco-daily-4x4-7t-single-cab-3480
+mass_kg: 2968.0
+max_climb_angle_deg: 31.0
+max_speed_kmh: 90.0
+tire_width_m: 0.265
+ground_clearance_m: 0.225
 max_thrust_n: 50000.0
-tire_radius_m: 0.55
-min_turn_radius_m: 8.0
+tire_radius_m: 0.43315
+# Rear-axle-centre radius derived from the 14.1 m kerb-to-kerb turning circle,
+# 1.725 m front track, 265 mm tyre width and 3.480 m wheelbase.
+min_turn_radius_m: 5.116
 reference_point: rear_axle_center
-width_m: null
-wheelbase_m: null
-front_overhang_m: null
-rear_overhang_m: null
+width_m: 2.056
+wheelbase_m: 3.480
+front_overhang_m: 0.928
+rear_overhang_m: 0.940

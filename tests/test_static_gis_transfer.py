@@ -208,6 +208,36 @@ def test_t03_hydrology_policy_requires_frozen_threshold_pair(tmp_path: Path) -> 
     assert load_static_planning_config(snapshot) == original
 
 
+def test_static_planning_retains_soil_hydrology_and_weather(tmp_path: Path) -> None:
+    path = tmp_path / "static.yaml"
+    path.write_text(
+        """
+soil:
+  mode: categorical_drainage
+  default_theta_v: 0.25
+hydrology:
+  mapping_t0: 2.0
+  mapping_t1: 5.0
+weather:
+  enabled: true
+  theta_dry: 0.1
+  theta_wet: 0.4
+""".strip(),
+        encoding="utf-8",
+    )
+
+    loaded = load_static_planning_config(str(path))
+
+    assert loaded.soil["default_theta_v"] == pytest.approx(0.25)
+    assert loaded.hydrology["mapping_t0"] == pytest.approx(2.0)
+    assert loaded.hydrology["mapping_t1"] == pytest.approx(5.0)
+    assert loaded.weather.enabled is True
+    assert loaded.to_dict()["soil"] == {
+        "mode": "categorical_drainage",
+        "default_theta_v": 0.25,
+    }
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -259,13 +289,17 @@ def test_static_planning_policy_rejects_invalid_contracts(factory: Callable[[], 
         "- not-a-mapping\n",
         "unknown: true\n",
         "soil: {mode: inferred}\n",
-        "soil: {default_theta_v: 0.2}\n",
+        "soil: {default_theta_v: 1.2}\n",
         "hydrology: {backend: other}\n",
+        "hydrology: {mapping_t0: 1.0}\n",
+        "hydrology: {mapping_t0: 2.0, mapping_t1: 1.0}\n",
         "vehicle_geometry: {reference_point: center}\n",
         "environment: []\n",
         "environment: {comparison_pressures: bad}\n",
         "environment: {unknown_surface_range: [0.0]}\n",
         "decision: {candidate_limit: 2.5}\n",
+        "weather: {enabled: 1}\n",
+        "weather: {theta_dry: 0.1}\n",
     ],
 )
 def test_static_planning_loader_rejects_invalid_schema(
@@ -375,6 +409,8 @@ def test_hydrology_pipeline_persists_manifest_with_mocked_grass(
         dst.write(np.ones((2, 2), dtype=np.float32), 1)
 
     def fake_grass(command: list[str]) -> None:
+        if "--exec" in command:
+            assert command[1].endswith(str(Path("location") / "PERMANENT"))
         output = next((item[7:] for item in command if item.startswith("output=")), None)
         if output and output.endswith(".tif"):
             data = np.array([[1.0, -1.0], [2.0, 3.0]], dtype=np.float32)

@@ -112,6 +112,7 @@ ROUTE_FIELDS: frozenset[str] = frozenset(
         "candidate_limit",
         "penalty_factor",
         "static_planning_path",
+        "environment_snapshot_path",
     }
 )
 SELECT_FIELDS: frozenset[str] = frozenset(
@@ -441,6 +442,7 @@ def _route_request(payload: dict[str, object]) -> RouteRequest:
             candidate_limit=_integer_or_default(payload, "candidate_limit", 24),
             penalty_factor=_float_or_default(payload, "penalty_factor", 0.25),
             static_planning_path=_optional_string(payload, "static_planning_path"),
+            environment_snapshot_path=_optional_string(payload, "environment_snapshot_path"),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"invalid route request: {exc}") from exc

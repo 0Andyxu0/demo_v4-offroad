@@ -20,6 +20,7 @@ from h3_offroad_planner.dynamics.trajectory_geometry import (
     TrajectoryResult,
     build_and_validate_trajectory,
 )
+from h3_offroad_planner.environment import resolve_request_environment
 from h3_offroad_planner.factor_model import (
     FactorEvaluation,
     StaticPlanningConfig,
@@ -38,6 +39,7 @@ from h3_offroad_planner.models import (
     PlanningInputError,
     RouteEndpoint,
     RouteRequest,
+    VehicleProfile,
 )
 from h3_offroad_planner.planners.deterministic_pareto import DeterministicParetoPlanner
 from h3_offroad_planner.portsmap import PortsMapSearchContext
@@ -117,6 +119,9 @@ def _run_route_plan_once(
         if request.static_planning_path is not None
         else None
     )
+    environment_snapshot: dict[str, object] = {}
+    environment_snapshot_hash = ""
+    environment_warnings: tuple[str, ...] = ()
     if static_planning is not None and (
         request.candidate_limit != static_planning.decision.candidate_limit
         or request.max_candidate_paths != static_planning.decision.display_limit
@@ -125,6 +130,21 @@ def _run_route_plan_once(
             "route candidate limits must match the versioned static planning policy."
         )
     endpoints = _request_endpoints(request)
+    phase_started = perf_counter()
+    if static_planning is not None:
+        start_endpoint = _single_endpoint(endpoints, "start")
+        goal_endpoint = _single_endpoint(endpoints, "goal")
+        environment, environment_snapshot, environment_snapshot_hash, environment_warnings = (
+            resolve_request_environment(
+                static_planning.environment,
+                static_planning.weather,
+                (start_endpoint.lat + goal_endpoint.lat) / 2.0,
+                (start_endpoint.lng + goal_endpoint.lng) / 2.0,
+                replay_path=request.environment_snapshot_path,
+            )
+        )
+        static_planning = replace(static_planning, environment=environment)
+    timings["environment_fetch_s"] = perf_counter() - phase_started
     roi_geometry, _ = _resolve_roi(request, endpoints)
     estimated_cells = estimate_h3_cells_for_roi(roi_geometry, request.res_fine)
     if estimated_cells > request.max_estimated_cells:
@@ -177,7 +197,13 @@ def _run_route_plan_once(
         factor_config,
         None if static_planning is None else static_planning.environment,
     )
-    _validate_loaded_index_identity(source_metadata, evaluation, static_planning)
+    _bind_loaded_index_identity(
+        source_metadata,
+        evaluation,
+        vehicle,
+        static_planning,
+        environment_snapshot_hash,
+    )
     timings["factor_eval_s"] = perf_counter() - phase_started
     phase_started = perf_counter()
     start = _snap_evaluated(
@@ -200,10 +226,8 @@ def _run_route_plan_once(
                 "routing_index_build_id": source_metadata.get("build_id"),
                 "vehicle_hash": evaluation.vehicle_hash,
                 "factor_model_hash": evaluation.factor_model_hash,
-                "scenario_hash": (
-                    None
-                    if static_planning is None
-                    else canonical_hash(list(static_planning.environment.request_pressures))
+                "scenario_hash": _scenario_hash(
+                    static_planning, environment_snapshot_hash
                 ),
             }
         )
@@ -296,11 +320,7 @@ def _run_route_plan_once(
         output_files["routes"] = paths["routes"]
     schema_version = 2 if static_planning is not None else 1
     policy_hash = "" if static_planning is None else canonical_hash(static_planning.to_dict())
-    scenario_hash = (
-        ""
-        if static_planning is None
-        else canonical_hash(list(static_planning.environment.request_pressures))
-    )
+    scenario_hash = _scenario_hash(static_planning, environment_snapshot_hash)
     identity = {
         "schema_version": schema_version,
         "mission_profile": request.mission_profile,
@@ -342,6 +362,11 @@ def _run_route_plan_once(
             "penalty_factor": request.penalty_factor,
             "search_policy": search_policy,
             "profile_search_count": planner.profile_search_count,
+            "environment_snapshot": environment_snapshot,
+            "environment_snapshot_hash": environment_snapshot_hash,
+            "environment_pressure_basis": (
+                None if static_planning is None else static_planning.environment.pressure_basis
+            ),
             **robust_statistics,
         },
         output_files=output_files,
@@ -350,6 +375,7 @@ def _run_route_plan_once(
                 (
                     *aggregation.warnings,
                     *robust_warnings,
+                    *environment_warnings,
                     *((extra_warning,) if extra_warning is not None else ()),
                 )
             )
@@ -418,28 +444,53 @@ def _routing_index_available(source: str) -> bool:
     return (path.parent / "routing_index" / "current.json").is_file()
 
 
-def _validate_loaded_index_identity(
+def _bind_loaded_index_identity(
     source_metadata: dict[str, object],
     evaluation: FactorEvaluation,
+    vehicle: VehicleProfile,
     static_planning: StaticPlanningConfig | None,
+    environment_snapshot_hash: str = "",
 ) -> None:
     if source_metadata.get("artifact_kind") != "h3_routing_index":
         return
-    for key, actual in (
-        ("vehicle_hash", evaluation.vehicle_hash),
-        ("factor_model_hash", evaluation.factor_model_hash),
-    ):
-        expected = source_metadata.get(key)
-        if expected is not None and expected != actual:
-            raise PlanningInputError(f"loaded routing index has stale {key}.")
-    expected_scenario = source_metadata.get("scenario_hash")
-    if (
-        expected_scenario is not None
-        and static_planning is not None
-        and expected_scenario
-        != canonical_hash(list(static_planning.environment.request_pressures))
-    ):
-        raise PlanningInputError("loaded routing index has stale scenario_hash.")
+    source_metadata["vehicle_hash"] = evaluation.vehicle_hash
+    source_metadata["factor_model_hash"] = evaluation.factor_model_hash
+    if static_planning is not None:
+        source_metadata["scenario_hash"] = _scenario_hash(
+            static_planning, environment_snapshot_hash
+        )
+
+    raw_missing = source_metadata.get("missing_physical_inputs", [])
+    missing = (
+        {
+            item
+            for item in raw_missing
+            if isinstance(item, str)
+            and not item.startswith("vehicle.")
+            and item != "soil.default_theta_v"
+        }
+        if isinstance(raw_missing, list)
+        else set()
+    )
+    for field in ("width_m", "wheelbase_m", "front_overhang_m", "rear_overhang_m"):
+        if getattr(vehicle, field) is None:
+            missing.add(f"vehicle.{field}")
+    source_metadata["missing_physical_inputs"] = sorted(missing)
+    source_metadata["evidence_status"] = "COMPLETE" if not missing else "INCOMPLETE"
+
+
+def _scenario_hash(
+    static_planning: StaticPlanningConfig | None,
+    environment_snapshot_hash: str,
+) -> str:
+    if static_planning is None:
+        return ""
+    return canonical_hash(
+        {
+            "request_pressures": list(static_planning.environment.request_pressures),
+            "environment_snapshot_hash": environment_snapshot_hash,
+        }
+    )
 
 
 def _mapping_int(payload: dict[str, object], key: str, default: int) -> int:

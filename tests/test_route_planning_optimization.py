@@ -9,7 +9,12 @@ import pandas as pd
 import pytest
 
 from h3_offroad_planner import route_planning
-from h3_offroad_planner.models import PlanningFailedError, RouteEndpoint, RouteRequest
+from h3_offroad_planner.models import (
+    PlanningFailedError,
+    RouteEndpoint,
+    RouteRequest,
+    VehicleProfile,
+)
 from h3_offroad_planner.routing import _coarse_skeletons
 from h3_offroad_planner.routing_index import RoutingIndex
 
@@ -90,6 +95,61 @@ def test_coarse_widest_over_detour_limit_is_not_loaded(tmp_path: Path) -> None:
     assert skeletons["widest"] == []
     assert diagnostics["coarse_widest_included"] is False
     assert diagnostics["coarse_widest_parent_count"] == 5
+
+
+def test_static_index_binds_current_vehicle_without_rebuild() -> None:
+    metadata: dict[str, object] = {
+        "artifact_kind": "h3_routing_index",
+        "vehicle_hash": "old-vehicle",
+        "factor_model_hash": "old-factor",
+        "evidence_status": "INCOMPLETE",
+        "missing_physical_inputs": [
+            "vehicle.width_m",
+            "vehicle.wheelbase_m",
+            "hydrology.mapping_t0",
+            "soil.default_theta_v",
+        ],
+    }
+    evaluation = route_planning.FactorEvaluation(
+        node_metrics={},
+        directed_edges={},
+        vehicle_hash="current-vehicle",
+        factor_model_hash="current-factor",
+        static_input_hash="static",
+        graph_topology_hash="topology",
+    )
+    vehicle = VehicleProfile(
+        name="complete",
+        mass_kg=2968.0,
+        max_climb_angle_deg=31.0,
+        max_speed_kmh=90.0,
+        tire_width_m=0.265,
+        ground_clearance_m=0.225,
+        max_thrust_n=50000.0,
+        tire_radius_m=0.43315,
+        min_turn_radius_m=5.116,
+        width_m=2.056,
+        wheelbase_m=3.480,
+        front_overhang_m=0.928,
+        rear_overhang_m=0.940,
+    )
+
+    route_planning._bind_loaded_index_identity(metadata, evaluation, vehicle, None)
+
+    assert metadata["vehicle_hash"] == "current-vehicle"
+    assert metadata["factor_model_hash"] == "current-factor"
+    assert metadata["missing_physical_inputs"] == ["hydrology.mapping_t0"]
+    assert metadata["evidence_status"] == "INCOMPLETE"
+
+
+def test_environment_snapshot_participates_in_scenario_identity() -> None:
+    static = route_planning.StaticPlanningConfig()
+
+    first = route_planning._scenario_hash(static, "snapshot-a")
+    second = route_planning._scenario_hash(static, "snapshot-b")
+
+    assert first != second
+    assert first == route_planning._scenario_hash(static, "snapshot-a")
 
 
 def _coarse_row(parent_a: str, parent_b: str, passable: float) -> dict[str, object]:

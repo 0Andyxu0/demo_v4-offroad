@@ -961,6 +961,7 @@ class DesktopMainWindow(QMainWindow):
             self.progress_bar.setValue(100)
             self.progress_label.setText("Complete")
             self._append_log("INFO", "complete", 100, "Grid, routes, and evaluation generated.")
+            _show_route_status(self, self._last_result)
             return
         route_geojson = result.get("route_geojson")
         evaluation = result.get("route_evaluation")
@@ -984,6 +985,7 @@ class DesktopMainWindow(QMainWindow):
             else "Grid, routes, and evaluation generated."
         )
         self._append_log("INFO", "complete", 100, msg)
+        _show_route_status(self, self._last_result)
 
     def _on_failed(self, message: str) -> None:
         self._append_log("ERROR", "failed", 100, message)
@@ -1385,6 +1387,38 @@ def _candidate_routes_from_result(result: dict[str, object]) -> list[dict[str, o
     if not isinstance(routes, list):
         return []
     return [cast(dict[str, object], route) for route in routes if isinstance(route, dict)]
+
+
+def _show_route_status(window: DesktopMainWindow, result: dict[str, object]) -> None:
+    message = _route_status_message(result)
+    if message:
+        window._status_bar.showMessage(message)
+        window._append_log("WARNING", "environment", 100, message)
+
+
+def _route_status_message(result: dict[str, object]) -> str:
+    status = result.get("route_status")
+    if not isinstance(status, dict):
+        return ""
+    warnings = status.get("warnings", [])
+    warning_set = {str(item) for item in warnings} if isinstance(warnings, list) else set()
+    snapshot = status.get("environment_snapshot")
+    details = snapshot if isinstance(snapshot, dict) else {}
+    messages: list[str] = []
+    if "ENVIRONMENT_DATA_DEGRADED" in warning_set:
+        reason = str(details.get("degradation_reason", ""))
+        messages.append("环境数据过期，使用合成压力" if "age" in reason else "环境数据降级，使用合成压力")
+    elif "ENVIRONMENT_PRESSURE_UNCALIBRATED" in warning_set:
+        messages.append("环境快照已记录，但QDX干湿阈值未标定，继续使用合成场景")
+    elif status.get("environment_pressure_basis") == "model_snapshot_v1":
+        messages.append("已应用实时环境压力")
+    if "ENVIRONMENT_PRESSURE_PROVISIONAL" in warning_set:
+        messages.append("干湿阈值为临时统计值，尚未现场校准")
+    if details.get("cache_hit") is True:
+        messages.append("环境快照来自缓存")
+    if "PHYSICAL_EVIDENCE_INCOMPLETE" in warning_set:
+        messages.append("物理证据仍不完整")
+    return "；".join(messages)
 
 
 def _candidate_label(candidate: dict[str, object], candidate_index: int) -> str:

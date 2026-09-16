@@ -468,14 +468,20 @@ def _missing_evidence(
             missing.append(f"vehicle.{key}")
     static = cast(dict[str, object], snapshot.get("static_planning", {}))
     hydrology = cast(dict[str, object], static.get("hydrology", {}))
-    soil = cast(dict[str, object], static.get("soil", {}))
     for key in ("mapping_t0", "mapping_t1"):
         if hydrology.get(key) is None:
             missing.append(f"hydrology.{key}")
-    if soil.get("default_theta_v") is None:
-        missing.append("soil.default_theta_v")
+    if hydrology.get("upstream_complete") is not True:
+        missing.append("hydrology.upstream_complete")
     sources = cast(dict[str, object], tile_manifest.get("static_sources", {}))
-    for key in ("soil", "soil_catalog"):
+    for key in (
+        "soil",
+        "soil_catalog",
+        "twi",
+        "drainage",
+        "drainage_validity",
+        "drainage_boundary",
+    ):
         if sources.get(key) is None:
             missing.append(f"static_sources.{key}")
     return sorted(set(missing))

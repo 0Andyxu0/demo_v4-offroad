@@ -11,9 +11,12 @@ soil:
 hydrology:
   backend: grass_r_watershed
   flow_method: mfd
+  upstream_complete: false
   analysis_resolution_m: null
-  mapping_t0: null
-  mapping_t1: null
+  # QDX unaffected-valid TWI q05/q95 from GRASS 8.5 diagnostic run.
+  # Operational drainage proxy, not field-validated soil moisture.
+  mapping_t0: 1.8206813526635923
+  mapping_t1: 12.141656283195847
   unknown_drainage_range: [0.0, 1.0]
 
 environment:
@@ -24,13 +27,28 @@ environment:
   unknown_surface_range: [0.0, 1.0]
   unknown_drainage_range: [0.0, 1.0]
 
+weather:
+  enabled: true
+  provider: open-meteo
+  endpoint: https://api.open-meteo.com/v1/forecast
+  model: best_match
+  timeout_s: 3.0
+  ttl_s: 1800.0
+  failure_ttl_s: 60.0
+  max_age_s: 10800.0
+  # Provisional 0-5 cm operational anchors from CLDAS 2026-01-01 Nanjing 50 km
+  # spatial q05/q95 (0.255/0.332), padded outward. Not seasonal or field calibration.
+  theta_dry: 0.25
+  theta_wet: 0.35
+  calibration_status: provisional_cldas_spatial_20260101
+
 vehicle_geometry:
   reference_point: rear_axle_center
-  width_m: null
-  wheelbase_m: null
-  front_overhang_m: null
-  rear_overhang_m: null
-  min_turn_radius_m: null
+  width_m: 2.056
+  wheelbase_m: 3.480
+  front_overhang_m: 0.928
+  rear_overhang_m: 0.940
+  min_turn_radius_m: 5.116
 
 geometry:
   simplify_tolerance_m: 0.05
