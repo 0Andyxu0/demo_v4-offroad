@@ -32,6 +32,39 @@ BROWN_RED_SOIL_CODES: frozenset[int] = frozenset({14, 22, 48, 49, 50, 58, 73, 74
 LITHIC_SOIL_CODES: frozenset[int] = frozenset({38, 47, 53, 96})
 MARSH_SOIL_CODES: frozenset[int] = frozenset({17})
 
+# Provisional Nanjing soil-code to USCS/texture engineering mapping.
+# Values are geotechnical approximations from Chinese soil type names and are
+# intended as a conservative fallback, not a substitute for lab/field data.
+SOIL_USCS_OVERRIDES: dict[int, tuple[str | None, str | None, str | None, bool]] = {
+    14: ("Lo", "CL", "loam", True),      # 暗棕壤
+    17: (None, None, None, False),       # 沼泽土
+    18: (None, None, None, False),       # 湖泊及水
+    22: ("Lo", "CL", "loam", True),      # 暗黄棕壤
+    26: ("SiLo", "ML", "loam", True),    # 冲积土
+    27: ("SiLo", "ML", "loam", True),    # 潮土
+    38: ("Lo", "CL", "loam", True),      # 棕色石灰
+    44: ("ClLo", "CL", "clayloam", True),  # 水稻土
+    47: ("Lo", "CL", "loam", True),      # 石灰(岩)土
+    48: ("Lo", "CL", "loam", True),      # 黄棕壤性
+    49: ("Lo", "CL", "loam", True),      # 黄褐土
+    50: ("ClLo", "CL", "clayloam", True),  # 黄红壤
+    53: ("Lo", "CL", "loam", True),      # 中性紫色
+    55: ("ClLo", "CL", "clayloam", True),  # 淹育水稻
+    58: ("Lo", "CL", "loam", True),      # 黄棕壤
+    64: ("ClLo", "CL", "clayloam", True),  # 渗育水稻
+    72: ("SiLo", "ML", "loam", True),    # 灰潮土
+    73: ("ClLo", "CL", "clayloam", True),  # 红壤性土
+    74: ("ClLo", "CL", "clayloam", True),  # 棕红壤
+    80: ("ClLo", "CL", "clayloam", True),  # 潜育水稻
+    82: ("ClLo", "CL", "clayloam", True),  # 脱潜水稻
+    84: (None, None, None, False),       # 城区
+    85: (None, None, None, False),       # 江及河
+    90: ("ClLo", "CL", "clayloam", True),  # 漂洗水稻
+    92: ("ClLo", "CL", "clayloam", True),  # 粘盘黄褐
+    96: ("Lo", "CL", "loam", True),      # 基性岩火
+    184: ("Lo", "CL", "loam", True),     # 暗棕壤性
+}
+
 
 @dataclass(frozen=True)
 class RasterLayer:
@@ -296,11 +329,11 @@ def _parse_soil_catalog_row(row: dict[str, str]) -> tuple[int, str]:
 def _profile_from_soil_code(code: int, name_zh: str) -> SoilProfile:
     """Create a SoilProfile with a provisional engineering USCS inference.
 
-    The mapping is derived from the local Chinese soil-type catalog and common
-    geotechnical approximations.  It is not a substitute for laboratory or
-    field classification and is marked as provisional in generated artifacts.
+    The mapping uses an explicit Nanjing soil-code table first, then falls back
+    to soil-name keyword heuristics for regions where only soil type names are
+    available.  It is not a substitute for laboratory or field classification.
     """
-    soil_texture, uscs, bekker_soil = _soil_texture_mapping(code)
+    soil_texture, uscs, bekker_soil, is_passable = _soil_texture_mapping(code, name_zh)
     return SoilProfile(
         code=code,
         name_zh=name_zh,
@@ -308,7 +341,7 @@ def _profile_from_soil_code(code: int, name_zh: str) -> SoilProfile:
         uscs=uscs,
         bekker_soil=bekker_soil,
         soil_moisture=None,
-        is_passable=True,
+        is_passable=is_passable,
     )
 
 
@@ -359,18 +392,36 @@ def _read_dbf_rows(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def _soil_texture_mapping(code: int) -> tuple[str | None, str | None, str | None]:
-    if code in WATER_SOIL_CODES | URBAN_SOIL_CODES:
-        return None, None, None
-    if code in PADDY_SOIL_CODES | MARSH_SOIL_CODES or code == 92:
-        return "ClLo", "CL", "clayloam"
-    if code in ALLUVIAL_SOIL_CODES:
-        return "SiLo", "ML", "loam"
-    if code in LITHIC_SOIL_CODES:
-        return "SaLo", "SM", "loam"
-    if code in BROWN_RED_SOIL_CODES:
-        return "Lo", "CL", "loam"
-    return None, None, None
+def _soil_texture_mapping(
+    code: int,
+    name_zh: str,
+) -> tuple[str | None, str | None, str | None, bool]:
+    """Map soil code/name to provisional USCS, texture, Bekker group, passability.
+
+    Priority:
+    1. Explicit Nanjing soil-code table.
+    2. Keyword fallback from Chinese soil type name.
+    3. Conservative default: loam/CL.
+    """
+    override = SOIL_USCS_OVERRIDES.get(code)
+    if override is not None:
+        return override
+
+    if not name_zh:
+        return "Lo", "CL", "loam", True
+    if any(keyword in name_zh for keyword in ("水", "湖", "江", "城区")):
+        return None, None, None, False
+    if "沼泽" in name_zh:
+        return None, None, None, False
+    if "砂" in name_zh:
+        return "SaLo", "SM", "loam", True
+    if "粘" in name_zh or "水稻" in name_zh:
+        return "ClLo", "CL", "clayloam", True
+    if "潮" in name_zh or "冲积" in name_zh:
+        return "SiLo", "ML", "loam", True
+    if any(keyword in name_zh for keyword in ("石灰", "紫", "红", "棕", "黄", "暗")):
+        return "Lo", "CL", "loam", True
+    return "Lo", "CL", "loam", True
 
 
 def _require_non_empty_matrix(name: str, matrix: npt.NDArray[np.float64]) -> None:

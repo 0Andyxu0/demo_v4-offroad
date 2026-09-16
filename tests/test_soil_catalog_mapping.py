@@ -27,3 +27,37 @@ def test_water_and_urban_codes_remain_without_uscs() -> None:
 
     assert water.uscs is None
     assert urban.uscs is None
+
+
+def test_water_urban_and_marsh_are_non_passable() -> None:
+    water = _profile_from_soil_code(18, "湖泊及水")
+    urban = _profile_from_soil_code(84, "城区")
+    marsh = _profile_from_soil_code(17, "沼泽土")
+
+    assert water.is_passable is False
+    assert urban.is_passable is False
+    assert marsh.is_passable is False
+
+
+def test_unknown_soil_name_falls_back_to_sand_mapping() -> None:
+    profile = _profile_from_soil_code(999, "砂质土")
+
+    assert profile.soil_texture == "SaLo"
+    assert profile.uscs == "SM"
+    assert profile.is_passable is True
+
+
+def test_unknown_soil_name_falls_back_to_clay_mapping() -> None:
+    profile = _profile_from_soil_code(999, "粘质红土")
+
+    assert profile.soil_texture == "ClLo"
+    assert profile.uscs == "CL"
+    assert profile.is_passable is True
+
+
+def test_unknown_soil_name_uses_conservative_loam_default() -> None:
+    profile = _profile_from_soil_code(999, "未知土壤")
+
+    assert profile.soil_texture == "Lo"
+    assert profile.uscs == "CL"
+    assert profile.is_passable is True
