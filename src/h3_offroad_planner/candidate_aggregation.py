@@ -182,16 +182,30 @@ class CandidateAggregator:
         reference: GeneratedPath,
         existing: dict[tuple[str, ...], GeneratedPath],
     ) -> tuple[GeneratedPath | None, dict[str, object]]:
-        core = set(self._corridor_signature(reference.h3_path))
+        core_kind, core = self._corridor_core(reference.h3_path)
         if not core:
             return None, {}
-        masked_parents = self._dilated_parents(core)
-        endpoints = {reference.h3_path[0], reference.h3_path[-1]}
-        blocked = frozenset(
-            cell_id
-            for cell_id in self.graph.cells
-            if self._parent(cell_id) in masked_parents and cell_id not in endpoints
-        )
+        endpoint_parents = {
+            self._parent(reference.h3_path[0]),
+            self._parent(reference.h3_path[-1]),
+        }
+        if core_kind == "parent":
+            masked_parents = self._dilated_parents(core)
+            blocked = frozenset(
+                cell_id
+                for cell_id in self.graph.cells
+                if self._parent(cell_id) in masked_parents
+                and self._parent(cell_id) not in endpoint_parents
+            )
+            core_parents = sorted(core)
+            core_cells: list[str] = []
+        else:
+            masked_parents = set()
+            blocked = frozenset(core)
+            core_parents = []
+            core_cells = sorted(core)
+        if not blocked:
+            return None, {}
         survivors = [
             candidate
             for candidate in existing.values()
@@ -226,7 +240,9 @@ class CandidateAggregator:
         )
         evidence = {
             "reference_candidate_id": candidate_id_for_path(reference.h3_path),
-            "blocked_core_parents": sorted(core),
+            "core_kind": core_kind,
+            "blocked_core_parents": core_parents,
+            "blocked_core_cells": core_cells,
             "masked_parents": sorted(masked_parents),
             "blocked_cells_count": len(blocked),
             "survived_disruption": True,
@@ -303,6 +319,32 @@ class CandidateAggregator:
         if len(parent_sequence) <= 2:
             return ()
         return tuple(parent_sequence[1:-1])
+
+    def _corridor_core(self, path: tuple[str, ...]) -> tuple[str, set[str]]:
+        """Return a maskable independence core for short and long corridors.
+
+        Parent-level signatures become empty for paths that cross two or fewer
+        parent cells.  For those short corridors we fall back to fine H3 cells so
+        the independence search has a non-empty disruption set.  Start and goal
+        parent cells are never treated as interior corridor parents.
+        """
+        endpoint_parents = {
+            self._parent(path[0]) if path else "",
+            self._parent(path[-1]) if path else "",
+        }
+        parent_sequence: list[str] = []
+        for cell_id in path:
+            parent = self._parent(cell_id)
+            if not parent_sequence or parent_sequence[-1] != parent:
+                parent_sequence.append(parent)
+        interior_parents = {
+            parent
+            for parent in parent_sequence[1:-1]
+            if parent not in endpoint_parents
+        }
+        if interior_parents:
+            return "parent", interior_parents
+        return "fine", set(path[1:-1])
 
     def _dilated_parents(self, parents: set[str]) -> set[str]:
         adjacency: dict[str, set[str]] = {}

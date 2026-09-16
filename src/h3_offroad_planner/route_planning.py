@@ -297,18 +297,11 @@ def _run_route_plan_once(
     else:
         timings["geometry_s"] = 0.0
     context.clear_pair_cache()
+    role_warnings: tuple[str, ...] = ()
     if source_metadata.get("artifact_kind") == "h3_routing_index":
-        missing_roles = sorted(
-            {
-                "fastest_eta",
-                "shortest_distance",
-                "max_passability_margin",
-                "minimum_travel_cost",
-                "independent_backup",
-            }.difference(role for candidate in candidates for role in candidate.roles)
+        role_warnings = _routing_role_warnings(
+            {role for candidate in candidates for role in candidate.roles}
         )
-        if missing_roles:
-            raise PlanningFailedError(f"ROUTING_INDEX_ROLE_COVERAGE_INSUFFICIENT:{missing_roles}")
     if progress is not None:
         progress("evaluation", end_pct, "exporting route plan and thematic layers")
     paths = delivery_output_paths(request.output_dir)
@@ -375,6 +368,7 @@ def _run_route_plan_once(
                 (
                     *aggregation.warnings,
                     *robust_warnings,
+                    *role_warnings,
                     *environment_warnings,
                     *((extra_warning,) if extra_warning is not None else ()),
                 )
@@ -435,6 +429,25 @@ def _run_route_plan_once(
         },
     )
     return plan
+
+
+def _routing_role_warnings(assigned_roles: set[str]) -> tuple[str, ...]:
+    """Validate the four metric roles and soften independent-backup absence."""
+    missing_core_roles = sorted(
+        {
+            "fastest_eta",
+            "shortest_distance",
+            "max_passability_margin",
+            "minimum_travel_cost",
+        }.difference(assigned_roles)
+    )
+    if missing_core_roles:
+        raise PlanningFailedError(
+            f"ROUTING_INDEX_ROLE_COVERAGE_INSUFFICIENT:{missing_core_roles}"
+        )
+    if "independent_backup" not in assigned_roles:
+        return ("INDEPENDENT_BACKUP_UNAVAILABLE",)
+    return ()
 
 
 def _routing_index_available(source: str) -> bool:
