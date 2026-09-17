@@ -322,3 +322,40 @@ def _ports_graph() -> H3Graph:
         edges=edges,
         parent_children={"p1": {"a", "b", "c"}, "p2": {"d", "e", "f"}},
     )
+
+
+def test_base_pair_cache_used_when_penalty_factor_positive_but_no_penalties(
+    vehicle: VehicleProfile,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+    identity = "test-static-build-and-config"
+
+    first = PortsMapSearchContext(graph, evaluation, base_cache_identity=identity)
+    expected = first.search(
+        "a",
+        "f",
+        profile,
+        exploration_penalties={},
+        penalty_factor=0.25,
+    )
+
+    warm = PortsMapSearchContext(graph, evaluation, base_cache_identity=identity)
+
+    def unexpected_search(*args: object, **kwargs: object) -> object:
+        raise AssertionError("warm base pairs should come from the cross-request cache")
+
+    monkeypatch.setattr(warm, "_fine_tile_search", unexpected_search)
+    actual = warm.search(
+        "a",
+        "f",
+        profile,
+        exploration_penalties={},
+        penalty_factor=0.25,
+    )
+
+    assert actual.h3_path == expected.h3_path
+    assert actual.scalar_cost == expected.scalar_cost
+    assert warm.base_cache_hits > 0

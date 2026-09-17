@@ -596,7 +596,6 @@ class PortsMapSearchContext:
             self.base_cache_identity is None
             or blocked
             or local_penalty_key
-            or penalty_factor > 0.0
         ):
             return None
         return (self.base_cache_identity, parent, profile.signature, port_hash, source)
