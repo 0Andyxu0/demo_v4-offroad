@@ -41,6 +41,8 @@ weather:
   theta_dry: 0.25
   theta_wet: 0.35
   calibration_status: provisional_cldas_spatial_20260101
+  # Provisional reference for precipitation-based pressure fallback.
+  api_reference_mm: 20.0
 
 vehicle_geometry:
   reference_point: rear_axle_center
