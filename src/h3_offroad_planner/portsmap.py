@@ -29,7 +29,7 @@ __all__ = [
 
 EPSILON: float = 1.0e-12
 OBJECTIVE_NAMES: tuple[str, ...] = ("distance", "eta", "terrain_risk", "travel_cost")
-BASE_PAIR_CACHE_LIMIT: int = 8_192
+BASE_PAIR_CACHE_LIMIT: int = 65_536
 _BASE_PAIR_CACHE: dict[
     tuple[str, str, str, str, str],
     tuple[tuple[str, tuple[str, ...], float], ...],
