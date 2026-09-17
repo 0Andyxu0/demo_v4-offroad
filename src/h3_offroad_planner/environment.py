@@ -21,6 +21,7 @@ from h3_offroad_planner.factor_model import (
     WeatherConfig,
     canonical_hash,
 )
+from h3_offroad_planner.weather_fallback import resolve_precipitation_fallback
 
 __all__ = [
     "EnvironmentSnapshot",
@@ -204,14 +205,13 @@ def resolve_request_environment(
     if snapshot.degraded:
         warnings.append("ENVIRONMENT_DATA_DEGRADED")
     moisture = snapshot.soil_moisture_surface_m3_m3
-    if (
-        snapshot.degraded
-        or moisture is None
-        or weather.theta_dry is None
-        or weather.theta_wet is None
-    ):
-        warnings.append("ENVIRONMENT_PRESSURE_UNCALIBRATED")
-    else:
+    moisture_valid = (
+        not snapshot.degraded
+        and moisture is not None
+        and weather.theta_dry is not None
+        and weather.theta_wet is not None
+    )
+    if moisture_valid:
         pressure = min(
             1.0,
             max(0.0, (moisture - weather.theta_dry) / (weather.theta_wet - weather.theta_dry)),
@@ -228,6 +228,21 @@ def resolve_request_environment(
         )
         if weather.calibration_status == "provisional_cldas_spatial_20260101":
             warnings.append("ENVIRONMENT_PRESSURE_PROVISIONAL")
+    else:
+        pressure, basis, precip_warnings = resolve_precipitation_fallback(
+            snapshot.to_dict(), weather.api_reference_mm
+        )
+        warnings.extend(precip_warnings)
+        if pressure is not None and basis is not None:
+            payload["derived_pressure"] = pressure
+            environment = replace(
+                environment,
+                pressure_basis=basis,
+                comparison_pressures=tuple(
+                    sorted({*environment.comparison_pressures, pressure})
+                ),
+                request_pressures=(pressure,),
+            )
     identity = {
         key: value
         for key, value in payload.items()

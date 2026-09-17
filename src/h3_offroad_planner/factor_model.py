@@ -309,7 +309,11 @@ class EnvironmentConfig:
     def __post_init__(self) -> None:
         if self.model != "surface_drainage_multiplier_v1":
             raise ConfigError("unsupported environment model version.")
-        if self.pressure_basis not in {"synthetic_scenario", "model_snapshot_v1"}:
+        if self.pressure_basis not in {
+            "synthetic_scenario",
+            "model_snapshot_v1",
+            "precipitation_apiv1",
+        }:
             raise ConfigError("unsupported environment pressure_basis.")
         for name, values in (
             ("comparison_pressures", self.comparison_pressures),

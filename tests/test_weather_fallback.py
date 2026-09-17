@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from h3_offroad_planner import environment as environment_module
+from h3_offroad_planner.environment import EnvironmentSnapshot
+from h3_offroad_planner.factor_model import EnvironmentConfig, WeatherConfig
 from h3_offroad_planner.weather_fallback import (
     precipitation_pressure,
     resolve_precipitation_fallback,
@@ -44,3 +47,42 @@ def test_resolve_precipitation_fallback_requires_reference() -> None:
     assert pressure is None
     assert basis is None
     assert warnings == ("ENVIRONMENT_PRESSURE_UNCALIBRATED",)
+
+
+class _FakeProvider:
+    def __init__(self, snapshot: EnvironmentSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def fetch(self, _latitude: float, _longitude: float) -> EnvironmentSnapshot:
+        return self._snapshot
+
+
+def test_resolve_request_environment_uses_precipitation_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = EnvironmentSnapshot(
+        provider="open-meteo",
+        model="best_match",
+        requested_at="2026-09-17T00:00:00+00:00",
+        valid_at="2026-09-17T00:00:00+00:00",
+        latitude=31.99,
+        longitude=118.99,
+        precipitation_24h_mm=5.0,
+        soil_moisture_surface_m3_m3=None,
+        et0_24h_mm=1.0,
+        age_s=60.0,
+        degraded=False,
+    )
+    monkeypatch.setattr(environment_module, "_provider", lambda _config: _FakeProvider(snapshot))
+
+    resolved, payload, _, warnings = environment_module.resolve_request_environment(
+        EnvironmentConfig(),
+        WeatherConfig(enabled=True, api_reference_mm=10.0),
+        31.99,
+        118.99,
+    )
+
+    assert payload["derived_pressure"] == pytest.approx(0.5)
+    assert resolved.pressure_basis == "precipitation_apiv1"
+    assert resolved.request_pressures == (0.5,)
+    assert "ENVIRONMENT_PRESSURE_PRECIPITATION_PROVISIONAL" in warnings
