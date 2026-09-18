@@ -104,7 +104,8 @@ class BekkerChecker:
         """Populate CI, sinkage, resistance, and raw mobility fields on a cell."""
         if cell.uscs is None or cell.soil_moisture is None:
             return
-        cell.cone_index_kpa = self.compute_cone_index_kpa(cell.uscs, cell.soil_moisture)
+        if cell.cone_index_kpa is None:
+            cell.cone_index_kpa = self.compute_cone_index_kpa(cell.uscs, cell.soil_moisture)
         if cell.cone_index_kpa < CI_THRESHOLD_KPA:
             cell.soil_mobility = 0.0
             return

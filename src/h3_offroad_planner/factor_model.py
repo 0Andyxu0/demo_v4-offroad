@@ -12,6 +12,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import cast
 
+import numpy as np
 import yaml  # type: ignore[import-untyped]
 
 from h3_offroad_planner.dynamics.bekker import BekkerChecker
@@ -24,6 +25,7 @@ from h3_offroad_planner.models import (
     PlanningInputError,
     VehicleProfile,
 )
+from h3_offroad_planner.vectorized_soil import vectorized_cone_index_kpa
 
 __all__ = [
     "DirectedEdgeMetrics",
@@ -55,6 +57,7 @@ GRAVITY_MPS2: float = 9.81
 MODEL_SCHEMA_VERSION: int = 2
 PHYSICAL_EVIDENCE_WARNING: str = "PHYSICAL_EVIDENCE_INCOMPLETE"
 MISSING_REASON_PREFIX: str = "MISSING_"
+_EMPTY_ENV: MappingProxyType[str, float] = MappingProxyType({})
 SCHEMA_V2_SECTIONS: frozenset[str] = frozenset(
     {
         "schema_version",
@@ -160,7 +163,7 @@ class NodeFactorMetrics:
             raise ValueError("confidence must be in [0, 1].")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DirectedEdgeMetrics:
     """Frozen metrics for one directed graph edge."""
 
@@ -177,7 +180,7 @@ class DirectedEdgeMetrics:
     safety_margin_nominal: float
     safety_margin_upper: float
     directed_slope_deg: float
-    environment_distance_m: Mapping[str, float] = MappingProxyType({})
+    environment_distance_m: Mapping[str, float] = _EMPTY_ENV
 
     def __post_init__(self) -> None:
         finite_nonnegative = (
@@ -210,11 +213,49 @@ class DirectedEdgeMetrics:
             for value in self.environment_distance_m.values()
         ):
             raise ValueError("environment edge distances must be finite and >= geometry distance.")
-        object.__setattr__(
-            self,
-            "environment_distance_m",
-            MappingProxyType(dict(self.environment_distance_m)),
-        )
+        if not self.environment_distance_m:
+            object.__setattr__(self, "environment_distance_m", _EMPTY_ENV)
+        else:
+            object.__setattr__(
+                self,
+                "environment_distance_m",
+                MappingProxyType(dict(self.environment_distance_m)),
+            )
+
+    @classmethod
+    def _fast_create(
+        cls,
+        from_h3: str,
+        to_h3: str,
+        distance_m: float,
+        eta_lower_s: float,
+        eta_s: float,
+        eta_upper_s: float | None,
+        eta_upper_bounded: bool,
+        terrain_risk: float,
+        travel_cost: float,
+        safety_margin_lower: float,
+        safety_margin_nominal: float,
+        safety_margin_upper: float,
+        directed_slope_deg: float,
+        environment_distance_m: Mapping[str, float] = _EMPTY_ENV,
+    ) -> DirectedEdgeMetrics:
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "from_h3", from_h3)
+        object.__setattr__(obj, "to_h3", to_h3)
+        object.__setattr__(obj, "distance_m", distance_m)
+        object.__setattr__(obj, "eta_lower_s", eta_lower_s)
+        object.__setattr__(obj, "eta_s", eta_s)
+        object.__setattr__(obj, "eta_upper_s", eta_upper_s)
+        object.__setattr__(obj, "eta_upper_bounded", eta_upper_bounded)
+        object.__setattr__(obj, "terrain_risk", terrain_risk)
+        object.__setattr__(obj, "travel_cost", travel_cost)
+        object.__setattr__(obj, "safety_margin_lower", safety_margin_lower)
+        object.__setattr__(obj, "safety_margin_nominal", safety_margin_nominal)
+        object.__setattr__(obj, "safety_margin_upper", safety_margin_upper)
+        object.__setattr__(obj, "directed_slope_deg", directed_slope_deg)
+        object.__setattr__(obj, "environment_distance_m", environment_distance_m)
+        return obj
 
 
 @dataclass(frozen=True)
@@ -834,12 +875,31 @@ def evaluate_factor_model(
     """Evaluate physical node evidence once and freeze directed edge metrics."""
     if not graph.cells:
         raise PlanningInputError("factor evaluation requires a non-empty graph.")
+    soil_cells = [
+        cell
+        for cell in graph.cells.values()
+        if cell.uscs is not None and cell.soil_moisture is not None
+    ]
+    soil_cone_cache: dict[str, float] = {}
+    if soil_cells:
+        uscs_array = np.array([str(cell.uscs) for cell in soil_cells], dtype=np.str_)
+        moisture_array = np.array(
+            [float(cast(float, cell.soil_moisture)) for cell in soil_cells],
+            dtype=np.float64,
+        )
+        cone_values = vectorized_cone_index_kpa(uscs_array, moisture_array)
+        soil_cone_cache = {
+            cell.h3index: float(value)
+            for cell, value in zip(soil_cells, cone_values, strict=True)
+            if np.isfinite(value)
+        }
     evidence = {
         cell_id: _raw_node_evidence(
             cell,
             vehicle,
             config,
             strict_static_mode=environment is not None,
+            soil_cone_cache=soil_cone_cache,
         )
         for cell_id, cell in graph.cells.items()
     }
@@ -868,22 +928,15 @@ def build_directed_edge_cache(
     """Build the authoritative directed metrics used by route searches."""
     if set(node_metrics) != set(graph.cells):
         raise PlanningInputError("node metrics must cover every graph cell exactly once.")
-    cache: dict[tuple[str, str], DirectedEdgeMetrics] = {}
-    for edge in sorted(graph.edges.values(), key=lambda item: (item.cell_a, item.cell_b)):
-        for from_h3, to_h3 in ((edge.cell_a, edge.cell_b), (edge.cell_b, edge.cell_a)):
-            metrics = _directed_edge_metrics(
-                graph,
-                edge,
-                from_h3,
-                to_h3,
-                node_metrics,
-                vehicle,
-                config,
-                environment,
-            )
-            if metrics is not None:
-                cache[(from_h3, to_h3)] = metrics
-    return cache
+    from h3_offroad_planner.vectorized_factor import evaluate_directed_edges_vectorized
+
+    return evaluate_directed_edges_vectorized(
+        graph,
+        node_metrics,
+        vehicle,
+        config,
+        environment,
+    )
 
 
 def evaluate_path_metrics(
@@ -1057,6 +1110,7 @@ def _raw_node_evidence(
     vehicle: VehicleProfile,
     config: FactorModelConfig,
     strict_static_mode: bool = False,
+    soil_cone_cache: Mapping[str, float] | None = None,
 ) -> _RawNodeEvidence:
     reasons: list[str] = []
     missing = FactorInterval(
@@ -1071,7 +1125,9 @@ def _raw_node_evidence(
     landcover = _landcover_speed_interval(
         cell, vehicle, config, missing, reasons, strict_static_mode
     )
-    soil, cone_index, sinkage = _soil_speed_interval(cell, vehicle, config, missing, reasons)
+    soil, cone_index, sinkage = _soil_speed_interval(
+        cell, vehicle, config, missing, reasons, soil_cone_cache=soil_cone_cache
+    )
     tri = _floor_interval(
         _known_interval(_tri_speed_factor(cell.tri, config)),
         config.speed_floor_ratio,
@@ -1171,6 +1227,8 @@ def _soil_speed_interval(
     config: FactorModelConfig,
     missing: FactorInterval,
     reasons: list[str],
+    *,
+    soil_cone_cache: Mapping[str, float] | None = None,
 ) -> tuple[FactorInterval, float | None, float | None]:
     if cell.uscs is None or cell.soil_moisture is None:
         reasons.append("MISSING_SOIL")
@@ -1183,6 +1241,8 @@ def _soil_speed_interval(
             None,
         )
     clone = replace(cell)
+    if soil_cone_cache is not None and cell.h3index in soil_cone_cache:
+        clone.cone_index_kpa = soil_cone_cache[cell.h3index]
     try:
         BekkerChecker().enrich_cell(clone, vehicle)
     except AssessmentError:
