@@ -94,14 +94,20 @@ def vectorized_bekker_sinkage(
             k_c = -24.59 * w_percent + 1065.9
             k_phi = -24.482 * w_percent + 2087.4
 
-        stiffness = k_c / wheel_width_mm + k_phi
-        pos = (n_val > 0.0) & (stiffness > 0.0)
+        pos = (
+            (n_val > 0.0)
+            & (k_c > 0.0)
+            & (k_phi > 0.0)
+            & np.isfinite(n_val)
+            & np.isfinite(k_c)
+            & np.isfinite(k_phi)
+        )
         if not np.any(pos):
             continue
 
         sub_mask = mask.copy()
         sub_mask[mask] = pos
-        p_stiff = stiffness[pos]
+        p_stiff = (k_c[pos] / wheel_width_mm) + k_phi[pos]
         p_n = n_val[pos]
         s_mm = (pressure / p_stiff) ** (1.0 / p_n)
         s_m = s_mm / M_TO_MM

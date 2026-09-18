@@ -6,7 +6,7 @@ from math import exp, isfinite, log
 
 from h3_offroad_planner.models import AssessmentError, H3Cell, VehicleProfile
 
-__all__ = ["BekkerChecker"]
+__all__ = ["BekkerChecker", "_cell_bekker_soil"]
 
 GRAVITY_MPS2: float = 9.81
 PA_PER_KPA: float = 1000.0
@@ -110,6 +110,8 @@ class BekkerChecker:
             cell.soil_mobility = 0.0
             return
         if _cell_bekker_soil(cell) is None:
+            return
+        if cell.sinkage_m is not None and cell.sinkage_resistance is not None:
             return
         terms = self.compute_sinkage(cell, vehicle)
         cell.sinkage_m = terms["sinkage_m"]

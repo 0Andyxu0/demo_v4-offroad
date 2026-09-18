@@ -9,6 +9,7 @@ import pytest
 
 from h3_offroad_planner.dynamics.bekker import BekkerChecker
 from h3_offroad_planner.factor_model import (
+    _EMPTY_ENV,
     EnvironmentConfig,
     FactorModelConfig,
     _directed_edge_metrics,
@@ -18,7 +19,13 @@ from h3_offroad_planner.factor_model import (
     build_directed_edge_cache,
     evaluate_factor_model,
 )
-from h3_offroad_planner.models import H3Cell, H3Edge, H3Graph, VehicleProfile
+from h3_offroad_planner.models import (
+    AssessmentError,
+    H3Cell,
+    H3Edge,
+    H3Graph,
+    VehicleProfile,
+)
 from h3_offroad_planner.vectorized_factor import (
     compute_vectorized_edge_arrays,
     evaluate_directed_edges_vectorized,
@@ -340,3 +347,102 @@ def test_vectorized_edge_evaluator_impassable_node_blocks_incident_edges(
     assert ("b", "c") in evaluation.directed_edges
     assert ("c", "b") in evaluation.directed_edges
 
+
+def test_scalar_speed_multiplier_clamps_tri_below_best() -> None:
+    """Verify scalar_speed_multiplier clamps tri factor to 1.0 when tri < tri_best."""
+    config = FactorModelConfig(tri_best=1.0, tri_worst=8.0)
+    # tri = 0.5 < tri_best
+    scalar = scalar_speed_multiplier(None, None, 0.5, config)
+    vec = vectorized_speed_multiplier(
+        np.array([np.nan]), np.array([""]), np.array([0.5]), config
+    )[0]
+    assert abs(scalar - vec) <= 1e-12
+    # Check exact value: missing_speed_nominal ** 2 * 1.0 = 0.36
+    assert scalar == pytest.approx(config.missing_speed_nominal**2 * 1.0)
+
+
+def test_vectorized_bekker_sinkage_high_moisture_boundary(
+    vehicle: VehicleProfile,
+) -> None:
+    """High moisture makes k_c <= 0 in Bekker model, returning NaN matching AssessmentError."""
+    checker = BekkerChecker()
+    cell = H3Cell(
+        "test_cell", 0, 0, 0, 0, 0, 1.0, is_passable=True, uscs="CL", soil_moisture=0.45
+    )
+    with pytest.raises(AssessmentError):
+        checker.compute_sinkage(cell, vehicle)
+
+    s_m, r_n = vectorized_bekker_sinkage(
+        np.array(["clayloam"]), np.array([0.45]), vehicle
+    )
+    assert np.isnan(s_m[0])
+    assert np.isnan(r_n[0])
+
+
+def test_vectorized_bekker_sinkage_invalid_inputs(vehicle: VehicleProfile) -> None:
+    """Invalid moistures, unknown soils, or non-positive contact area return NaNs."""
+    bekker_soils = np.array(["clayloam", "unknown", "loam", "clayloam"], dtype=np.str_)
+    moistures = np.array([-0.05, 0.25, 1.5, np.nan], dtype=np.float64)
+    s_m, r_n = vectorized_bekker_sinkage(bekker_soils, moistures, vehicle)
+    assert np.all(np.isnan(s_m))
+    assert np.all(np.isnan(r_n))
+
+    # Contact area edge case
+    zero_contact = object.__new__(VehicleProfile)
+    object.__setattr__(zero_contact, "mass_kg", 2000.0)
+    object.__setattr__(zero_contact, "tire_width_m", 0.0)
+    object.__setattr__(zero_contact, "tire_radius_m", 0.45)
+    s_zero, r_zero = vectorized_bekker_sinkage(
+        np.array(["clayloam"]), np.array([0.2]), zero_contact
+    )
+    assert np.all(np.isnan(s_zero))
+    assert np.all(np.isnan(r_zero))
+
+
+def test_evaluate_factor_model_batch_soil_sinkage_equivalence(
+    vehicle: VehicleProfile,
+) -> None:
+    """Batch Bekker sinkage produces exact equivalence with scalar enrich_cell."""
+    cells = {
+        "c_cl": H3Cell(
+            "c_cl", 0.0, 0.0, 10.0, 5.0, 0.5, 1.0, is_passable=True, uscs="CL", soil_moisture=0.22
+        ),
+        "c_sm": H3Cell(
+            "c_sm", 0.0, 0.01, 15.0, 2.0, 0.8, 1.0, is_passable=True, uscs="SM", soil_moisture=0.28
+        ),
+        "c_dry": H3Cell(
+            "c_dry", 0.0, 0.02, 10.0, 1.0, 0.2, 1.0, is_passable=True, uscs="CL", soil_moisture=0.15
+        ),
+    }
+    edges = {
+        ("c_cl", "c_sm"): H3Edge("c_cl", "c_sm", 20.0, slope_a_to_b=5.0, slope_b_to_a=-5.0),
+        ("c_sm", "c_dry"): H3Edge("c_sm", "c_dry", 20.0, slope_a_to_b=-5.0, slope_b_to_a=5.0),
+    }
+    graph = H3Graph(cells=cells, edges=edges)
+    config = FactorModelConfig()
+
+    evaluation = evaluate_factor_model(graph, vehicle, config)
+    for cid in ("c_cl", "c_sm", "c_dry"):
+        node = evaluation.node_metrics[cid]
+        assert node.is_passable is True
+        assert node.speed_nominal_mps > 0.0
+        assert node.safety_margin.nominal > 0.0
+
+
+def test_evaluate_directed_edges_vectorized_empty_environment(
+    vehicle: VehicleProfile,
+) -> None:
+    """None environment reuses _EMPTY_ENV singleton without extra allocations."""
+    graph = H3Graph(
+        cells={
+            "a": H3Cell("a", 0.0, 0.0, 10.0, 5.0, 0.5, 1.0, is_passable=True),
+            "b": H3Cell("b", 0.0, 0.01, 15.0, 2.0, 0.8, 1.0, is_passable=True),
+        },
+        edges={
+            ("a", "b"): H3Edge("a", "b", 25.0, slope_a_to_b=5.0, slope_b_to_a=-5.0),
+        },
+    )
+    config = FactorModelConfig()
+    evaluation = evaluate_factor_model(graph, vehicle, config, environment=None)
+    edge = evaluation.directed_edges[("a", "b")]
+    assert edge.environment_distance_m is _EMPTY_ENV

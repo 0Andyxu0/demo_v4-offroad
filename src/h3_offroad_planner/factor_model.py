@@ -15,7 +15,11 @@ from typing import cast
 import numpy as np
 import yaml  # type: ignore[import-untyped]
 
-from h3_offroad_planner.dynamics.bekker import BekkerChecker
+from h3_offroad_planner.dynamics.bekker import (
+    CI_THRESHOLD_KPA,
+    BekkerChecker,
+    _cell_bekker_soil,
+)
 from h3_offroad_planner.models import (
     AssessmentError,
     ConfigError,
@@ -25,7 +29,10 @@ from h3_offroad_planner.models import (
     PlanningInputError,
     VehicleProfile,
 )
-from h3_offroad_planner.vectorized_soil import vectorized_cone_index_kpa
+from h3_offroad_planner.vectorized_soil import (
+    vectorized_bekker_sinkage,
+    vectorized_cone_index_kpa,
+)
 
 __all__ = [
     "DirectedEdgeMetrics",
@@ -881,6 +888,7 @@ def evaluate_factor_model(
         if cell.uscs is not None and cell.soil_moisture is not None
     ]
     soil_cone_cache: dict[str, float] = {}
+    soil_sinkage_cache: dict[str, tuple[float, float]] = {}
     if soil_cells:
         uscs_array = np.array([str(cell.uscs) for cell in soil_cells], dtype=np.str_)
         moisture_array = np.array(
@@ -893,6 +901,17 @@ def evaluate_factor_model(
             for cell, value in zip(soil_cells, cone_values, strict=True)
             if np.isfinite(value)
         }
+        bekker_soils = np.array(
+            [_cell_bekker_soil(cell) or "" for cell in soil_cells], dtype=np.str_
+        )
+        sinkage_m, resistance_n = vectorized_bekker_sinkage(
+            bekker_soils, moisture_array, vehicle
+        )
+        soil_sinkage_cache = {
+            cell.h3index: (float(s), float(r))
+            for cell, s, r in zip(soil_cells, sinkage_m, resistance_n, strict=True)
+            if np.isfinite(s) and np.isfinite(r)
+        }
     evidence = {
         cell_id: _raw_node_evidence(
             cell,
@@ -900,6 +919,7 @@ def evaluate_factor_model(
             config,
             strict_static_mode=environment is not None,
             soil_cone_cache=soil_cone_cache,
+            soil_sinkage_cache=soil_sinkage_cache,
         )
         for cell_id, cell in graph.cells.items()
     }
@@ -1111,6 +1131,7 @@ def _raw_node_evidence(
     config: FactorModelConfig,
     strict_static_mode: bool = False,
     soil_cone_cache: Mapping[str, float] | None = None,
+    soil_sinkage_cache: Mapping[str, tuple[float, float]] | None = None,
 ) -> _RawNodeEvidence:
     reasons: list[str] = []
     missing = FactorInterval(
@@ -1126,7 +1147,13 @@ def _raw_node_evidence(
         cell, vehicle, config, missing, reasons, strict_static_mode
     )
     soil, cone_index, sinkage = _soil_speed_interval(
-        cell, vehicle, config, missing, reasons, soil_cone_cache=soil_cone_cache
+        cell,
+        vehicle,
+        config,
+        missing,
+        reasons,
+        soil_cone_cache=soil_cone_cache,
+        soil_sinkage_cache=soil_sinkage_cache,
     )
     tri = _floor_interval(
         _known_interval(_tri_speed_factor(cell.tri, config)),
@@ -1229,6 +1256,7 @@ def _soil_speed_interval(
     reasons: list[str],
     *,
     soil_cone_cache: Mapping[str, float] | None = None,
+    soil_sinkage_cache: Mapping[str, tuple[float, float]] | None = None,
 ) -> tuple[FactorInterval, float | None, float | None]:
     if cell.uscs is None or cell.soil_moisture is None:
         reasons.append("MISSING_SOIL")
@@ -1243,6 +1271,12 @@ def _soil_speed_interval(
     clone = replace(cell)
     if soil_cone_cache is not None and cell.h3index in soil_cone_cache:
         clone.cone_index_kpa = soil_cone_cache[cell.h3index]
+    if (
+        soil_sinkage_cache is not None
+        and cell.h3index in soil_sinkage_cache
+        and (clone.cone_index_kpa is None or clone.cone_index_kpa >= CI_THRESHOLD_KPA)
+    ):
+        clone.sinkage_m, clone.sinkage_resistance = soil_sinkage_cache[cell.h3index]
     try:
         BekkerChecker().enrich_cell(clone, vehicle)
     except AssessmentError:

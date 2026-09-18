@@ -54,7 +54,7 @@ def scalar_speed_multiplier(
         else config.missing_speed_nominal
     )
     tri_span = max(config.tri_worst - config.tri_best, 1.0e-9)
-    tri_factor = max(0.0, 1.0 - (tri - config.tri_best) / tri_span)
+    tri_factor = max(0.0, min(1.0, 1.0 - (tri - config.tri_best) / tri_span))
     return float(lc_factor * soil_factor * tri_factor)
 
 
@@ -360,7 +360,7 @@ def evaluate_directed_edges_vectorized(
                 float(v_margin[k]),
                 float(v_margin[k]),
                 float(v_slopes[k]),
-                MappingProxyType(env_map),
+                _EMPTY_ENV if not env_map else MappingProxyType(env_map),
             )
 
     return cache
