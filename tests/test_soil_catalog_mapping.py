@@ -67,6 +67,34 @@ def test_unknown_soil_name_uses_conservative_loam_default() -> None:
     assert profile.is_passable is True
 
 
+def test_unknown_soil_name_falls_back_to_paddy_mapping() -> None:
+    """Paddy soils not in Nanjing overrides must be classified as CL clayloam and passable."""
+    profile = _profile_from_soil_code(999, "水稻土")
+    assert profile.soil_texture == "ClLo"
+    assert profile.uscs == "CL"
+    assert profile.bekker_soil == "clayloam"
+    assert profile.is_passable is True
+
+    sub_profile = _profile_from_soil_code(999, "潜育水稻土")
+    assert sub_profile.soil_texture == "ClLo"
+    assert sub_profile.uscs == "CL"
+    assert sub_profile.bekker_soil == "clayloam"
+    assert sub_profile.is_passable is True
+
+
+def test_unknown_soil_name_river_water_urban_are_non_passable() -> None:
+    """River, water bodies, and urban names not in overrides must be non-passable."""
+    river = _profile_from_soil_code(999, "河流")
+    reservoir = _profile_from_soil_code(999, "水库")
+    waterbody = _profile_from_soil_code(999, "水体")
+    town = _profile_from_soil_code(999, "城镇")
+
+    for p in (river, reservoir, waterbody, town):
+        assert p.is_passable is False
+        assert p.uscs is None
+        assert p.bekker_soil is None
+
+
 def test_static_soil_catalog_leaves_moisture_to_runtime() -> None:
     """Static catalog must keep soil_moisture as None; moisture belongs to runtime environment."""
     passable = _profile_from_soil_code(49, "黄褐土")

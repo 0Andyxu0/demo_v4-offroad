@@ -363,7 +363,10 @@ def _read_dbf_rows(path: Path) -> list[dict[str, str]]:
         try:
             name = raw_name.decode("utf-8")
         except UnicodeDecodeError:
-            name = raw_name.decode("gbk")
+            try:
+                name = raw_name.decode("gbk")
+            except UnicodeDecodeError as exc:
+                raise GISInputError(f"soil DBF field name is undecodable: {path}") from exc
         fields.append((name, chr(descriptor[11]), int(descriptor[16])))
         offset += 32
     rows: list[dict[str, str]] = []
@@ -409,13 +412,26 @@ def _soil_texture_mapping(
 
     if not name_zh:
         return "Lo", "CL", "loam", True
-    if any(keyword in name_zh for keyword in ("水", "湖", "江", "城区")):
-        return None, None, None, False
+    if "水稻" in name_zh:
+        return "ClLo", "CL", "clayloam", True
     if "沼泽" in name_zh:
+        return None, None, None, False
+    water_urban_keywords = (
+        "水",
+        "湖",
+        "江",
+        "河",
+        "水体",
+        "水域",
+        "水库",
+        "城区",
+        "城镇",
+    )
+    if any(keyword in name_zh for keyword in water_urban_keywords):
         return None, None, None, False
     if "砂" in name_zh:
         return "SaLo", "SM", "loam", True
-    if "粘" in name_zh or "水稻" in name_zh:
+    if "粘" in name_zh:
         return "ClLo", "CL", "clayloam", True
     if "潮" in name_zh or "冲积" in name_zh:
         return "SiLo", "ML", "loam", True

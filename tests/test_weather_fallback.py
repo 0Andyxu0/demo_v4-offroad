@@ -1,4 +1,4 @@
-﻿"""Tests for precipitation-based environment pressure fallback."""
+"""Tests for precipitation-based environment pressure fallback."""
 
 from __future__ import annotations
 
@@ -86,3 +86,31 @@ def test_resolve_request_environment_uses_precipitation_fallback(
     assert resolved.pressure_basis == "precipitation_apiv1"
     assert resolved.request_pressures == (0.5,)
     assert "ENVIRONMENT_PRESSURE_PRECIPITATION_PROVISIONAL" in warnings
+
+
+def test_resolve_request_environment_degraded_snapshot_does_not_duplicate_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = EnvironmentSnapshot(
+        provider="open-meteo",
+        model="best_match",
+        requested_at="2026-09-17T00:00:00+00:00",
+        valid_at="2026-09-17T00:00:00+00:00",
+        latitude=31.99,
+        longitude=118.99,
+        precipitation_24h_mm=5.0,
+        soil_moisture_surface_m3_m3=None,
+        et0_24h_mm=1.0,
+        age_s=60.0,
+        degraded=True,
+    )
+    monkeypatch.setattr(environment_module, "_provider", lambda _config: _FakeProvider(snapshot))
+
+    _, _, _, warnings = environment_module.resolve_request_environment(
+        EnvironmentConfig(),
+        WeatherConfig(enabled=True, api_reference_mm=10.0),
+        31.99,
+        118.99,
+    )
+
+    assert warnings.count("ENVIRONMENT_DATA_DEGRADED") == 1

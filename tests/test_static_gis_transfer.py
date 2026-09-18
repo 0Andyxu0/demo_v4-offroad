@@ -47,7 +47,14 @@ from h3_offroad_planner.factor_model import (
     write_static_planning_snapshot,
 )
 from h3_offroad_planner.grid.h3_grid_builder import _sample_raster_values
-from h3_offroad_planner.models import H3Cell, H3Edge, H3Graph, RouteEndpoint, VehicleProfile
+from h3_offroad_planner.models import (
+    GISInputError,
+    H3Cell,
+    H3Edge,
+    H3Graph,
+    RouteEndpoint,
+    VehicleProfile,
+)
 from h3_offroad_planner.preprocessing import GISPreprocessor, HydrologyConfig, map_twi_to_drainage
 from h3_offroad_planner.preprocessing.hydrology import (
     _prepare_metric_dem,
@@ -168,6 +175,25 @@ def test_t01_soil_catalog_stays_categorical_without_default_moisture(tmp_path: P
     assert profile.soil_moisture is None
     assert profile.uscs == "CL"
     assert profile.bekker_soil == "loam"
+
+
+def test_t01_soil_dbf_rejects_undecodable_field_names(tmp_path: Path) -> None:
+    dbf = tmp_path / "corrupt.dbf"
+    # Header: 32 bytes main header + 32 bytes field descriptor + 1 byte 0x0D terminator
+    header = bytearray(65)
+    header[0] = 0x03  # DBF version
+    header[4:8] = (0).to_bytes(4, "little")  # 0 records
+    header[8:10] = (65).to_bytes(2, "little")  # header length
+    header[10:12] = (10).to_bytes(2, "little")  # record length
+    # Field descriptor at offset 32: undecodable bytes for both UTF-8 and GBK
+    header[32:43] = b"\x80\x00\xff\xff\x00\x00\x00\x00\x00\x00\x00"
+    header[43] = ord("C")  # field type
+    header[48] = 5  # field length
+    header[64] = 0x0D  # terminator
+    dbf.write_bytes(header)
+
+    with pytest.raises(GISInputError, match="soil DBF field name is undecodable"):
+        GISPreprocessor().load_soil_catalog(str(dbf))
 
 
 def test_t02_twi_mapping_preserves_invalid_cells_and_clips() -> None:

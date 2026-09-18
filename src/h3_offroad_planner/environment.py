@@ -231,7 +231,9 @@ def resolve_request_environment(
         fallback_pressure, basis, precip_warnings = resolve_precipitation_fallback(
             snapshot.to_dict(), weather.api_reference_mm
         )
-        warnings.extend(precip_warnings)
+        for warning in precip_warnings:
+            if warning not in warnings:
+                warnings.append(warning)
         if fallback_pressure is not None and basis is not None:
             payload["derived_pressure"] = fallback_pressure
             environment = replace(
