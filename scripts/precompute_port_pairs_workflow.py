@@ -7,16 +7,22 @@ Usage:
     python scripts/precompute_port_pairs_workflow.py \
         --build-dir outputs/routing_index/builds/<id> \
         --output outputs/routing_index/builds/<id>/port_pairs.parquet \
+        --workers 4 \
         --register
 """
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 from pathlib import Path
 
 from h3_offroad_planner.config import load_vehicle
-from h3_offroad_planner.factor_model import FactorModelConfig, load_factor_model
+from h3_offroad_planner.factor_model import (
+    FactorModelConfig,
+    canonical_hash,
+    load_factor_model,
+)
 from h3_offroad_planner.offline_pairs import (
     default_vehicle,
     precompute_port_pairs,
@@ -46,6 +52,18 @@ def main() -> int:
         type=int,
         default=None,
         help="Limit number of parent tiles to precompute",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        help="Number of parent tiles per processing chunk (default: 50)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel worker processes (default: 1)",
     )
     parser.add_argument(
         "--vehicle-path",
@@ -93,21 +111,25 @@ def main() -> int:
         else (index.build_dir / "port_pairs.parquet")
     )
 
+    vehicle_hash = canonical_hash(asdict(vehicle))
+
     pairs_df = precompute_port_pairs(
         index,
         vehicle=vehicle,
         factor_config=factor_config,
         max_parents=args.max_parents,
+        batch_size=args.batch_size,
+        workers=args.workers,
     )
 
-    save_offline_pairs(pairs_df, output_file)
+    save_offline_pairs(pairs_df, output_file, vehicle_hash=vehicle_hash)
     print(
         f"Wrote {len(pairs_df)} port pairs for "
         f"{pairs_df['parent_h3'].nunique()} parents to {output_file}"
     )
 
     if args.register:
-        register_port_pairs(index.build_dir, output_file)
+        register_port_pairs(index.build_dir, output_file, vehicle_hash=vehicle_hash)
         print(f"Registered {output_file.name} in {index.build_dir / 'routing_index.json'}")
 
     return 0

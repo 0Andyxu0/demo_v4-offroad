@@ -142,6 +142,7 @@ def build_routing_index(
     factor_model_path: str | None = None,
     static_planning_path: str | None = None,
     port_pairs_path: str | Path | None = None,
+    port_pairs_vehicle_hash: str | None = None,
 ) -> dict[str, object]:
     """Build, validate and atomically publish one immutable routing index."""
     output_dir = Path(_manifest_string(tile_manifest, "output_dir"))
@@ -223,6 +224,8 @@ def build_routing_index(
             "column_compressed_bytes": _compressed_column_sizes(cells_path),
             "source_tile_count": len(records),
         }
+        if has_port_pairs and port_pairs_vehicle_hash is not None:
+            manifest["port_pairs_vehicle_hash"] = port_pairs_vehicle_hash
         _write_json_strict(temporary / "routing_index.json", manifest)
         _validate_build(temporary, manifest)
         final = builds_root / build_id
@@ -241,7 +244,11 @@ def build_routing_index(
         raise
 
 
-def register_port_pairs(build_dir: Path, port_pairs_path: Path) -> dict[str, object]:
+def register_port_pairs(
+    build_dir: Path,
+    port_pairs_path: Path,
+    vehicle_hash: str | None = None,
+) -> dict[str, object]:
     """Register or copy port_pairs.parquet into an existing routing index build."""
     manifest_path = build_dir / "routing_index.json"
     manifest = _read_json(manifest_path)
@@ -252,6 +259,8 @@ def register_port_pairs(build_dir: Path, port_pairs_path: Path) -> dict[str, obj
     files = _manifest_mapping(manifest, "files")
     files["port_pairs"] = _file_record(build_dir, target_path)
     manifest["files"] = files
+    if vehicle_hash is not None:
+        manifest["port_pairs_vehicle_hash"] = vehicle_hash
     _write_json_strict(manifest_path, manifest)
     _validate_build(build_dir, manifest)
     return manifest

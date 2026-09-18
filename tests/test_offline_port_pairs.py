@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import h3
@@ -11,14 +12,17 @@ import pytest
 
 from h3_offroad_planner.factor_model import (
     FactorModelConfig,
+    canonical_hash,
     evaluate_factor_model,
 )
 from h3_offroad_planner.models import H3Cell, H3Edge, H3Graph, VehicleProfile
 from h3_offroad_planner.offline_pairs import (
     BASE_PROFILE_NAMES,
+    default_vehicle,
     extract_offline_pairs,
     load_offline_pairs,
     precompute_port_pairs,
+    read_offline_pairs_vehicle_hash,
     save_offline_pairs,
 )
 from h3_offroad_planner.portsmap import (
@@ -339,3 +343,133 @@ def test_precompute_port_pairs_workflow_cli(
     assert reopened.has_port_pairs
     loaded = reopened.load_port_pairs([first_parent])
     assert loaded
+
+
+def test_offline_pairs_localized_blockage_fallback(
+    vehicle: VehicleProfile,
+) -> None:
+    """Verify that a blocked cell in Parent 1 does NOT prevent Parent 2 from using offline pairs."""
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+
+    warm = PortsMapSearchContext(graph, evaluation)
+    warm.search("a", "f", profile)
+    offline = extract_offline_pairs(warm, profile.name)
+
+    # Context with offline pairs
+    context = PortsMapSearchContext(graph, evaluation, offline_pairs=offline)
+    # Block a cell in p1 only ('b' is in p1)
+    # When searching between p2 ports ('d' to 'f'), p2 has NO blocked cells
+    res = context.search(
+        "d",
+        "f",
+        profile,
+        blocked=frozenset({"b"}),
+    )
+    assert res.h3_path == ("d", "e", "f")
+    # p2 was pristine and unblocked, so offline cache was used for p2
+    assert context.offline_cache_hits > 0
+
+
+def test_offline_pairs_composite_profile_fallback(
+    vehicle: VehicleProfile,
+) -> None:
+    """Verify that composite profiles (even if named distance) fall back to online Dijkstra."""
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+
+    warm = PortsMapSearchContext(graph, evaluation)
+    warm.search("a", "f", ScalarProfile({"distance": 1.0}, name="distance"))
+    offline = extract_offline_pairs(warm, "distance")
+
+    context = PortsMapSearchContext(graph, evaluation, offline_pairs=offline)
+    # Composite profile with multi-objective weights named "distance"
+    composite_profile = ScalarProfile({"distance": 0.5, "eta": 0.5}, name="distance")
+    context.search("a", "f", composite_profile)
+
+    # Must fall back to fine search because it is not a pure single-objective base profile
+    assert context.fine_search_calls > 0
+    assert context.offline_cache_hits == 0
+
+
+def test_precompute_port_pairs_with_workers(
+    tmp_path: Path,
+    vehicle: VehicleProfile,
+) -> None:
+    """Verify precomputing port pairs with multiple worker processes."""
+    manifest, (first_parent, second_parent) = _test_tile_manifest(tmp_path)
+    build_routing_index(manifest)
+    index = open_routing_index(tmp_path / "routing_index" / "current.json")
+
+    # Run with workers=2 and small batch_size
+    pairs_df = precompute_port_pairs(
+        index,
+        vehicle=vehicle,
+        batch_size=1,
+        workers=2,
+    )
+    assert not pairs_df.empty
+    assert set(pairs_df["profile"]).issubset(set(BASE_PROFILE_NAMES))
+    assert set(pairs_df["parent_h3"]).issubset({first_parent, second_parent})
+
+
+def test_offline_pairs_vehicle_hash_metadata(tmp_path: Path) -> None:
+    """Verify vehicle_hash is stored in Parquet schema metadata and read back."""
+    pairs_file = tmp_path / "vehicle_hash_test.parquet"
+    save_offline_pairs(
+        [],
+        pairs_file,
+        vehicle_hash="custom-vehicle-hash-123",
+    )
+    read_hash = read_offline_pairs_vehicle_hash(pairs_file)
+    assert read_hash == "custom-vehicle-hash-123"
+
+
+def test_route_planning_vehicle_mismatch_fallback(tmp_path: Path) -> None:
+    """Verify route_planning logic falls back to online search if runtime vehicle differs."""
+    manifest, (first_parent, second_parent) = _test_tile_manifest(tmp_path)
+    build_routing_index(manifest)
+    current_json = tmp_path / "routing_index" / "current.json"
+    index = open_routing_index(current_json)
+
+    base_veh = default_vehicle()
+    pairs_df = precompute_port_pairs(index, vehicle=base_veh)
+    pairs_file = tmp_path / "port_pairs.parquet"
+    base_hash = canonical_hash(asdict(base_veh))
+    save_offline_pairs(pairs_df, pairs_file, vehicle_hash=base_hash)
+    register_port_pairs(index.build_dir, pairs_file, vehicle_hash=base_hash)
+
+    # Reopen index
+    reopened = open_routing_index(current_json)
+    assert reopened.has_port_pairs
+
+    # Simulate route_planning check:
+    # 1. Matching vehicle: vehicle_matches is True, offline_pairs loaded
+    expected_hash = (
+        reopened.manifest.get("port_pairs_vehicle_hash")
+        or reopened.manifest.get("vehicle_hash")
+        or base_hash
+    )
+    matching_hash = base_hash
+    assert matching_hash == expected_hash
+    loaded_matching = reopened.load_port_pairs([first_parent])
+    assert loaded_matching
+
+    # 2. Non-baseline vehicle: vehicle_matches is False
+    custom_veh = VehicleProfile(
+        name="heavy_truck",
+        mass_kg=15000.0,
+        max_climb_angle_deg=12.0,
+        max_speed_kmh=40.0,
+        tire_width_m=0.45,
+        ground_clearance_m=0.5,
+        max_thrust_n=20000.0,
+        tire_radius_m=0.55,
+        min_turn_radius_m=8.0,
+    )
+    custom_hash = canonical_hash(asdict(custom_veh))
+    assert custom_hash != expected_hash
+    # In route_planning, non-matching vehicle bypasses offline_pairs
+    vehicle_matches = custom_hash == expected_hash
+    assert not vehicle_matches

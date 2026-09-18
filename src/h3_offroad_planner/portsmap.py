@@ -556,28 +556,37 @@ class PortsMapSearchContext:
             if (
                 base_pairs is None
                 and self._offline_pairs is not None
-                and not blocked
+                and not local_blocked_key
                 and not local_penalty_key
             ):
-                offline_table = self._offline_pairs.get((profile.name, parent, source))
-                if offline_table is not None:
-                    missing_temporary = any(
-                        t in temporary_ports and t not in offline_table
-                        for t in port_ids
-                        if t != source
+                is_pure_base_profile = (
+                    profile.environment_weight == 0.0
+                    and (profile.environment_pressure is None or profile.environment_weight == 0.0)
+                    and all(
+                        w == 0.0 for k, w in profile.weights.items() if k != profile.name
                     )
-                    if not missing_temporary:
-                        scale = profile.scales.get(profile.name, 1.0)
-                        weight = profile.weights.get(profile.name, 1.0)
-                        factor = (weight / scale) if scale > 0.0 else 1.0
-                        base_pairs = tuple(
-                            (target, path, cost * factor)
-                            for target, (path, cost) in offline_table.items()
-                            if target in port_ids and target != source
+                    and profile.weights.get(profile.name, 0.0) > 0.0
+                )
+                if is_pure_base_profile:
+                    offline_table = self._offline_pairs.get((profile.name, parent, source))
+                    if offline_table is not None:
+                        missing_temporary = any(
+                            t in temporary_ports and t not in offline_table
+                            for t in port_ids
+                            if t != source
                         )
-                        self._offline_cache_hits += 1
-                        if base_key is not None:
-                            _base_pair_cache_put(base_key, base_pairs)
+                        if not missing_temporary:
+                            scale = profile.scales.get(profile.name, 1.0)
+                            weight = profile.weights.get(profile.name, 1.0)
+                            factor = (weight / scale) if scale > 0.0 else 1.0
+                            base_pairs = tuple(
+                                (target, path, cost * factor)
+                                for target, (path, cost) in offline_table.items()
+                                if target in port_ids and target != source
+                            )
+                            self._offline_cache_hits += 1
+                            if base_key is not None:
+                                _base_pair_cache_put(base_key, base_pairs)
             if base_pairs is None:
                 if base_key is not None:
                     self._base_cache_misses += 1

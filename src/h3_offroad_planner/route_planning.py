@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from math import atan2, cos, inf, radians, sin, sqrt
 from pathlib import Path
 from time import perf_counter
@@ -41,6 +41,7 @@ from h3_offroad_planner.models import (
     RouteRequest,
     VehicleProfile,
 )
+from h3_offroad_planner.offline_pairs import default_vehicle
 from h3_offroad_planner.planners.deterministic_pareto import DeterministicParetoPlanner
 from h3_offroad_planner.portsmap import PortsMapSearchContext
 from h3_offroad_planner.reachability import check_route_reachability
@@ -238,15 +239,17 @@ def _run_route_plan_once(
         )
         if source_manifest:
             index = open_routing_index(str(source_manifest))
-            index_vehicle_hash = index.manifest.get("vehicle_hash")
-            if (
-                index.has_port_pairs
-                and (
-                    index_vehicle_hash is None
-                    or evaluation.vehicle_hash is None
-                    or index_vehicle_hash == evaluation.vehicle_hash
-                )
-            ):
+            baseline_hash = canonical_hash(asdict(default_vehicle()))
+            expected_vehicle_hash = (
+                index.manifest.get("port_pairs_vehicle_hash")
+                or index.manifest.get("vehicle_hash")
+                or baseline_hash
+            )
+            vehicle_matches = (
+                evaluation.vehicle_hash is None
+                or evaluation.vehicle_hash == expected_vehicle_hash
+            )
+            if index.has_port_pairs and vehicle_matches:
                 active_parents = source_metadata.get("active_parent_h3")
                 if isinstance(active_parents, list) and active_parents:
                     offline_pairs = index.load_port_pairs(active_parents)
