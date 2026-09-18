@@ -205,13 +205,12 @@ def resolve_request_environment(
     if snapshot.degraded:
         warnings.append("ENVIRONMENT_DATA_DEGRADED")
     moisture = snapshot.soil_moisture_surface_m3_m3
-    moisture_valid = (
+    if (
         not snapshot.degraded
         and moisture is not None
         and weather.theta_dry is not None
         and weather.theta_wet is not None
-    )
-    if moisture_valid:
+    ):
         pressure = min(
             1.0,
             max(0.0, (moisture - weather.theta_dry) / (weather.theta_wet - weather.theta_dry)),
@@ -229,19 +228,19 @@ def resolve_request_environment(
         if weather.calibration_status == "provisional_cldas_spatial_20260101":
             warnings.append("ENVIRONMENT_PRESSURE_PROVISIONAL")
     else:
-        pressure, basis, precip_warnings = resolve_precipitation_fallback(
+        fallback_pressure, basis, precip_warnings = resolve_precipitation_fallback(
             snapshot.to_dict(), weather.api_reference_mm
         )
         warnings.extend(precip_warnings)
-        if pressure is not None and basis is not None:
-            payload["derived_pressure"] = pressure
+        if fallback_pressure is not None and basis is not None:
+            payload["derived_pressure"] = fallback_pressure
             environment = replace(
                 environment,
                 pressure_basis=basis,
                 comparison_pressures=tuple(
-                    sorted({*environment.comparison_pressures, pressure})
+                    sorted({*environment.comparison_pressures, fallback_pressure})
                 ),
-                request_pressures=(pressure,),
+                request_pressures=(fallback_pressure,),
             )
     identity = {
         key: value

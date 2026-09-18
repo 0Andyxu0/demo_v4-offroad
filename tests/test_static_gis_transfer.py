@@ -166,8 +166,8 @@ def test_t01_soil_catalog_stays_categorical_without_default_moisture(tmp_path: P
     profile = GISPreprocessor().load_soil_catalog(str(catalog))[49]
     assert profile.name_zh == "黄棕壤"
     assert profile.soil_moisture is None
-    assert profile.uscs is None
-    assert profile.bekker_soil is None
+    assert profile.uscs == "CL"
+    assert profile.bekker_soil == "loam"
 
 
 def test_t02_twi_mapping_preserves_invalid_cells_and_clips() -> None:

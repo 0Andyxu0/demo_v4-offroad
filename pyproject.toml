@@ -40,7 +40,7 @@ testpaths = ["tests"]
 addopts = ["--basetemp=pytest_temp"]
 
 [[tool.mypy.overrides]]
-module = ["geopandas.*", "rasterio.*", "shapely.*", "h3.*", "affine.*"]
+module = ["geopandas.*", "rasterio.*", "shapely.*", "h3.*", "affine.*", "yaml.*", "yaml"]
 ignore_missing_imports = true
 
 [tool.ruff]
