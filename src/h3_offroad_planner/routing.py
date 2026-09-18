@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from heapq import heappop, heappush
 from math import atan2, cos, isfinite, radians, sin, sqrt
 from pathlib import Path
@@ -44,6 +44,7 @@ from h3_offroad_planner.routing_index import (
 
 __all__ = [
     "estimate_h3_cells_for_roi",
+    "expand_targeted_bottleneck_parents",
     "load_route_endpoints",
     "run_route",
     "snap_endpoint",
@@ -190,6 +191,7 @@ def _load_route_graph(
     progress_range: tuple[int, int] = (75, 84),
     corridor_ring: int = 1,
     max_widest_detour_ratio: float | None = None,
+    extra_parents: set[str] | None = None,
 ) -> tuple[H3Graph, dict[str, object]]:
     if _is_routing_index_metadata(source_metadata):
         return _load_index_route_graph(
@@ -197,6 +199,7 @@ def _load_route_graph(
             source_metadata,
             corridor_ring,
             max_widest_detour_ratio=max_widest_detour_ratio,
+            extra_parents=extra_parents,
         )
     if _is_tile_cache_metadata(source_metadata):
         return _load_tile_route_graph(
@@ -274,6 +277,7 @@ def _load_index_route_graph(
     corridor_ring: int,
     *,
     max_widest_detour_ratio: float | None = None,
+    extra_parents: set[str] | None = None,
 ) -> tuple[H3Graph, JsonObject]:
     if corridor_ring not in {1, 2}:
         raise ValueError("routing-index corridor ring must be 1 or 2.")
@@ -298,7 +302,9 @@ def _load_index_route_graph(
         max_widest_detour_ratio=max_widest_detour_ratio,
     )
     coarse_elapsed = perf_counter() - coarse_started
-    active = _expanded_corridor_parents(index, skeletons, corridor_ring)
+    active = _expanded_corridor_parents(
+        index, skeletons, corridor_ring, extra_parents=extra_parents
+    )
     load_started = perf_counter()
     frame = index.load_cells(active)
     load_elapsed = perf_counter() - load_started
@@ -349,12 +355,22 @@ def _coarse_skeletons(
     for row in frame.itertuples(index=False):
         first = str(row.parent_a)
         second = str(row.parent_b)
+        risk_val = (
+            getattr(row, "risk_proxy", None)
+            if hasattr(row, "risk_proxy")
+            else None
+        )
+        if risk_val is None:
+            risk_val = float(str(row.slope_mean)) + float(str(row.tri_mean))
+        else:
+            risk_val = float(str(risk_val))
         metrics = {
             "distance": float(str(row.distance_m)),
             "slope": float(str(row.slope_mean)),
             "tri": float(str(row.tri_mean)),
             "road": float(str(row.road_fraction)),
             "passable": float(str(row.passable_fraction)),
+            "risk": risk_val,
             "environment": float(str(row.environment_proxy)),
         }
         adjacency[first].append((second, metrics))
@@ -453,13 +469,21 @@ def _coarse_shortest_path(
 
 def _coarse_weight(metrics: Mapping[str, float], profile: str) -> float:
     distance = metrics["distance"]
+    passable = max(0.0, min(1.0, metrics.get("passable", 1.0)))
+    risk = max(0.0, metrics.get("risk", metrics.get("slope", 0.0) + metrics.get("tri", 0.0)))
+    barrier_penalty = 1.0 + 0.8 * (1.0 - passable) + 0.01 * risk
+
     if profile == "eta_road":
-        return distance / (1.0 + 2.0 * metrics["road"])
+        road = max(0.0, metrics.get("road", 0.0))
+        return (distance / (1.0 + 2.0 * road)) * barrier_penalty
     if profile == "terrain_travel":
-        return distance * (1.0 + metrics["slope"] / 30.0 + metrics["tri"] / 10.0)
+        slope = metrics.get("slope", 0.0)
+        tri = metrics.get("tri", 0.0)
+        return distance * (1.0 + slope / 30.0 + tri / 10.0) * (1.0 + 0.8 * (1.0 - passable))
     if profile == "environment":
-        return distance * (1.0 + metrics["environment"])
-    return distance
+        env = metrics.get("environment", 1.0 - passable)
+        return distance * (1.0 + env) * (1.0 + 0.01 * risk)
+    return distance * barrier_penalty
 
 
 def _coarse_widest_path(
@@ -498,10 +522,20 @@ def _coarse_widest_path(
     raise GridBuildError("coarse routing index has no widest path between endpoints.")
 
 
+def _is_valid_h3_parent(cell: str | None) -> bool:
+    if not cell:
+        return False
+    try:
+        return bool(h3.is_valid_cell(cell))
+    except (ValueError, TypeError):
+        return False
+
+
 def _expanded_corridor_parents(
     index: RoutingIndex,
     skeletons: Mapping[str, list[str]],
     ring: int,
+    extra_parents: set[str] | None = None,
 ) -> set[str]:
     available = set(index.coarse_graph["parent_a"].astype(str)).union(
         index.coarse_graph["parent_b"].astype(str)
@@ -510,12 +544,47 @@ def _expanded_corridor_parents(
     active = {
         str(neighbor)
         for parent in backbone
+        if _is_valid_h3_parent(parent)
         for neighbor in h3.grid_disk(parent, ring)
         if str(neighbor) in available
     }
+    if extra_parents:
+        active.update(p for p in extra_parents if p in available)
     if not active:
         raise GridBuildError("coarse skeleton expansion selected no indexed parents.")
     return active
+
+
+def expand_targeted_bottleneck_parents(
+    index: RoutingIndex,
+    current_parents: set[str],
+    bottleneck_parents: Sequence[str],
+    max_additional: int = 15,
+) -> set[str]:
+    """Perform targeted dilation around specific bottleneck parent cells.
+
+    Only dilates the bottleneck parents by 1-ring (grid_disk(p, 1)) and returns
+    up to max_additional newly activated parent tiles available in the coarse graph.
+    """
+    if not bottleneck_parents or max_additional <= 0:
+        return set()
+    available = set(index.coarse_graph["parent_a"].astype(str)).union(
+        index.coarse_graph["parent_b"].astype(str)
+    )
+    candidates: set[str] = set()
+    for parent in bottleneck_parents:
+        if not parent or not _is_valid_h3_parent(parent):
+            continue
+        try:
+            disk = [str(n) for n in h3.grid_disk(parent, 1)]
+        except (ValueError, TypeError):
+            continue
+        for neighbor_str in disk:
+            if neighbor_str in available and neighbor_str not in current_parents:
+                candidates.add(neighbor_str)
+    if len(candidates) <= max_additional:
+        return candidates
+    return set(sorted(candidates)[:max_additional])
 
 
 def _load_tile_route_graph(

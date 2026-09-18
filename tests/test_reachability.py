@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import h3
 import pytest
 
 from h3_offroad_planner.factor_model import (
@@ -15,7 +16,12 @@ from h3_offroad_planner.models import (
     PlanningFailedError,
     VehicleProfile,
 )
-from h3_offroad_planner.reachability import check_route_reachability
+from h3_offroad_planner.reachability import (
+    ReachabilityDiagnosis,
+    ReachabilityDisconnectionError,
+    check_route_reachability,
+    diagnose_route_reachability,
+)
 
 
 @pytest.fixture
@@ -171,3 +177,46 @@ def test_reachability_fails_when_start_isolated(vehicle: VehicleProfile) -> None
 
     with pytest.raises(PlanningFailedError, match="Endpoints disconnected"):
         check_route_reachability(graph, evaluation, "solo", "target")
+
+
+def test_diagnose_reachability_with_real_h3_cells(vehicle: VehicleProfile) -> None:
+    cells_list = [h3.latlng_to_cell(32.0 + 0.002 * i, 119.0, 13) for i in range(5)]
+    cells = {
+        c: H3Cell(
+            h3index=c,
+            lat=32.0 + 0.002 * i,
+            lng=119.0,
+            elevation=50.0,
+            slope=5.0,
+            tri=0.2,
+            lc_factor=1.0,
+            parent_h3=str(h3.cell_to_parent(c, 11)),
+            is_passable=True,
+        )
+        for i, c in enumerate(cells_list)
+    }
+    # Connect c0-c1 and c3-c4, leaving a gap between c1 and c3
+    edges = {
+        (cells_list[0], cells_list[1]): H3Edge(
+            cell_a=cells_list[0], cell_b=cells_list[1], geo_distance=10.0
+        ),
+        (cells_list[3], cells_list[4]): H3Edge(
+            cell_a=cells_list[3], cell_b=cells_list[4], geo_distance=10.0
+        ),
+    }
+    graph = H3Graph(cells=cells, edges=edges)
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+
+    diag = diagnose_route_reachability(graph, evaluation, cells_list[0], cells_list[4])
+    assert isinstance(diag, ReachabilityDiagnosis)
+    assert diag.reachable is False
+    assert cells_list[0] in diag.visited_cells
+    assert cells_list[1] in diag.boundary_blockage_cells
+    assert len(diag.bottleneck_parents) >= 1
+    assert len(diag.bottleneck_parents) <= 8
+
+    # check_route_reachability raises ReachabilityDisconnectionError
+    with pytest.raises(ReachabilityDisconnectionError) as exc_info:
+        check_route_reachability(graph, evaluation, cells_list[0], cells_list[4])
+    assert exc_info.value.diagnosis is not None
+    assert exc_info.value.diagnosis.bottleneck_parents == diag.bottleneck_parents

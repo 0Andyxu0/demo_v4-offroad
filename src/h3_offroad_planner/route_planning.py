@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import asdict, replace
 from math import atan2, cos, inf, radians, sin, sqrt
@@ -44,7 +45,10 @@ from h3_offroad_planner.models import (
 from h3_offroad_planner.offline_pairs import default_vehicle
 from h3_offroad_planner.planners.deterministic_pareto import DeterministicParetoPlanner
 from h3_offroad_planner.portsmap import PortsMapSearchContext
-from h3_offroad_planner.reachability import check_route_reachability
+from h3_offroad_planner.reachability import (
+    ReachabilityDisconnectionError,
+    check_route_reachability,
+)
 from h3_offroad_planner.route_models import RouteCandidate, RoutePlan, plan_id_for_payload
 from h3_offroad_planner.route_persistence import (
     atomic_write_json,
@@ -60,8 +64,11 @@ from h3_offroad_planner.routing import (
     _single_endpoint,
     _source_metadata,
     estimate_h3_cells_for_roi,
+    expand_targeted_bottleneck_parents,
 )
 from h3_offroad_planner.routing_index import open_routing_index
+
+logger = logging.getLogger("h3_offroad_planner.route_planning")
 
 __all__ = ["run_route_plan"]
 
@@ -220,7 +227,117 @@ def _run_route_plan_once(
         _single_endpoint(endpoints, "goal"),
         request.max_snap_distance_m,
     )
-    check_route_reachability(graph, evaluation, start, goal, progress=progress)
+    repair_attempts = 0
+    added_repair_parents: list[str] = []
+    max_repair_attempts = 2
+    max_additional_per_attempt = 15
+
+    while True:
+        try:
+            check_route_reachability(graph, evaluation, start, goal, progress=progress)
+            break
+        except ReachabilityDisconnectionError as exc:
+            diagnosis = exc.diagnosis
+            if (
+                corridor_ring != 1
+                or not fast_five
+                or repair_attempts >= max_repair_attempts
+                or diagnosis is None
+                or not diagnosis.bottleneck_parents
+            ):
+                raise
+            source_manifest = source_metadata.get("source_manifest") or source_metadata.get(
+                "routing_index_manifest"
+            )
+            if not source_manifest:
+                raise
+            index = open_routing_index(str(source_manifest))
+            raw_active = source_metadata.get("active_parent_h3", [])
+            current_active = (
+                set(cast(list[str], raw_active))
+                if isinstance(raw_active, list)
+                else set()
+            )
+            new_parents = expand_targeted_bottleneck_parents(
+                index,
+                current_active,
+                diagnosis.bottleneck_parents,
+                max_additional=max_additional_per_attempt,
+            )
+            if not new_parents:
+                logger.warning(
+                    "[TARGETED_REPAIR] No additional parents found for bottleneck parents %s",
+                    diagnosis.bottleneck_parents,
+                )
+                raise
+            repair_attempts += 1
+            added_repair_parents.extend(sorted(new_parents))
+            logger.info(
+                "[TARGETED_REPAIR] Attempt %d/%d: dilating %d bottleneck parents "
+                "with %d new parents: %s",
+                repair_attempts,
+                max_repair_attempts,
+                len(diagnosis.bottleneck_parents),
+                len(new_parents),
+                sorted(new_parents),
+            )
+            graph, source_metadata = _load_route_graph(
+                request,
+                roi_geometry,
+                source_metadata,
+                progress=progress,
+                progress_range=(start_pct, start_pct + 9),
+                corridor_ring=corridor_ring,
+                max_widest_detour_ratio=(
+                    static_planning.decision.detour_ratio
+                    if fast_five and static_planning is not None
+                    else None
+                ),
+                extra_parents=set(added_repair_parents),
+            )
+            source_timings = source_metadata.get("performance", {})
+            if isinstance(source_timings, dict):
+                timings.update(
+                    {
+                        key: float(value)
+                        for key, value in source_timings.items()
+                        if key
+                        in {"index_open_s", "coarse_search_s", "corridor_load_s", "graph_build_s"}
+                        and isinstance(value, (int, float))
+                    }
+                )
+            _restore_static_authority(graph, source_metadata)
+            eval_started = perf_counter()
+            evaluation = evaluate_factor_model(
+                graph,
+                vehicle,
+                factor_config,
+                None if static_planning is None else static_planning.environment,
+            )
+            timings["factor_eval_s"] += perf_counter() - eval_started
+            _bind_loaded_index_identity(
+                source_metadata,
+                evaluation,
+                vehicle,
+                static_planning,
+                environment_snapshot_hash,
+            )
+            start = _snap_evaluated(
+                graph,
+                evaluation,
+                _single_endpoint(endpoints, "start"),
+                request.max_snap_distance_m,
+            )
+            goal = _snap_evaluated(
+                graph,
+                evaluation,
+                _single_endpoint(endpoints, "goal"),
+                request.max_snap_distance_m,
+            )
+
+    if repair_attempts > 0:
+        source_metadata["targeted_dilation_attempts"] = repair_attempts
+        source_metadata["targeted_dilation_parents"] = added_repair_parents
     base_cache_identity = None
     offline_pairs = None
     if source_metadata.get("artifact_kind") == "h3_routing_index":
@@ -402,6 +519,7 @@ def _run_route_plan_once(
                     *role_warnings,
                     *environment_warnings,
                     *((extra_warning,) if extra_warning is not None else ()),
+                    *(("TARGETED_CORRIDOR_REPAIR_APPLIED",) if repair_attempts > 0 else ()),
                 )
             )
         ),
@@ -427,10 +545,11 @@ def _run_route_plan_once(
         timings["heavy_export_s"] = perf_counter() - export_started
     else:
         timings["heavy_export_s"] = 0.0
-    output_bytes = sum(
-        path.stat().st_size
-        for path in Path(request.output_dir).iterdir()
-        if path.is_file()
+    output_dir = Path(request.output_dir)
+    output_bytes = (
+        sum(path.stat().st_size for path in output_dir.iterdir() if path.is_file())
+        if output_dir.is_dir()
+        else 0
     )
     atomic_write_json(
         Path(request.output_dir) / "performance.json",
@@ -446,6 +565,8 @@ def _run_route_plan_once(
             "returned_candidate_count": len(candidates),
             "corridor_ring": _mapping_int(source_metadata, "corridor_ring", 0),
             "active_parent_count": _mapping_list_len(source_metadata, "active_parent_h3"),
+            "targeted_repair_attempts": repair_attempts,
+            "repaired_parent_count": len(added_repair_parents),
             "search_policy": search_policy,
             "profile_search_count": planner.profile_search_count,
             "fine_search_calls": context.fine_search_calls,
