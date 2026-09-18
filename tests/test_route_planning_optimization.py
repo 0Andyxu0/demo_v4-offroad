@@ -303,9 +303,13 @@ def test_barrier_aware_coarse_routing_avoids_water_corridor(tmp_path: Path) -> N
         RouteEndpoint("start", start_lat, start_lng),
         RouteEndpoint("goal", goal_lat, goal_lng),
     )
-    # The barrier-aware coarse routing must guide the skeleton away from water_mid to land corridor
+    # The barrier-aware coarse routing must guide the skeleton away from water_mid
+    # to land corridor across all profiles
     assert "water_mid" not in skeletons["distance"]
     assert skeletons["distance"] == [start, "land_1", "land_2", goal]
+    assert "water_mid" not in skeletons["eta_road"]
+    assert "water_mid" not in skeletons["terrain_travel"]
+    assert "water_mid" not in skeletons["environment"]
 
 
 def _mock_vehicle_and_factor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -542,3 +546,83 @@ def test_targeted_dilation_fails_after_two_attempts_and_raises(
             request_started=0.0,
         )
     assert attempts == 3
+
+
+def test_expand_targeted_bottleneck_parents_prioritizes_primary_bottleneck(
+    tmp_path: Path,
+) -> None:
+    from h3_offroad_planner.routing import expand_targeted_bottleneck_parents
+
+    p1 = h3.latlng_to_cell(32.0, 119.0, 11)
+    # Pick p2 far enough so their 1-rings are disjoint
+    p2 = h3.latlng_to_cell(32.05, 119.05, 11)
+    p1_disk = [str(c) for c in h3.grid_disk(p1, 1)]
+    p2_disk = [str(c) for c in h3.grid_disk(p2, 1)]
+    all_parents = set(p1_disk).union(p2_disk)
+
+    rows = []
+    for c in all_parents:
+        for n in h3.grid_disk(c, 1):
+            if str(n) in all_parents and str(n) > c:
+                rows.append(_coarse_row(c, str(n), 1.0))
+
+    index = RoutingIndex(
+        pointer_path=tmp_path / "current.json",
+        build_dir=tmp_path,
+        manifest={"build_id": "test", "res_coarse": 11},
+        coarse_graph=pd.DataFrame(rows),
+    )
+    current_active = {str(p1), str(p2)}
+
+    # p1 has 6 neighbors outside current_active, p2 has 6 neighbors.
+    # When bottleneck_parents = [p1, p2] and max_additional = 8:
+    # All 6 neighbors of p1 must be chosen, and only 2 neighbors of p2.
+    result = expand_targeted_bottleneck_parents(
+        index, current_active, [str(p1), str(p2)], max_additional=8
+    )
+    assert len(result) == 8
+    p1_nbrs = set(p1_disk) - current_active
+    assert p1_nbrs.issubset(result)
+    p2_nbrs_in_result = result - p1_nbrs
+    assert len(p2_nbrs_in_result) == 2
+
+
+def test_expand_targeted_bottleneck_parents_synthetic_topological_graph(
+    tmp_path: Path,
+) -> None:
+    from h3_offroad_planner.routing import expand_targeted_bottleneck_parents
+
+    rows = [
+        _coarse_row("parent_A", "parent_B", 1.0),
+        _coarse_row("parent_A", "parent_C", 1.0),
+        _coarse_row("parent_B", "parent_D", 1.0),
+    ]
+    index = RoutingIndex(
+        pointer_path=tmp_path / "current.json",
+        build_dir=tmp_path,
+        manifest={"build_id": "test", "res_coarse": 11},
+        coarse_graph=pd.DataFrame(rows),
+    )
+    current = {"parent_A"}
+    new_parents = expand_targeted_bottleneck_parents(
+        index, current, ["parent_A"], max_additional=15
+    )
+    assert new_parents == {"parent_B", "parent_C"}
+
+
+def test_expanded_corridor_parents_synthetic_parents(tmp_path: Path) -> None:
+    from h3_offroad_planner.routing import _expanded_corridor_parents
+
+    rows = [
+        _coarse_row("syn_1", "syn_2", 1.0),
+        _coarse_row("syn_2", "syn_3", 1.0),
+    ]
+    index = RoutingIndex(
+        pointer_path=tmp_path / "current.json",
+        build_dir=tmp_path,
+        manifest={"build_id": "test", "res_coarse": 11},
+        coarse_graph=pd.DataFrame(rows),
+    )
+    skeletons = {"distance": ["syn_1", "syn_2"]}
+    active = _expanded_corridor_parents(index, skeletons, ring=1)
+    assert active == {"syn_1", "syn_2"}

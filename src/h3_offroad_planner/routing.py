@@ -479,10 +479,10 @@ def _coarse_weight(metrics: Mapping[str, float], profile: str) -> float:
     if profile == "terrain_travel":
         slope = metrics.get("slope", 0.0)
         tri = metrics.get("tri", 0.0)
-        return distance * (1.0 + slope / 30.0 + tri / 10.0) * (1.0 + 0.8 * (1.0 - passable))
+        return distance * (1.0 + slope / 30.0 + tri / 10.0) * barrier_penalty
     if profile == "environment":
         env = metrics.get("environment", 1.0 - passable)
-        return distance * (1.0 + env) * (1.0 + 0.01 * risk)
+        return distance * (1.0 + env) * barrier_penalty
     return distance * barrier_penalty
 
 
@@ -541,13 +541,19 @@ def _expanded_corridor_parents(
         index.coarse_graph["parent_b"].astype(str)
     )
     backbone = {parent for path in skeletons.values() for parent in path}
-    active = {
-        str(neighbor)
-        for parent in backbone
-        if _is_valid_h3_parent(parent)
-        for neighbor in h3.grid_disk(parent, ring)
-        if str(neighbor) in available
-    }
+    active: set[str] = set()
+    for parent in backbone:
+        if _is_valid_h3_parent(parent):
+            try:
+                for neighbor in h3.grid_disk(parent, ring):
+                    if str(neighbor) in available:
+                        active.add(str(neighbor))
+            except (ValueError, TypeError):
+                if parent in available:
+                    active.add(parent)
+        elif parent in available:
+            active.add(parent)
+
     if extra_parents:
         active.update(p for p in extra_parents if p in available)
     if not active:
@@ -565,26 +571,45 @@ def expand_targeted_bottleneck_parents(
 
     Only dilates the bottleneck parents by 1-ring (grid_disk(p, 1)) and returns
     up to max_additional newly activated parent tiles available in the coarse graph.
+    Neighbors of higher-priority bottleneck parents are prioritized.
     """
     if not bottleneck_parents or max_additional <= 0:
         return set()
     available = set(index.coarse_graph["parent_a"].astype(str)).union(
         index.coarse_graph["parent_b"].astype(str)
     )
-    candidates: set[str] = set()
+    candidates: list[str] = []
+    seen: set[str] = set()
+    coarse_adj: dict[str, set[str]] | None = None
+
     for parent in bottleneck_parents:
-        if not parent or not _is_valid_h3_parent(parent):
+        if not parent:
             continue
-        try:
-            disk = [str(n) for n in h3.grid_disk(parent, 1)]
-        except (ValueError, TypeError):
-            continue
-        for neighbor_str in disk:
-            if neighbor_str in available and neighbor_str not in current_parents:
-                candidates.add(neighbor_str)
-    if len(candidates) <= max_additional:
-        return candidates
-    return set(sorted(candidates)[:max_additional])
+        if _is_valid_h3_parent(parent):
+            try:
+                disk = [str(n) for n in h3.grid_disk(parent, 1)]
+            except (ValueError, TypeError):
+                disk = []
+        else:
+            if coarse_adj is None:
+                coarse_adj = {}
+                for row in index.coarse_graph.itertuples(index=False):
+                    pa, pb = str(row.parent_a), str(row.parent_b)
+                    coarse_adj.setdefault(pa, set()).add(pb)
+                    coarse_adj.setdefault(pb, set()).add(pa)
+            disk = list(coarse_adj.get(parent, ()))
+
+        for neighbor_str in sorted(disk):
+            if (
+                neighbor_str in available
+                and neighbor_str not in current_parents
+                and neighbor_str not in seen
+            ):
+                seen.add(neighbor_str)
+                candidates.append(neighbor_str)
+                if len(candidates) >= max_additional:
+                    return set(candidates)
+    return set(candidates)
 
 
 def _load_tile_route_graph(

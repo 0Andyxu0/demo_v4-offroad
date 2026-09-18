@@ -234,7 +234,14 @@ def _run_route_plan_once(
 
     while True:
         try:
-            check_route_reachability(graph, evaluation, start, goal, progress=progress)
+            check_route_reachability(
+                graph,
+                evaluation,
+                start,
+                goal,
+                progress=progress,
+                res_coarse=request.res_coarse,
+            )
             break
         except ReachabilityDisconnectionError as exc:
             diagnosis = exc.diagnosis
@@ -271,7 +278,9 @@ def _run_route_plan_once(
                 )
                 raise
             repair_attempts += 1
-            added_repair_parents.extend(sorted(new_parents))
+            for p in sorted(new_parents):
+                if p not in added_repair_parents:
+                    added_repair_parents.append(p)
             logger.info(
                 "[TARGETED_REPAIR] Attempt %d/%d: dilating %d bottleneck parents "
                 "with %d new parents: %s",
@@ -297,15 +306,12 @@ def _run_route_plan_once(
             )
             source_timings = source_metadata.get("performance", {})
             if isinstance(source_timings, dict):
-                timings.update(
-                    {
-                        key: float(value)
-                        for key, value in source_timings.items()
-                        if key
-                        in {"index_open_s", "coarse_search_s", "corridor_load_s", "graph_build_s"}
-                        and isinstance(value, (int, float))
-                    }
-                )
+                for k in ("corridor_load_s", "graph_build_s"):
+                    if k in source_timings and isinstance(source_timings[k], (int, float)):
+                        timings[k] = timings.get(k, 0.0) + float(source_timings[k])
+                for k in ("index_open_s", "coarse_search_s"):
+                    if k in source_timings and isinstance(source_timings[k], (int, float)):
+                        timings[k] = float(source_timings[k])
             _restore_static_authority(graph, source_metadata)
             eval_started = perf_counter()
             evaluation = evaluate_factor_model(

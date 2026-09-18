@@ -134,19 +134,17 @@ def diagnose_route_reachability(
 
     # Determine coarse resolution if not supplied
     if res_coarse is None:
+        res_coarse = getattr(graph, "resolution_coarse", None)
+    if res_coarse is None:
         start_cell = graph.cells.get(start)
         if start_cell and _is_valid_h3(start_cell.parent_h3):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 res_coarse = h3.get_resolution(start_cell.parent_h3)
-            except (ValueError, TypeError):
-                res_coarse = 11
-        elif _is_valid_h3(start):
-            try:
-                res_coarse = max(0, h3.get_resolution(start) - 2)
-            except (ValueError, TypeError):
-                res_coarse = 11
-        else:
-            res_coarse = 11
+    if res_coarse is None and _is_valid_h3(start):
+        with contextlib.suppress(ValueError, TypeError):
+            res_coarse = max(0, h3.get_resolution(start) - 2)
+    if res_coarse is None:
+        res_coarse = 11
 
     # Directed adjacency
     adj: dict[str, list[str]] = {}
@@ -211,17 +209,51 @@ def diagnose_route_reachability(
     barrier_reasons: set[str] = set()
     boundary_blockage_cells: set[str] = set()
 
-    # Collect start-side boundary cells and bottleneck parents
     goal_cell = graph.cells.get(goal)
+    goal_lat: float | None = None
+    goal_lng: float | None = None
+    if goal_cell is not None:
+        goal_lat, goal_lng = goal_cell.lat, goal_cell.lng
+    elif _is_valid_h3(goal):
+        try:
+            goal_lat, goal_lng = h3.cell_to_latlng(goal)
+        except (ValueError, TypeError):
+            goal_lat, goal_lng = None, None
+
+    start_cell = graph.cells.get(start)
+    start_lat: float | None = None
+    start_lng: float | None = None
+    if start_cell is not None:
+        start_lat, start_lng = start_cell.lat, start_cell.lng
+    elif _is_valid_h3(start):
+        try:
+            start_lat, start_lng = h3.cell_to_latlng(start)
+        except (ValueError, TypeError):
+            start_lat, start_lng = None, None
+
+    # Collect start-side boundary cells and bottleneck parents
     start_parent_min_dist: dict[str, float] = {}
 
     for cell in visited_start:
         c_obj = graph.cells.get(cell)
-        if c_obj is None:
-            continue
+        c_lat: float | None = None
+        c_lng: float | None = None
+        if c_obj is not None:
+            c_lat, c_lng = c_obj.lat, c_obj.lng
+        elif _is_valid_h3(cell):
+            try:
+                c_lat, c_lng = h3.cell_to_latlng(cell)
+            except (ValueError, TypeError):
+                c_lat, c_lng = None, None
+
         dist_to_goal = (
-            _haversine_m(c_obj.lat, c_obj.lng, goal_cell.lat, goal_cell.lng)
-            if goal_cell
+            _haversine_m(c_lat, c_lng, goal_lat, goal_lng)
+            if (
+                c_lat is not None
+                and c_lng is not None
+                and goal_lat is not None
+                and goal_lng is not None
+            )
             else 0.0
         )
         c_parent = _parent_of_cell(cell, c_obj, res_coarse)
@@ -249,10 +281,7 @@ def diagnose_route_reachability(
             for nbr_str in nbrs:
                 if nbr_str not in graph.cells:
                     is_boundary = True
-                    nbr_parent = _parent_of_cell(nbr_str, None, res_coarse)
-                    start_parent_min_dist[nbr_parent] = min(
-                        start_parent_min_dist.get(nbr_parent, float("inf")), dist_to_goal
-                    )
+                    break
 
         if is_boundary:
             boundary_blockage_cells.add(cell)
@@ -262,14 +291,26 @@ def diagnose_route_reachability(
 
     # Collect goal-side boundary parents
     goal_parent_min_dist: dict[str, float] = {}
-    start_cell = graph.cells.get(start)
     for cell in visited_goal:
         c_obj = graph.cells.get(cell)
-        if c_obj is None:
-            continue
+        c_lat = None
+        c_lng = None
+        if c_obj is not None:
+            c_lat, c_lng = c_obj.lat, c_obj.lng
+        elif _is_valid_h3(cell):
+            try:
+                c_lat, c_lng = h3.cell_to_latlng(cell)
+            except (ValueError, TypeError):
+                c_lat, c_lng = None, None
+
         dist_to_start = (
-            _haversine_m(c_obj.lat, c_obj.lng, start_cell.lat, start_cell.lng)
-            if start_cell
+            _haversine_m(c_lat, c_lng, start_lat, start_lng)
+            if (
+                c_lat is not None
+                and c_lng is not None
+                and start_lat is not None
+                and start_lng is not None
+            )
             else 0.0
         )
         c_parent = _parent_of_cell(cell, c_obj, res_coarse)
@@ -290,10 +331,7 @@ def diagnose_route_reachability(
             for nbr_str in nbrs:
                 if nbr_str not in graph.cells:
                     is_boundary = True
-                    nbr_parent = _parent_of_cell(nbr_str, None, res_coarse)
-                    goal_parent_min_dist[nbr_parent] = min(
-                        goal_parent_min_dist.get(nbr_parent, float("inf")), dist_to_start
-                    )
+                    break
         if is_boundary:
             goal_parent_min_dist[c_parent] = min(
                 goal_parent_min_dist.get(c_parent, float("inf")), dist_to_start
@@ -336,6 +374,11 @@ def diagnose_route_reachability(
                 bottleneck_list.append(sp)
             if len(bottleneck_list) >= 8:
                 break
+
+    if not bottleneck_list:
+        sp = _parent_of_cell(start, graph.cells.get(start), res_coarse)
+        gp = _parent_of_cell(goal, graph.cells.get(goal), res_coarse)
+        bottleneck_list = [sp] if sp == gp else [sp, gp]
 
     return ReachabilityDiagnosis(
         reachable=False,

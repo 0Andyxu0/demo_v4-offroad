@@ -220,3 +220,53 @@ def test_diagnose_reachability_with_real_h3_cells(vehicle: VehicleProfile) -> No
         check_route_reachability(graph, evaluation, cells_list[0], cells_list[4])
     assert exc_info.value.diagnosis is not None
     assert exc_info.value.diagnosis.bottleneck_parents == diag.bottleneck_parents
+
+
+def test_diagnose_reachability_scopes_bottleneck_parents_to_corridor_parents(
+    vehicle: VehicleProfile,
+) -> None:
+    # Set up cells where start component touches corridor boundary
+    center = h3.latlng_to_cell(32.0, 119.0, 11)
+    # Use real fine cells inside center parent
+    parent_11 = center
+    fine_cells = sorted(str(c) for c in h3.cell_to_children(parent_11, 13))[:4]
+    cells = {
+        c: H3Cell(
+            h3index=c,
+            lat=32.0,
+            lng=119.0,
+            elevation=50.0,
+            slope=5.0,
+            tri=0.2,
+            lc_factor=1.0,
+            parent_h3=parent_11,
+            is_passable=True,
+        )
+        for c in fine_cells
+    }
+    # Connect fine_cells[0] and fine_cells[1], but fine_cells[3] is disconnected
+    edges = {
+        (fine_cells[0], fine_cells[1]): H3Edge(
+            cell_a=fine_cells[0], cell_b=fine_cells[1], geo_distance=10.0
+        ),
+    }
+    graph = H3Graph(cells=cells, edges=edges, resolution_coarse=11)
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+
+    diag = diagnose_route_reachability(graph, evaluation, fine_cells[0], fine_cells[3])
+    assert diag.reachable is False
+    # Bottleneck parents should only be parents of cells in graph (here parent_11),
+    # not outside unactivated parent tiles
+    assert set(diag.bottleneck_parents).issubset({parent_11})
+
+
+def test_diagnose_reachability_resolution_coarse_from_graph(
+    vehicle: VehicleProfile,
+) -> None:
+    graph = _disconnected_graph()
+    graph.resolution_coarse = 9
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+
+    diag = diagnose_route_reachability(graph, evaluation, "c1", "c4")
+    assert diag.reachable is False
+    assert len(diag.bottleneck_parents) >= 1
