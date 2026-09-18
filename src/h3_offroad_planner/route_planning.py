@@ -60,6 +60,7 @@ from h3_offroad_planner.routing import (
     _source_metadata,
     estimate_h3_cells_for_roi,
 )
+from h3_offroad_planner.routing_index import open_routing_index
 
 __all__ = ["run_route_plan"]
 
@@ -220,6 +221,7 @@ def _run_route_plan_once(
     )
     check_route_reachability(graph, evaluation, start, goal, progress=progress)
     base_cache_identity = None
+    offline_pairs = None
     if source_metadata.get("artifact_kind") == "h3_routing_index":
         base_cache_identity = canonical_hash(
             {
@@ -231,12 +233,33 @@ def _run_route_plan_once(
                 ),
             }
         )
+        source_manifest = source_metadata.get("source_manifest") or source_metadata.get(
+            "routing_index_manifest"
+        )
+        if source_manifest:
+            index = open_routing_index(str(source_manifest))
+            index_vehicle_hash = index.manifest.get("vehicle_hash")
+            if (
+                index.has_port_pairs
+                and (
+                    index_vehicle_hash is None
+                    or evaluation.vehicle_hash is None
+                    or index_vehicle_hash == evaluation.vehicle_hash
+                )
+            ):
+                active_parents = source_metadata.get("active_parent_h3")
+                if isinstance(active_parents, list) and active_parents:
+                    offline_pairs = index.load_port_pairs(active_parents)
+                elif graph.parent_children:
+                    offline_pairs = index.load_port_pairs(list(graph.parent_children.keys()))
+
     context = PortsMapSearchContext(
         graph,
         evaluation,
         max_ports=factor_config.max_ports,
         max_port_pairs=factor_config.max_port_pairs,
         base_cache_identity=base_cache_identity,
+        offline_pairs=offline_pairs,
     )
     if progress is not None:
         progress("global_plan", start_pct + 14, "searching Pareto candidate routes")
@@ -430,6 +453,7 @@ def _run_route_plan_once(
             "base_pair_cache_hits": context.base_cache_hits,
             "base_pair_cache_misses": context.base_cache_misses,
             "base_pair_cache_entries": context.base_cache_size,
+            "offline_pair_hits": context.offline_cache_hits,
             "output_bytes": output_bytes,
         },
     )

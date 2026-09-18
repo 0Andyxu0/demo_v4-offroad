@@ -996,8 +996,11 @@ def evaluate_path_metrics(
         eta_upper_bounded=bounded,
         terrain_risk=sum(edge.terrain_risk for edge in edges),
         travel_cost=sum(edge.travel_cost for edge in edges),
-        safety_margin_min=min(edge.safety_margin_lower for edge in edges),
-        safety_margin_mean=weighted_margin / total_distance,
+        safety_margin_min=max(0.0, min(1.0, min(edge.safety_margin_lower for edge in edges))),
+        safety_margin_mean=max(
+            max(0.0, min(1.0, min(edge.safety_margin_lower for edge in edges))),
+            min(1.0, max(0.0, weighted_margin / total_distance)),
+        ),
         edge_count=len(edges),
         environment_distance_m={
             key: sum(edge.environment_distance_m[key] for edge in edges)

@@ -359,3 +359,31 @@ def test_base_pair_cache_used_when_penalty_factor_positive_but_no_penalties(
     assert actual.h3_path == expected.h3_path
     assert actual.scalar_cost == expected.scalar_cost
     assert warm.base_cache_hits > 0
+
+
+def test_offline_pairs_are_loaded_and_skip_fine_search(
+    vehicle: VehicleProfile,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from h3_offroad_planner.offline_pairs import extract_offline_pairs
+
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+
+    warm = PortsMapSearchContext(graph, evaluation)
+    expected = warm.search("a", "f", profile)
+    offline = extract_offline_pairs(warm, profile.name)
+    assert offline
+
+    offline_context = PortsMapSearchContext(graph, evaluation, offline_pairs=offline)
+
+    def unexpected_search(*args: object, **kwargs: object) -> object:
+        raise AssertionError("offline pairs should avoid fine search")
+
+    monkeypatch.setattr(offline_context, "_fine_tile_search", unexpected_search)
+    actual = offline_context.search("a", "f", profile)
+
+    assert actual.h3_path == expected.h3_path
+    assert actual.scalar_cost == expected.scalar_cost
+    assert offline_context.offline_cache_hits > 0

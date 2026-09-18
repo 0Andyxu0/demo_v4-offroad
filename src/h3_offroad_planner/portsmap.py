@@ -204,6 +204,10 @@ class PortsMapSearchContext:
         max_ports: int = 20_000,
         max_port_pairs: int = 200_000,
         base_cache_identity: str | None = None,
+        offline_pairs: Mapping[
+            tuple[str, str, str], Mapping[str, tuple[tuple[str, ...], float]]
+        ]
+        | None = None,
     ) -> None:
         """Initialize an immutable base graph/evaluation search context."""
         if set(graph.cells) != set(evaluation.node_metrics):
@@ -215,6 +219,8 @@ class PortsMapSearchContext:
         self.max_ports = max_ports
         self.max_port_pairs = max_port_pairs
         self.base_cache_identity = base_cache_identity
+        self._offline_pairs = offline_pairs
+        self._offline_cache_hits = 0
         if graph.parent_children:
             self._parent_children = graph.parent_children
         else:
@@ -276,6 +282,11 @@ class PortsMapSearchContext:
     def base_cache_hits(self) -> int:
         """Return cross-request immutable base Port-pair cache hits."""
         return self._base_cache_hits
+
+    @property
+    def offline_cache_hits(self) -> int:
+        """Return port-pair cache hits served from offline precomputed pairs."""
+        return self._offline_cache_hits
 
     @property
     def base_cache_size(self) -> int:
@@ -460,6 +471,7 @@ class PortsMapSearchContext:
                 b_map.setdefault(p, []).append(cell_id)
             blocked_by_parent = {p: tuple(sorted(items)) for p, items in b_map.items()}
 
+        temp_ports = frozenset(p for p, port in topology.ports.items() if port.is_temporary)
         for parent, port_ids in sorted(topology.ports_by_parent.items()):
             local_p = penalties_by_parent.get(parent, ())
             local_b = blocked_by_parent.get(parent, ())
@@ -478,6 +490,7 @@ class PortsMapSearchContext:
                     local_p,
                     local_b,
                     port_hash,
+                    temporary_ports=temp_ports,
                 )
             cache_key = (parent, profile.signature, local_p, local_b, port_hash)
             cached = self._pair_cache.get(cache_key)
@@ -514,6 +527,7 @@ class PortsMapSearchContext:
         local_penalty_key: tuple[tuple[str, int], ...],
         local_blocked_key: tuple[str, ...],
         port_hash: str,
+        temporary_ports: frozenset[str] = frozenset(),
     ) -> list[tuple[str, tuple[str, ...], float]]:
         if len(port_ids) <= 1:
             return []
@@ -539,6 +553,31 @@ class PortsMapSearchContext:
                 penalty_factor,
             )
             base_pairs = _base_pair_cache_get(base_key) if base_key is not None else None
+            if (
+                base_pairs is None
+                and self._offline_pairs is not None
+                and not blocked
+                and not local_penalty_key
+            ):
+                offline_table = self._offline_pairs.get((profile.name, parent, source))
+                if offline_table is not None:
+                    missing_temporary = any(
+                        t in temporary_ports and t not in offline_table
+                        for t in port_ids
+                        if t != source
+                    )
+                    if not missing_temporary:
+                        scale = profile.scales.get(profile.name, 1.0)
+                        weight = profile.weights.get(profile.name, 1.0)
+                        factor = (weight / scale) if scale > 0.0 else 1.0
+                        base_pairs = tuple(
+                            (target, path, cost * factor)
+                            for target, (path, cost) in offline_table.items()
+                            if target in port_ids and target != source
+                        )
+                        self._offline_cache_hits += 1
+                        if base_key is not None:
+                            _base_pair_cache_put(base_key, base_pairs)
             if base_pairs is None:
                 if base_key is not None:
                     self._base_cache_misses += 1
@@ -568,7 +607,8 @@ class PortsMapSearchContext:
                     _base_pair_cache_put(base_key, base_pairs)
             else:
                 self._cache_hits += 1
-                self._base_cache_hits += 1
+                if base_key is not None and _base_pair_cache_get(base_key) is not None:
+                    self._base_cache_hits += 1
             for target, path, cost in base_pairs:
                 cached[(source, target)] = PortPairPath(parent, source, target, path, cost)
             sources_done.add(source)
@@ -719,6 +759,8 @@ class PortsMapSearchContext:
                 b_map.setdefault(p, []).append(cell_id)
             blocked_by_parent = {p: tuple(sorted(items)) for p, items in b_map.items()}
 
+        temporary_ports = frozenset(p for p, port in topology.ports.items() if port.is_temporary)
+
         precomputed_adjacency: dict[str, list[tuple[str, tuple[str, ...], float]]] | None = None
         if pairs is not None:
             precomputed_adjacency = {}
@@ -828,6 +870,7 @@ class PortsMapSearchContext:
                     local_p,
                     local_b,
                     port_hash,
+                    temporary_ports=temporary_ports,
                 )
                 outgoing.extend(internal_edges)
 

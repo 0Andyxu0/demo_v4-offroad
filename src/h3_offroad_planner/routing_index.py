@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -29,12 +29,14 @@ from h3_offroad_planner.factor_model import (
 )
 from h3_offroad_planner.grid import H3GridBuilder
 from h3_offroad_planner.models import GridBuildError, H3Graph, PlanningInputError
+from h3_offroad_planner.offline_pairs import OfflinePairs, load_offline_pairs
 
 __all__ = [
     "ROUTING_INDEX_KIND",
     "RoutingIndex",
     "build_routing_index",
     "open_routing_index",
+    "register_port_pairs",
 ]
 
 ROUTING_INDEX_KIND = "h3_routing_index"
@@ -120,6 +122,18 @@ class RoutingIndex:
             res_coarse=_manifest_int(self.manifest, "res_coarse"),
         ).build_graph(frame)
 
+    @property
+    def has_port_pairs(self) -> bool:
+        files = _manifest_mapping(self.manifest, "files")
+        return files.get("port_pairs") is not None
+
+    def load_port_pairs(self, active_parents: Collection[str]) -> OfflinePairs:
+        """Read only port-pair rows matching the requested res11 parents."""
+        if not self.has_port_pairs or not active_parents:
+            return {}
+        pairs_path = _manifest_path(self.build_dir, self.manifest, "port_pairs")
+        return load_offline_pairs(pairs_path, active_parents=active_parents)
+
 
 def build_routing_index(
     tile_manifest: Mapping[str, object],
@@ -127,6 +141,7 @@ def build_routing_index(
     vehicle_path: str | None = None,
     factor_model_path: str | None = None,
     static_planning_path: str | None = None,
+    port_pairs_path: str | Path | None = None,
 ) -> dict[str, object]:
     """Build, validate and atomically publish one immutable routing index."""
     output_dir = Path(_manifest_string(tile_manifest, "output_dir"))
@@ -154,6 +169,12 @@ def build_routing_index(
         has_soil_catalog = bool(soil)
         if has_soil_catalog:
             _write_soil_catalog(soil_path, soil)
+        has_port_pairs = port_pairs_path is not None
+        port_pairs_target = temporary / "port_pairs.parquet"
+        if has_port_pairs:
+            source_pairs = Path(port_pairs_path)  # type: ignore[arg-type]
+            if source_pairs.resolve() != port_pairs_target.resolve():
+                shutil.copy2(source_pairs, port_pairs_target)
         topology_hash = canonical_hash(
             [
                 {key: row[key] for key in ("parent_a", "parent_b", "port_a", "port_b")}
@@ -195,6 +216,9 @@ def build_routing_index(
                 "coarse_graph": _file_record(temporary, coarse_path),
                 "landcover_catalog": _file_record(temporary, landcover_path),
                 "soil_catalog": _file_record(temporary, soil_path) if has_soil_catalog else None,
+                "port_pairs": (
+                    _file_record(temporary, port_pairs_target) if has_port_pairs else None
+                ),
             },
             "column_compressed_bytes": _compressed_column_sizes(cells_path),
             "source_tile_count": len(records),
@@ -215,6 +239,22 @@ def build_routing_index(
         if temporary.exists():
             _remove_temporary(temporary, builds_root)
         raise
+
+
+def register_port_pairs(build_dir: Path, port_pairs_path: Path) -> dict[str, object]:
+    """Register or copy port_pairs.parquet into an existing routing index build."""
+    manifest_path = build_dir / "routing_index.json"
+    manifest = _read_json(manifest_path)
+    target_path = build_dir / "port_pairs.parquet"
+    source_path = Path(port_pairs_path)
+    if source_path.resolve() != target_path.resolve():
+        shutil.copy2(source_path, target_path)
+    files = _manifest_mapping(manifest, "files")
+    files["port_pairs"] = _file_record(build_dir, target_path)
+    manifest["files"] = files
+    _write_json_strict(manifest_path, manifest)
+    _validate_build(build_dir, manifest)
+    return manifest
 
 
 def open_routing_index(path: str | Path) -> RoutingIndex:
