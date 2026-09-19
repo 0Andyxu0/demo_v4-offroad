@@ -216,7 +216,7 @@ class CandidateAggregator:
             result = self.context.search(
                 reference.h3_path[0],
                 reference.h3_path[-1],
-                ScalarProfile({"eta": 1.0}, name="independent_disruption_eta"),
+                ScalarProfile({"eta": 1.0}, name="eta"),
                 blocked,
             )
             survivors.append(

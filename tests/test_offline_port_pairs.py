@@ -473,3 +473,47 @@ def test_route_planning_vehicle_mismatch_fallback(tmp_path: Path) -> None:
     # In route_planning, non-matching vehicle bypasses offline_pairs
     vehicle_matches = custom_hash == expected_hash
     assert not vehicle_matches
+
+
+def test_offline_pairs_negative_cache_and_temporary_port_isolation(
+    vehicle: VehicleProfile,
+) -> None:
+    """Verify that static pairs are served from offline cache even with temporary endpoints,
+
+    and dead-end ports are bypassed via negative cache without running fine Dijkstra.
+    """
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+
+    # Offline pairs containing ONLY static boundary ports (b<->c in p1, d<->e in p2)
+    # Note: 'a' and 'f' are NOT in offline_pairs!
+    # 'p1' has static ports {'b', 'c'}; 'p2' has static ports {'d', 'e'}.
+    static_only_offline: dict[tuple[str, str, str], dict[str, tuple[tuple[str, ...], float]]] = {
+        ("distance", "p1", "b"): {"c": (("b", "c"), 2.0)},
+        ("distance", "p1", "c"): {"b": (("c", "b"), 2.0)},
+        ("distance", "p2", "d"): {"e": (("d", "e"), 2.0)},
+        ("distance", "p2", "e"): {"d": (("e", "d"), 2.0)},
+    }
+
+    context = PortsMapSearchContext(
+        graph,
+        evaluation,
+        offline_pairs=static_only_offline,
+        offline_parents={"p1", "p2"},
+    )
+
+    # Search from temporary start 'a' to temporary goal 'f'
+    res = context.search("a", "f", profile)
+
+    # Path must be found and correct: a -> b -> c -> e -> f (2 + 2 + 1 + 2 = 7.0)
+    assert res.h3_path == ("a", "b", "c", "e", "f")
+    assert res.scalar_cost == pytest.approx(7.0, rel=1e-6)
+
+    # In p1: 'a' (start) does 1 fine search to reach 'b' and 'c'.
+    # In p2: 'e' (cost 5.0) searches for 'f' (cost 2.0 -> total 7.0).
+    # 'd' (cost 6.0 < 7.0) is popped from heap and also searches for 'f'.
+    # All static-to-static pairs ('b'->'c', 'c'->'b', 'd'->'e', 'e'->'d') MUST use offline cache!
+    # Total fine searches bounded by start + goal boundary ports (< 5), not expanding internal grid.
+    assert context.fine_search_calls <= 3
+    assert context.offline_cache_hits > 0

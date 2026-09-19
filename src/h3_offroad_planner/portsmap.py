@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from heapq import heappop, heappush, heapreplace
 from math import atan2, cos, inf, isfinite, radians, sin, sqrt
@@ -208,6 +208,7 @@ class PortsMapSearchContext:
             tuple[str, str, str], Mapping[str, tuple[tuple[str, ...], float]]
         ]
         | None = None,
+        offline_parents: Collection[str] | None = None,
     ) -> None:
         """Initialize an immutable base graph/evaluation search context."""
         if set(graph.cells) != set(evaluation.node_metrics):
@@ -221,6 +222,18 @@ class PortsMapSearchContext:
         self.base_cache_identity = base_cache_identity
         self._offline_pairs = offline_pairs
         self._offline_cache_hits = 0
+        if offline_pairs is not None:
+            self._offline_parents_by_profile: set[tuple[str, str]] = {
+                (prof, parent) for (prof, parent, _) in offline_pairs
+            }
+            self._offline_parents: set[str] = (
+                set(offline_parents)
+                if offline_parents is not None
+                else {parent for (_, parent, _) in offline_pairs}
+            )
+        else:
+            self._offline_parents_by_profile = set()
+            self._offline_parents = set()
         if graph.parent_children:
             self._parent_children = graph.parent_children
         else:
@@ -528,6 +541,7 @@ class PortsMapSearchContext:
         local_blocked_key: tuple[str, ...],
         port_hash: str,
         temporary_ports: frozenset[str] = frozenset(),
+        temporary_destinations: frozenset[str] = frozenset(),
     ) -> list[tuple[str, tuple[str, ...], float]]:
         if len(port_ids) <= 1:
             return []
@@ -553,40 +567,108 @@ class PortsMapSearchContext:
                 penalty_factor,
             )
             base_pairs = _base_pair_cache_get(base_key) if base_key is not None else None
+            active_base_objectives = [
+                k for k, w in profile.weights.items() if w > 0.0 and k in OBJECTIVE_NAMES
+            ]
+            is_pure_base_profile = (
+                profile.environment_weight == 0.0
+                and (profile.environment_pressure is None or profile.environment_weight == 0.0)
+                and len(active_base_objectives) == 1
+                and all(
+                    w == 0.0 for k, w in profile.weights.items() if k != active_base_objectives[0]
+                )
+            )
+            base_objective = active_base_objectives[0] if is_pure_base_profile else ""
             if (
                 base_pairs is None
                 and self._offline_pairs is not None
                 and not local_blocked_key
                 and not local_penalty_key
+                and is_pure_base_profile
             ):
-                is_pure_base_profile = (
-                    profile.environment_weight == 0.0
-                    and (profile.environment_pressure is None or profile.environment_weight == 0.0)
-                    and all(
-                        w == 0.0 for k, w in profile.weights.items() if k != profile.name
+                offline_table = self._offline_pairs.get((profile.name, parent, source))
+                if offline_table is None and base_objective != profile.name:
+                    offline_table = self._offline_pairs.get((base_objective, parent, source))
+
+                if offline_table is not None:
+                    scale = profile.scales.get(base_objective, 1.0)
+                    weight = profile.weights.get(base_objective, 1.0)
+                    factor = (weight / scale) if scale > 0.0 else 1.0
+                    known_pairs = tuple(
+                        (target, path, cost * factor)
+                        for target, (path, cost) in offline_table.items()
+                        if target in port_ids and target != source
                     )
-                    and profile.weights.get(profile.name, 0.0) > 0.0
-                )
-                if is_pure_base_profile:
-                    offline_table = self._offline_pairs.get((profile.name, parent, source))
-                    if offline_table is not None:
-                        missing_temporary = any(
-                            t in temporary_ports and t not in offline_table
-                            for t in port_ids
-                            if t != source
+                    missing_temp = tuple(
+                        t
+                        for t in port_ids
+                        if t in temporary_destinations
+                        and t != source
+                        and t not in offline_table
+                    )
+                    if not missing_temp:
+                        base_pairs = known_pairs
+                    else:
+                        allowed = {
+                            cell_id
+                            for cell_id in self._parent_children.get(parent, ())
+                            if cell_id not in blocked
+                        }
+                        effective_penalties = penalties if local_penalty_key else {}
+                        effective_penalty_factor = penalty_factor if local_penalty_key else 0.0
+                        fine_best = self._fine_tile_search(
+                            source,
+                            allowed,
+                            profile,
+                            effective_penalties,
+                            effective_penalty_factor,
+                            targets=set(missing_temp),
                         )
-                        if not missing_temporary:
-                            scale = profile.scales.get(profile.name, 1.0)
-                            weight = profile.weights.get(profile.name, 1.0)
-                            factor = (weight / scale) if scale > 0.0 else 1.0
-                            base_pairs = tuple(
-                                (target, path, cost * factor)
-                                for target, (path, cost) in offline_table.items()
-                                if target in port_ids and target != source
-                            )
-                            self._offline_cache_hits += 1
-                            if base_key is not None:
-                                _base_pair_cache_put(base_key, base_pairs)
+                        temp_pairs = tuple(
+                            (t, fine_best[t][1], fine_best[t][0])
+                            for t in missing_temp
+                            if t in fine_best
+                        )
+                        base_pairs = known_pairs + temp_pairs
+                    self._offline_cache_hits += 1
+                    if base_key is not None:
+                        _base_pair_cache_put(base_key, base_pairs)
+                elif (
+                    source not in temporary_ports
+                    and (base_objective, parent) in self._offline_parents_by_profile
+                ):
+                    missing_temp = tuple(
+                        t
+                        for t in port_ids
+                        if t in temporary_destinations
+                        and t != source
+                    )
+                    if not missing_temp:
+                        base_pairs = ()
+                    else:
+                        allowed = {
+                            cell_id
+                            for cell_id in self._parent_children.get(parent, ())
+                            if cell_id not in blocked
+                        }
+                        effective_penalties = penalties if local_penalty_key else {}
+                        effective_penalty_factor = penalty_factor if local_penalty_key else 0.0
+                        fine_best = self._fine_tile_search(
+                            source,
+                            allowed,
+                            profile,
+                            effective_penalties,
+                            effective_penalty_factor,
+                            targets=set(missing_temp),
+                        )
+                        base_pairs = tuple(
+                            (t, fine_best[t][1], fine_best[t][0])
+                            for t in missing_temp
+                            if t in fine_best
+                        )
+                    self._offline_cache_hits += 1
+                    if base_key is not None:
+                        _base_pair_cache_put(base_key, base_pairs)
             if base_pairs is None:
                 if base_key is not None:
                     self._base_cache_misses += 1
@@ -769,6 +851,7 @@ class PortsMapSearchContext:
             blocked_by_parent = {p: tuple(sorted(items)) for p, items in b_map.items()}
 
         temporary_ports = frozenset(p for p, port in topology.ports.items() if port.is_temporary)
+        temporary_destinations = frozenset({goal}) if goal in temporary_ports else frozenset()
 
         precomputed_adjacency: dict[str, list[tuple[str, tuple[str, ...], float]]] | None = None
         if pairs is not None:
@@ -880,6 +963,7 @@ class PortsMapSearchContext:
                     local_b,
                     port_hash,
                     temporary_ports=temporary_ports,
+                    temporary_destinations=temporary_destinations,
                 )
                 outgoing.extend(internal_edges)
 

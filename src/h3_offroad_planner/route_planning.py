@@ -346,6 +346,7 @@ def _run_route_plan_once(
         source_metadata["targeted_dilation_parents"] = added_repair_parents
     base_cache_identity = None
     offline_pairs = None
+    offline_parents = None
     if source_metadata.get("artifact_kind") == "h3_routing_index":
         base_cache_identity = canonical_hash(
             {
@@ -375,9 +376,11 @@ def _run_route_plan_once(
             if index.has_port_pairs and vehicle_matches:
                 active_parents = source_metadata.get("active_parent_h3")
                 if isinstance(active_parents, list) and active_parents:
+                    offline_parents = set(active_parents)
                     offline_pairs = index.load_port_pairs(active_parents)
                 elif graph.parent_children:
-                    offline_pairs = index.load_port_pairs(list(graph.parent_children.keys()))
+                    offline_parents = set(graph.parent_children.keys())
+                    offline_pairs = index.load_port_pairs(list(offline_parents))
 
     context = PortsMapSearchContext(
         graph,
@@ -386,6 +389,7 @@ def _run_route_plan_once(
         max_port_pairs=factor_config.max_port_pairs,
         base_cache_identity=base_cache_identity,
         offline_pairs=offline_pairs,
+        offline_parents=offline_parents,
     )
     if progress is not None:
         progress("global_plan", start_pct + 14, "searching Pareto candidate routes")
