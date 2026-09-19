@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from heapq import heappop, heappush, heapreplace
-from math import atan2, cos, inf, isfinite, radians, sin, sqrt
+from math import asin, cos, inf, isfinite, radians, sin, sqrt
+from operator import itemgetter
 from threading import Lock
 
 from h3_offroad_planner.factor_model import (
@@ -36,6 +37,7 @@ _BASE_PAIR_CACHE: dict[
 ] = {}
 _BASE_PAIR_CACHE_RANKS: list[tuple[int, tuple[str, str, str, str, str]]] = []
 _BASE_PAIR_CACHE_LOCK = Lock()
+_GET_FIRST = itemgetter(0)
 
 
 class PortsMapLimitError(PlanningFailedError):
@@ -288,6 +290,7 @@ class PortsMapSearchContext:
             ],
         ] = {}
         self._parent_keys: dict[str, set[tuple[str, str, object, object, str]]] = {}
+        self._goal_dist_caches: dict[str, dict[str, float]] = {}
 
     def clear_pair_cache(self) -> None:
         """Release request-local Port-pair paths once callers no longer need them."""
@@ -296,6 +299,7 @@ class PortsMapSearchContext:
         self._computed_sources.clear()
         self._base_topology_cache.clear()
         self._parent_keys.clear()
+        self._goal_dist_caches.clear()
 
     @property
     def cache_hits(self) -> int:
@@ -1030,7 +1034,7 @@ class PortsMapSearchContext:
         goal_cell = self.graph.cells[goal]
         goal_lat = goal_cell.lat
         goal_lng = goal_cell.lng
-        goal_dist_cache: dict[str, float] = {}
+        goal_dist_cache: dict[str, float] = self._goal_dist_caches.setdefault(goal, {})
 
         def _h(node: str) -> float:
             if unit_cost_lower_bound <= EPSILON:
@@ -1048,6 +1052,7 @@ class PortsMapSearchContext:
         came_from: dict[str, tuple[str, tuple[str, ...]]] = {}
         visited_parents: set[str] = set()
         settled: set[str] = set()
+        start_parent_temp = self._parent(start) if start in temporary_ports else None
 
         while heap:
             priority, cost, current = heappop(heap)
@@ -1142,7 +1147,6 @@ class PortsMapSearchContext:
             parent = self._parent(current)
             visited_parents.add(parent)
             self._visited_parents.add(parent)
-            start_parent_temp = self._parent(start) if start in temporary_ports else None
             if precomputed_adjacency is not None and (
                 current in precomputed_adjacency
                 or (
@@ -1179,7 +1183,7 @@ class PortsMapSearchContext:
                 )
                 outgoing.extend(internal_edges)
 
-            for neighbor, segment, step in sorted(outgoing, key=lambda x: x[0]):
+            for neighbor, segment, step in sorted(outgoing, key=_GET_FIRST):
                 if neighbor in settled:
                     continue
                 cand_cost = cost + step
@@ -1308,4 +1312,4 @@ def _haversine_m(lat_a: float, lng_a: float, lat_b: float, lng_b: float) -> floa
     second_lat = radians(lat_b)
     root = sin(delta_lat / 2.0) ** 2
     root += cos(first_lat) * cos(second_lat) * sin(delta_lng / 2.0) ** 2
-    return 2.0 * earth_radius_m * atan2(sqrt(root), sqrt(max(0.0, 1.0 - root)))
+    return 2.0 * earth_radius_m * asin(min(1.0, sqrt(max(0.0, root))))
