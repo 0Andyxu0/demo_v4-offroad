@@ -10,6 +10,11 @@ from h3_offroad_planner.models import RouteRequest
 from h3_offroad_planner.route_planning import run_route_plan
 
 BENCHMARK_ROUTES = {
+    "legacy_case_1": {
+        "start": (31.9905769003, 118.9960502257),
+        "goal": (31.9931786713, 118.9894117713),
+        "linear_distance_m": 689.7,
+    },
     "route1": {
         "start": (31.975238, 118.993667),
         "goal": (31.993683, 118.993599),

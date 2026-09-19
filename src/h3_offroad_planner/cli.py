@@ -192,6 +192,19 @@ def _call_with_progress(
     return func(request)
 
 
+def _normalize_route_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Extract nested route configuration from delivery request if present."""
+    if "route" in payload and isinstance(payload["route"], dict):
+        tile_payload = payload.get("tile_build")
+        route_payload = dict(cast(dict[str, object], payload["route"]))
+        if "parquet_path" not in route_payload and isinstance(tile_payload, dict):
+            output_dir = tile_payload.get("output_dir")
+            if isinstance(output_dir, str) and output_dir:
+                route_payload["parquet_path"] = str(Path(output_dir) / TILE_MANIFEST_NAME)
+        return route_payload
+    return payload
+
+
 def _dispatch(command: str, request_path: Path) -> dict[str, object]:
     """Dispatch one validated CLI command from a YAML request file."""
     payload = _load_yaml_mapping(request_path)
@@ -205,9 +218,10 @@ def _dispatch(command: str, request_path: Path) -> dict[str, object]:
             ),
         )
     if command == "plan":
+        route_payload = _normalize_route_payload(payload)
         plan = _call_with_progress(
             run_route_plan,
-            _route_request(payload),
+            _route_request(route_payload),
             progress=_console_progress,
             export_gpkg=True,
         )
@@ -261,7 +275,8 @@ def run_route_payload(
     progress: ProgressCallback | None = None,
 ) -> dict[str, object]:
     """Plan one route request decoded from a YAML mapping."""
-    plan = _call_with_progress(run_route_plan, _route_request(payload), progress=progress)
+    route_payload = _normalize_route_payload(payload)
+    plan = _call_with_progress(run_route_plan, _route_request(route_payload), progress=progress)
     return cast(dict[str, object], plan.to_dict())  # type: ignore[attr-defined]
 
 

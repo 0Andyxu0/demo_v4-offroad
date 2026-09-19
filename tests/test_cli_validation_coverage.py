@@ -99,6 +99,42 @@ def test_cl036_cli_progress_and_route_plan_dispatch(monkeypatch: pytest.MonkeyPa
     ) == {"flow": "route_plan"}
 
 
+def test_cli_plan_accepts_delivery_request_with_nested_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLI plan payload normalization unrolls delivery YAML structures containing 'route'."""
+    captured: list[object] = []
+
+    class Plan:
+        def to_dict(self) -> dict[str, object]:
+            return {"flow": "route_plan"}
+
+    monkeypatch.setattr(cli, "run_route_plan", lambda request: captured.append(request) or Plan())
+
+    delivery_payload = {
+        "tile_build": {
+            "output_dir": "outputs/my_tiles",
+        },
+        "route": {
+            "input_mode": "coordinates",
+            "planner_config_path": "planner.yaml",
+            "vehicle_path": "vehicle.yaml",
+            "factor_model_path": "factor.yaml",
+            "output_dir": "output",
+            "start_lat": 31.99,
+            "start_lng": 118.99,
+            "goal_lat": 31.995,
+            "goal_lng": 118.995,
+        },
+    }
+    result = cli.run_route_payload(delivery_payload)
+    assert result == {"flow": "route_plan"}
+    assert len(captured) == 1
+    req = captured[0]
+    assert isinstance(req, cli.RouteRequest)
+    assert req.parquet_path.endswith("tile_manifest.json")
+
+
 def test_cli_collects_candidate_reuse_penalty_in_route_request() -> None:
     """Candidate diversity tuning is carried by the task contract, not planner YAML."""
     request = cli._route_request(

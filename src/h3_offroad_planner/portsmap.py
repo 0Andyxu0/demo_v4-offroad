@@ -1011,14 +1011,10 @@ class PortsMapSearchContext:
                     (target, pair.h3_path, pair.scalar_cost)
                 )
         elif callable(build_macro_adj) and is_pure and base_obj in OBJECTIVE_NAMES:
-            excluded = set(penalties_by_parent.keys()) | set(blocked_by_parent.keys())
-            start_parent = self._parent(start) if start in temporary_ports else None
-            if start_parent:
-                excluded.add(start_parent)
             scale = profile.scales.get(base_obj, 1.0)
             weight = profile.weights.get(base_obj, 1.0)
             precomputed_adjacency = build_macro_adj(
-                base_obj, scale=scale, weight=weight, excluded_parents=excluded
+                base_obj, scale=scale, weight=weight, excluded_parents=None
             )
 
         # Admissible heuristic lower bound (includes travel_cost lower bound of 1.0 m/m)
@@ -1147,15 +1143,11 @@ class PortsMapSearchContext:
             parent = self._parent(current)
             visited_parents.add(parent)
             self._visited_parents.add(parent)
-            if precomputed_adjacency is not None and (
-                current in precomputed_adjacency
-                or (
-                    current not in temporary_ports
-                    and parent in self._offline_parents
-                    and parent not in penalties_by_parent
-                    and parent not in blocked_by_parent
-                    and parent != start_parent_temp
-                )
+            if (
+                precomputed_adjacency is not None
+                and parent not in penalties_by_parent
+                and parent not in blocked_by_parent
+                and parent != start_parent_temp
             ):
                 outgoing.extend(precomputed_adjacency.get(current, []))
             else:

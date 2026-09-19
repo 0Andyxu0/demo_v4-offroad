@@ -306,17 +306,18 @@ class OfflinePairsTable(
 
         adj: dict[str, list[tuple[str, tuple[str, ...], float]]] = {}
         for (prof, parent), ranges in self._slices.items():
-            if prof != base_objective or parent in ex_key:
+            if prof != base_objective or (ex_key and parent in ex_key):
                 continue
             for s_i, e_i in ranges:
                 p_src = srcs[s_i:e_i]
                 p_tgt = tgts[s_i:e_i]
                 p_cost = costs[s_i:e_i]
-                for s, t, c in zip(p_src, p_tgt, p_cost, strict=True):
-                    s_str = str(s)
-                    t_str = str(t)
-                    cost_val = float(c) * factor if factor != 1.0 else float(c)
-                    adj.setdefault(s_str, []).append((t_str, (s_str, t_str), cost_val))
+                if factor == 1.0:
+                    for s, t, c in zip(p_src, p_tgt, p_cost, strict=True):
+                        adj.setdefault(s, []).append((t, (s, t), float(c)))
+                else:
+                    for s, t, c in zip(p_src, p_tgt, p_cost, strict=True):
+                        adj.setdefault(s, []).append((t, (s, t), float(c) * factor))
 
         self._macro_adj_cache[cache_key] = adj
         return adj

@@ -147,9 +147,15 @@ def diagnose_route_reachability(
         res_coarse = 11
 
     # Directed adjacency
-    adj: dict[str, list[str]] = {}
-    for from_h3, to_h3 in evaluation.directed_edges:
-        adj.setdefault(from_h3, []).append(to_h3)
+    adj = (
+        evaluation.directed_adjacency()
+        if hasattr(evaluation, "directed_adjacency")
+        else {}
+    )
+    if not adj and evaluation.directed_edges:
+        adj = {}
+        for from_h3, to_h3 in evaluation.directed_edges:
+            adj.setdefault(from_h3, []).append(to_h3)
 
     if start not in adj:
         logger.error("[DIAG] Start cell %s has no passable outgoing edges; isolated", start)

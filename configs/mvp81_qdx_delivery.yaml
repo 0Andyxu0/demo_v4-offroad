@@ -21,11 +21,13 @@ route:
   max_candidate_paths: 5
   candidate_limit: 24
   penalty_factor: 0.25
+  parquet_path: D:/Workspace/demo_v4/outputs/qdx_tiles/tile_manifest.json
   output_dir: D:/Workspace/demo_v4/outputs/qdx_route
-  start_lat: 31.9750
-  start_lng: 118.9880
-  goal_lat: 31.9920
-  goal_lng: 119.0080
+  # Physically connected baseline coordinates (legacy_case_1 from offline-index-performance-baseline.md)
+  start_lat: 31.9905769003
+  start_lng: 118.9960502257
+  goal_lat: 31.9931786713
+  goal_lng: 118.9894117713
   roi_strategy: auto_corridor
   corridor_buffer_deg: 0.005
   res_fine: 14

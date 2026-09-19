@@ -122,7 +122,7 @@ LEGACY_ACTIVE_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType(
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FactorInterval:
     """Ordered ratio interval on the closed unit range."""
 
@@ -138,7 +138,11 @@ class FactorInterval:
             raise ValueError("factor interval must satisfy 0 <= lower <= nominal <= upper <= 1.")
 
 
-@dataclass(frozen=True)
+_ROAD_INTERVAL_1_0 = FactorInterval(1.0, 1.0, 1.0)
+_OFFROAD_INTERVAL_0_7 = FactorInterval(0.70, 0.70, 0.70)
+
+
+@dataclass(frozen=True, slots=True)
 class NodeFactorMetrics:
     """Frozen speed factors, physical safety margin, and evidence for one node."""
 
@@ -168,6 +172,44 @@ class NodeFactorMetrics:
             raise ValueError("node speed interval must be ordered.")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be in [0, 1].")
+
+    @classmethod
+    def _fast_create(
+        cls,
+        h3index: str,
+        slope: FactorInterval,
+        landcover: FactorInterval,
+        soil: FactorInterval,
+        tri: FactorInterval,
+        road: FactorInterval,
+        safety_margin: FactorInterval,
+        speed_lower_mps: float,
+        speed_nominal_mps: float,
+        speed_upper_mps: float,
+        is_passable: bool,
+        confidence: float,
+        reason_codes: tuple[str, ...] = (),
+        cone_index_kpa: float | None = None,
+        sinkage_m: float | None = None,
+    ) -> NodeFactorMetrics:
+        obj = object.__new__(cls)
+        set_attr = object.__setattr__
+        set_attr(obj, "h3index", h3index)
+        set_attr(obj, "slope", slope)
+        set_attr(obj, "landcover", landcover)
+        set_attr(obj, "soil", soil)
+        set_attr(obj, "tri", tri)
+        set_attr(obj, "road", road)
+        set_attr(obj, "safety_margin", safety_margin)
+        set_attr(obj, "speed_lower_mps", speed_lower_mps)
+        set_attr(obj, "speed_nominal_mps", speed_nominal_mps)
+        set_attr(obj, "speed_upper_mps", speed_upper_mps)
+        set_attr(obj, "is_passable", is_passable)
+        set_attr(obj, "confidence", confidence)
+        set_attr(obj, "reason_codes", reason_codes)
+        set_attr(obj, "cone_index_kpa", cone_index_kpa)
+        set_attr(obj, "sinkage_m", sinkage_m)
+        return obj
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,20 +290,21 @@ class DirectedEdgeMetrics:
         environment_distance_m: Mapping[str, float] = _EMPTY_ENV,
     ) -> DirectedEdgeMetrics:
         obj = object.__new__(cls)
-        object.__setattr__(obj, "from_h3", from_h3)
-        object.__setattr__(obj, "to_h3", to_h3)
-        object.__setattr__(obj, "distance_m", distance_m)
-        object.__setattr__(obj, "eta_lower_s", eta_lower_s)
-        object.__setattr__(obj, "eta_s", eta_s)
-        object.__setattr__(obj, "eta_upper_s", eta_upper_s)
-        object.__setattr__(obj, "eta_upper_bounded", eta_upper_bounded)
-        object.__setattr__(obj, "terrain_risk", terrain_risk)
-        object.__setattr__(obj, "travel_cost", travel_cost)
-        object.__setattr__(obj, "safety_margin_lower", safety_margin_lower)
-        object.__setattr__(obj, "safety_margin_nominal", safety_margin_nominal)
-        object.__setattr__(obj, "safety_margin_upper", safety_margin_upper)
-        object.__setattr__(obj, "directed_slope_deg", directed_slope_deg)
-        object.__setattr__(obj, "environment_distance_m", environment_distance_m)
+        set_attr = object.__setattr__
+        set_attr(obj, "from_h3", from_h3)
+        set_attr(obj, "to_h3", to_h3)
+        set_attr(obj, "distance_m", distance_m)
+        set_attr(obj, "eta_lower_s", eta_lower_s)
+        set_attr(obj, "eta_s", eta_s)
+        set_attr(obj, "eta_upper_s", eta_upper_s)
+        set_attr(obj, "eta_upper_bounded", eta_upper_bounded)
+        set_attr(obj, "terrain_risk", terrain_risk)
+        set_attr(obj, "travel_cost", travel_cost)
+        set_attr(obj, "safety_margin_lower", safety_margin_lower)
+        set_attr(obj, "safety_margin_nominal", safety_margin_nominal)
+        set_attr(obj, "safety_margin_upper", safety_margin_upper)
+        set_attr(obj, "directed_slope_deg", directed_slope_deg)
+        set_attr(obj, "environment_distance_m", environment_distance_m)
         return obj
 
 
@@ -679,6 +722,16 @@ class FactorEvaluation:
             raise ValueError("factor evaluation hashes must be non-empty.")
         object.__setattr__(self, "node_metrics", MappingProxyType(dict(self.node_metrics)))
         object.__setattr__(self, "directed_edges", MappingProxyType(dict(self.directed_edges)))
+
+    def directed_adjacency(self) -> Mapping[str, list[str]]:
+        """Return cached forward directed adjacency from evaluation.directed_edges."""
+        adj = getattr(self, "_directed_adjacency_cache", None)
+        if adj is None:
+            adj = {}
+            for from_h3, to_h3 in self.directed_edges:
+                adj.setdefault(from_h3, []).append(to_h3)
+            object.__setattr__(self, "_directed_adjacency_cache", adj)
+        return adj
 
 
 def load_factor_model(path: str) -> FactorModelConfig:
@@ -1182,9 +1235,14 @@ def _raw_node_evidence(
         _known_interval(_tri_speed_factor(cell.tri, config)),
         config.speed_floor_ratio,
     )
-    road = _known_interval(
-        config.road_speed_factor if cell.has_road else config.offroad_speed_factor
-    )
+    if cell.has_road and config.road_speed_factor == 1.0:
+        road = _ROAD_INTERVAL_1_0
+    elif not cell.has_road and config.offroad_speed_factor == 0.70:
+        road = _OFFROAD_INTERVAL_0_7
+    else:
+        road = _known_interval(
+            config.road_speed_factor if cell.has_road else config.offroad_speed_factor
+        )
     passable = _hard_constraints(
         cell,
         vehicle,
@@ -1437,22 +1495,22 @@ def _node_metrics(
     maximum = vehicle.max_speed_kmh / 3.6
     speeds = _node_speed_interval(evidence, maximum)
     factors = evidence.speed_factors
-    return NodeFactorMetrics(
-        h3index=cell.h3index,
-        slope=factors[0],
-        landcover=factors[1],
-        soil=factors[2],
-        tri=factors[3],
-        road=factors[4],
-        safety_margin=evidence.safety_margin,
-        speed_lower_mps=speeds[0],
-        speed_nominal_mps=speeds[1],
-        speed_upper_mps=speeds[2],
-        is_passable=evidence.passable,
-        confidence=evidence.confidence,
-        reason_codes=evidence.reasons,
-        cone_index_kpa=evidence.cone_index_kpa,
-        sinkage_m=evidence.sinkage_m,
+    return NodeFactorMetrics._fast_create(
+        cell.h3index,
+        factors[0],
+        factors[1],
+        factors[2],
+        factors[3],
+        factors[4],
+        evidence.safety_margin,
+        speeds[0],
+        speeds[1],
+        speeds[2],
+        evidence.passable,
+        evidence.confidence,
+        evidence.reasons,
+        evidence.cone_index_kpa,
+        evidence.sinkage_m,
     )
 
 
@@ -1462,16 +1520,14 @@ def _node_speed_interval(
 ) -> tuple[float, float, float]:
     if not evidence.passable:
         return (0.0, 0.0, 0.0)
-    factors = evidence.speed_factors
-    bounds = (
-        tuple(interval.lower for interval in factors),
-        tuple(interval.nominal for interval in factors),
-        tuple(interval.upper for interval in factors),
-    )
+    f0, f1, f2, f3, f4 = evidence.speed_factors
+    p_lower = f0.lower * f1.lower * f2.lower * f3.lower * f4.lower
+    p_nominal = f0.nominal * f1.nominal * f2.nominal * f3.nominal * f4.nominal
+    p_upper = f0.upper * f1.upper * f2.upper * f3.upper * f4.upper
     return (
-        min(maximum_mps, maximum_mps * _product(bounds[0])),
-        min(maximum_mps, maximum_mps * _product(bounds[1])),
-        min(maximum_mps, maximum_mps * _product(bounds[2])),
+        min(maximum_mps, maximum_mps * p_lower),
+        min(maximum_mps, maximum_mps * p_nominal),
+        min(maximum_mps, maximum_mps * p_upper),
     )
 
 
