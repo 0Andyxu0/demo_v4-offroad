@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import asdict, replace
-from math import atan2, cos, inf, radians, sin, sqrt
+from math import inf
 from pathlib import Path
 from time import perf_counter
 from typing import cast
@@ -23,14 +23,25 @@ from h3_offroad_planner.dynamics.trajectory_geometry import (
 )
 from h3_offroad_planner.environment import resolve_request_environment
 from h3_offroad_planner.factor_model import (
+    EnvironmentConfig,
     FactorEvaluation,
+    FactorModelConfig,
     StaticPlanningConfig,
+    build_directed_edge_cache,
     canonical_hash,
     evaluate_factor_model,
+    graph_topology_hash,
     load_factor_model,
     load_static_planning_config,
+    static_input_hash,
     write_effective_snapshots,
     write_static_planning_snapshot,
+)
+from h3_offroad_planner.grid.h3_grid_builder import (
+    H3GridBuilder,
+    _edge_from_cells,
+    _haversine_m,
+    _safe_neighbors,
 )
 from h3_offroad_planner.models import (
     ConfigError,
@@ -66,7 +77,7 @@ from h3_offroad_planner.routing import (
     estimate_h3_cells_for_roi,
     expand_targeted_bottleneck_parents,
 )
-from h3_offroad_planner.routing_index import open_routing_index
+from h3_offroad_planner.routing_index import RoutingIndex, open_routing_index
 
 logger = logging.getLogger("h3_offroad_planner.route_planning")
 
@@ -106,6 +117,80 @@ def run_route_plan(
             extra_warning="CORRIDOR_EXPANDED_TO_2_RING",
             export_gpkg=export_gpkg,
         )
+
+
+def _incrementally_expand_route_graph(
+    index: RoutingIndex,
+    graph: H3Graph,
+    evaluation: FactorEvaluation,
+    vehicle: VehicleProfile,
+    factor_config: FactorModelConfig,
+    new_parents: set[str],
+    environment: EnvironmentConfig | None = None,
+) -> tuple[H3Graph, FactorEvaluation, float, float]:
+    """Incrementally add new parent tiles to an existing graph and evaluation.
+
+    Avoids full rebuild of the corridor graph.
+    """
+    t_load_start = perf_counter()
+    extra_frame = index.load_cells(new_parents)
+    builder = H3GridBuilder(res_fine=graph.resolution_fine, res_coarse=graph.resolution_coarse)
+    t_build_start = perf_counter()
+    extra_graph = builder.build_graph(extra_frame)
+
+    graph.cells.update(extra_graph.cells)
+    graph.edges.update(extra_graph.edges)
+    for p, children in extra_graph.parent_children.items():
+        graph.parent_children.setdefault(p, set()).update(children)
+
+    new_edges = dict(extra_graph.edges)
+    for cell_id, cell in extra_graph.cells.items():
+        if not cell.is_passable:
+            continue
+        for n_id in _safe_neighbors(cell_id):
+            if n_id in graph.cells:
+                neighbor = graph.cells[n_id]
+                if not neighbor.is_passable:
+                    continue
+                pair = (cell_id, n_id) if cell_id < n_id else (n_id, cell_id)
+                if pair not in graph.edges:
+                    dist = _haversine_m(cell.lat, cell.lng, neighbor.lat, neighbor.lng)
+                    edge = _edge_from_cells(cell, neighbor, dist)
+                    graph.edges[pair] = edge
+                    new_edges[pair] = edge
+
+    build_time = perf_counter() - t_build_start + (t_build_start - t_load_start)
+
+    t_eval_start = perf_counter()
+    extra_eval = evaluate_factor_model(extra_graph, vehicle, factor_config, environment)
+    combined_nodes = dict(evaluation.node_metrics)
+    combined_nodes.update(extra_eval.node_metrics)
+    combined_edges = dict(evaluation.directed_edges)
+    combined_edges.update(extra_eval.directed_edges)
+
+    boundary_edges = {k: graph.edges[k] for k in new_edges if k not in extra_graph.edges}
+    if boundary_edges:
+        b_graph = H3Graph(
+            resolution_fine=graph.resolution_fine,
+            resolution_coarse=graph.resolution_coarse,
+            cells=graph.cells,
+            edges=boundary_edges,
+        )
+        b_directed = build_directed_edge_cache(
+            b_graph, combined_nodes, vehicle, factor_config, environment
+        )
+        combined_edges.update(b_directed)
+
+    new_evaluation = FactorEvaluation(
+        node_metrics=combined_nodes,
+        directed_edges=combined_edges,
+        vehicle_hash=evaluation.vehicle_hash,
+        factor_model_hash=evaluation.factor_model_hash,
+        static_input_hash=static_input_hash(graph),
+        graph_topology_hash=graph_topology_hash(graph),
+    )
+    eval_time = perf_counter() - t_eval_start
+    return graph, new_evaluation, build_time, eval_time
 
 
 def _run_route_plan_once(
@@ -290,44 +375,79 @@ def _run_route_plan_once(
                 len(new_parents),
                 sorted(new_parents),
             )
-            graph, source_metadata = _load_route_graph(
-                request,
-                roi_geometry,
-                source_metadata,
-                progress=progress,
-                progress_range=(start_pct, start_pct + 9),
-                corridor_ring=corridor_ring,
-                max_widest_detour_ratio=(
-                    static_planning.decision.detour_ratio
-                    if fast_five and static_planning is not None
-                    else None
-                ),
-                extra_parents=set(added_repair_parents),
-            )
-            source_timings = source_metadata.get("performance", {})
-            if isinstance(source_timings, dict):
-                for k in ("corridor_load_s", "graph_build_s"):
-                    if k in source_timings and isinstance(source_timings[k], (int, float)):
-                        timings[k] = timings.get(k, 0.0) + float(source_timings[k])
-                for k in ("index_open_s", "coarse_search_s"):
-                    if k in source_timings and isinstance(source_timings[k], (int, float)):
-                        timings[k] = float(source_timings[k])
-            _restore_static_authority(graph, source_metadata)
-            eval_started = perf_counter()
-            evaluation = evaluate_factor_model(
-                graph,
-                vehicle,
-                factor_config,
-                None if static_planning is None else static_planning.environment,
-            )
-            timings["factor_eval_s"] += perf_counter() - eval_started
-            _bind_loaded_index_identity(
-                source_metadata,
-                evaluation,
-                vehicle,
-                static_planning,
-                environment_snapshot_hash,
-            )
+            if (
+                source_metadata.get("artifact_kind") == "h3_routing_index"
+                and source_manifest
+                and hasattr(index, "load_cells")
+            ):
+                graph, evaluation, b_time, e_time = _incrementally_expand_route_graph(
+                    index,
+                    graph,
+                    evaluation,
+                    vehicle,
+                    factor_config,
+                    set(new_parents),
+                    None if static_planning is None else static_planning.environment,
+                )
+                timings["graph_build_s"] = timings.get("graph_build_s", 0.0) + b_time
+                timings["factor_eval_s"] = timings.get("factor_eval_s", 0.0) + e_time
+                existing_active = source_metadata.get("active_parent_h3")
+                active_set = (
+                    {str(x) for x in existing_active}
+                    if isinstance(existing_active, (list, tuple, set))
+                    else set()
+                ) | set(new_parents)
+                source_metadata["active_parent_h3"] = sorted(active_set)
+                source_metadata["source_tiles"] = source_metadata["active_parent_h3"]
+                source_metadata["source_loaded_tile_count"] = len(active_set)
+                source_metadata["source_raw_row_count"] = len(graph.cells)
+                _restore_static_authority(graph, source_metadata)
+                _bind_loaded_index_identity(
+                    source_metadata,
+                    evaluation,
+                    vehicle,
+                    static_planning,
+                    environment_snapshot_hash,
+                )
+            else:
+                graph, source_metadata = _load_route_graph(
+                    request,
+                    roi_geometry,
+                    source_metadata,
+                    progress=progress,
+                    progress_range=(start_pct, start_pct + 9),
+                    corridor_ring=corridor_ring,
+                    max_widest_detour_ratio=(
+                        static_planning.decision.detour_ratio
+                        if fast_five and static_planning is not None
+                        else None
+                    ),
+                    extra_parents=set(added_repair_parents),
+                )
+                source_timings = source_metadata.get("performance", {})
+                if isinstance(source_timings, dict):
+                    for k in ("corridor_load_s", "graph_build_s"):
+                        if k in source_timings and isinstance(source_timings[k], (int, float)):
+                            timings[k] = timings.get(k, 0.0) + float(source_timings[k])
+                    for k in ("index_open_s", "coarse_search_s"):
+                        if k in source_timings and isinstance(source_timings[k], (int, float)):
+                            timings[k] = float(source_timings[k])
+                _restore_static_authority(graph, source_metadata)
+                eval_started = perf_counter()
+                evaluation = evaluate_factor_model(
+                    graph,
+                    vehicle,
+                    factor_config,
+                    None if static_planning is None else static_planning.environment,
+                )
+                timings["factor_eval_s"] += perf_counter() - eval_started
+                _bind_loaded_index_identity(
+                    source_metadata,
+                    evaluation,
+                    vehicle,
+                    static_planning,
+                    environment_snapshot_hash,
+                )
             start = _snap_evaluated(
                 graph,
                 evaluation,
@@ -762,14 +882,3 @@ def _restore_static_authority(graph: H3Graph, source_metadata: dict[str, object]
         return
     for cell in graph.cells.values():
         cell.is_passable = cell.lc_factor != inf and (cell.landcover_type or "").lower() != "water"
-
-
-def _haversine_m(lat_a: float, lng_a: float, lat_b: float, lng_b: float) -> float:
-    earth_radius_m = 6_371_000.0
-    delta_lat = radians(lat_b - lat_a)
-    delta_lng = radians(lng_b - lng_a)
-    first_lat = radians(lat_a)
-    second_lat = radians(lat_b)
-    root = sin(delta_lat / 2.0) ** 2
-    root += cos(first_lat) * cos(second_lat) * sin(delta_lng / 2.0) ** 2
-    return 2.0 * earth_radius_m * atan2(sqrt(root), sqrt(max(0.0, 1.0 - root)))

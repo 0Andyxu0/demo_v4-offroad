@@ -149,6 +149,10 @@ class OfflinePairsTable(
         self._parent_tables: dict[
             tuple[str, str], dict[str, dict[str, tuple[tuple[str, ...], float]]]
         ] = {}
+        self._macro_adj_cache: dict[
+            tuple[str, float, frozenset[str]],
+            dict[str, list[tuple[str, tuple[str, ...], float]]],
+        ] = {}
 
         dataset = ds.dataset(str(self.parquet_path), format="parquet")
         if active_parents is not None:
@@ -277,6 +281,45 @@ class OfflinePairsTable(
         if isinstance(key, tuple) and len(key) == 3:
             return self.get(cast(tuple[str, str, str], key)) is not None
         return False
+
+    def build_macro_adjacency(
+        self,
+        base_objective: str,
+        scale: float = 1.0,
+        weight: float = 1.0,
+        excluded_parents: Collection[str] | None = None,
+    ) -> dict[str, list[tuple[str, tuple[str, ...], float]]]:
+        """Build macro port-pair adjacency dictionary for an entire corridor in vectorized time."""
+        factor = (weight / scale) if scale > 0.0 else 1.0
+        ex_key = frozenset(excluded_parents) if excluded_parents else frozenset()
+        cache_key = (base_objective, factor, ex_key)
+        cached = self._macro_adj_cache.get(cache_key)
+        if cached is not None:
+            return {s: list(edges) for s, edges in cached.items()}
+
+        if len(self._parents) == 0:
+            return {}
+
+        srcs = self._sources
+        tgts = self._targets
+        costs = self._costs
+
+        adj: dict[str, list[tuple[str, tuple[str, ...], float]]] = {}
+        for (prof, parent), ranges in self._slices.items():
+            if prof != base_objective or parent in ex_key:
+                continue
+            for s_i, e_i in ranges:
+                p_src = srcs[s_i:e_i]
+                p_tgt = tgts[s_i:e_i]
+                p_cost = costs[s_i:e_i]
+                for s, t, c in zip(p_src, p_tgt, p_cost, strict=True):
+                    s_str = str(s)
+                    t_str = str(t)
+                    cost_val = float(c) * factor if factor != 1.0 else float(c)
+                    adj.setdefault(s_str, []).append((t_str, (s_str, t_str), cost_val))
+
+        self._macro_adj_cache[cache_key] = adj
+        return {s: list(edges) for s, edges in adj.items()}
 
     def resolve_paths(
         self,

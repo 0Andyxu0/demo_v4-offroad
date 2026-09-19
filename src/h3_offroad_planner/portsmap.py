@@ -252,6 +252,10 @@ class PortsMapSearchContext:
             tuple[str, str, object, object, str],
             dict[tuple[str, str], PortPairPath],
         ] = {}
+        self._source_edge_cache: dict[
+            tuple[str, str, object, object, str],
+            dict[str, list[tuple[str, tuple[str, ...], float]]],
+        ] = {}
         self._computed_sources: dict[
             tuple[str, str, object, object, str],
             set[str],
@@ -288,6 +292,7 @@ class PortsMapSearchContext:
     def clear_pair_cache(self) -> None:
         """Release request-local Port-pair paths once callers no longer need them."""
         self._pair_cache.clear()
+        self._source_edge_cache.clear()
         self._computed_sources.clear()
         self._base_topology_cache.clear()
         self._parent_keys.clear()
@@ -528,6 +533,7 @@ class PortsMapSearchContext:
             stale = [k for k in keys if k != active_key]
             for k in stale:
                 self._pair_cache.pop(k, None)
+                self._source_edge_cache.pop(k, None)
                 self._computed_sources.pop(k, None)
                 keys.remove(k)
         else:
@@ -548,20 +554,26 @@ class PortsMapSearchContext:
         port_hash: str,
         temporary_ports: frozenset[str] = frozenset(),
         temporary_destinations: frozenset[str] = frozenset(),
+        goal: str | None = None,
+        goal_connections: Mapping[str, tuple[float, tuple[str, ...]]] | None = None,
     ) -> list[tuple[str, tuple[str, ...], float]]:
         if len(port_ids) <= 1:
             return []
         cache_key = (parent, profile.signature, local_penalty_key, local_blocked_key, port_hash)
         cached = self._pair_cache.get(cache_key)
-        if cached is None:
+        cached_edges = self._source_edge_cache.get(cache_key)
+        if cached is None or cached_edges is None:
             self._evict_stale_parent_contexts(parent, cache_key)
             cached = {}
+            cached_edges = {}
             self._pair_cache[cache_key] = cached
+            self._source_edge_cache[cache_key] = cached_edges
             self._computed_sources[cache_key] = set()
 
         sources_done = self._computed_sources[cache_key]
         if source in sources_done:
             self._cache_hits += 1
+            return cached_edges.get(source, [])
         else:
             base_key = self._base_pair_key(
                 parent,
@@ -614,6 +626,16 @@ class PortsMapSearchContext:
                     )
                     if not missing_temp:
                         base_pairs = known_pairs
+                    elif (
+                        goal_connections is not None
+                        and goal is not None
+                        and missing_temp == (goal,)
+                    ):
+                        if source in goal_connections:
+                            g_cost, g_path = goal_connections[source]
+                            base_pairs = known_pairs + ((goal, g_path, g_cost),)
+                        else:
+                            base_pairs = known_pairs
                     else:
                         allowed = {
                             cell_id
@@ -651,6 +673,16 @@ class PortsMapSearchContext:
                     )
                     if not missing_temp:
                         base_pairs = ()
+                    elif (
+                        goal_connections is not None
+                        and goal is not None
+                        and missing_temp == (goal,)
+                    ):
+                        if source in goal_connections:
+                            g_cost, g_path = goal_connections[source]
+                            base_pairs = ((goal, g_path, g_cost),)
+                        else:
+                            base_pairs = ()
                     else:
                         allowed = {
                             cell_id
@@ -717,6 +749,7 @@ class PortsMapSearchContext:
             pair = cached.get((source, target))
             if pair is not None:
                 edges.append((target, pair.h3_path, pair.scalar_cost))
+        cached_edges[source] = edges
         return edges
 
     def _base_pair_key(
@@ -821,6 +854,62 @@ class PortsMapSearchContext:
 
     _fine_dijkstra = _fine_tile_search
 
+    def _backward_fine_search(
+        self,
+        goal: str,
+        allowed: set[str],
+        profile: ScalarProfile,
+        penalties: Mapping[str, int],
+        penalty_factor: float,
+        targets: set[str],
+    ) -> dict[str, tuple[float, tuple[str, ...]]]:
+        self._fine_search_calls += 1
+        if goal not in allowed:
+            return {}
+
+        rev_neighbors: dict[str, list[str]] = {}
+        for u in allowed:
+            for v in self._neighbors.get(u, ()):
+                if v in allowed:
+                    rev_neighbors.setdefault(v, []).append(u)
+
+        heap: list[tuple[float, str]] = [(0.0, goal)]
+        best: dict[str, float] = {goal: 0.0}
+        came_from_fwd: dict[str, str] = {}
+        remaining_targets = set(targets)
+        remaining_targets.discard(goal)
+
+        while heap:
+            cost, curr = heappop(heap)
+            if cost > best.get(curr, inf) + EPSILON:
+                continue
+            if remaining_targets and curr in remaining_targets:
+                remaining_targets.remove(curr)
+                if not remaining_targets:
+                    break
+            for u in rev_neighbors.get(curr, ()):
+                edge = self.evaluation.directed_edges[(u, curr)]
+                step = _penalized_cost(edge, profile, curr, penalties, penalty_factor)
+                cand_cost = cost + step
+                current_best = best.get(u)
+                if current_best is None or cand_cost < current_best - EPSILON:
+                    best[u] = cand_cost
+                    came_from_fwd[u] = curr
+                    heappush(heap, (cand_cost, u))
+
+        results: dict[str, tuple[float, tuple[str, ...]]] = {}
+        for t in targets:
+            if t not in best or t == goal:
+                continue
+            curr = t
+            path_list = [t]
+            while curr != goal and curr in came_from_fwd:
+                curr = came_from_fwd[curr]
+                path_list.append(curr)
+            if curr == goal:
+                results[t] = (best[t], tuple(path_list))
+        return results
+
     def _macro_search(
         self,
         topology: PortsMapTopology,
@@ -859,13 +948,77 @@ class PortsMapSearchContext:
         temporary_ports = frozenset(p for p, port in topology.ports.items() if port.is_temporary)
         temporary_destinations = frozenset({goal}) if goal in temporary_ports else frozenset()
 
+        goal_parent = self._parent(goal) if goal in temporary_ports else None
+        goal_connections: dict[str, tuple[float, tuple[str, ...]]] = {}
+        if goal_parent is not None and goal_parent in topology.ports_by_parent:
+            goal_ports = set(topology.ports_by_parent[goal_parent])
+            goal_ports.discard(goal)
+            local_p_goal = penalties_by_parent.get(goal_parent, ())
+            local_b_goal = blocked_by_parent.get(goal_parent, ())
+            active_base_objs = [
+                k for k, w in profile.weights.items() if w > 0.0 and k in OBJECTIVE_NAMES
+            ]
+            is_pure = (
+                profile.environment_weight == 0.0
+                and (profile.environment_pressure is None or profile.environment_weight == 0.0)
+                and len(active_base_objs) == 1
+                and all(w == 0.0 for k, w in profile.weights.items() if k != active_base_objs[0])
+            )
+            base_obj = active_base_objs[0] if is_pure else ""
+            can_use_offline = (
+                self._offline_pairs is not None
+                and not local_p_goal
+                and not local_b_goal
+                and is_pure
+            )
+            needed_ports = set()
+            for p in goal_ports:
+                if can_use_offline and self._offline_pairs is not None:
+                    tbl = self._offline_pairs.get((profile.name, goal_parent, p))
+                    if tbl is None and base_obj != profile.name:
+                        tbl = self._offline_pairs.get((base_obj, goal_parent, p))
+                    if tbl is not None and goal in tbl:
+                        continue
+                needed_ports.add(p)
+
+            if needed_ports:
+                allowed_goal = {
+                    cell_id
+                    for cell_id in self._parent_children.get(goal_parent, ())
+                    if cell_id not in blocked
+                }
+                eff_penalties = penalties if local_p_goal else {}
+                eff_factor = penalty_factor if local_p_goal else 0.0
+                goal_connections = self._backward_fine_search(
+                    goal,
+                    allowed_goal,
+                    profile,
+                    eff_penalties,
+                    eff_factor,
+                    targets=needed_ports,
+                )
+
         precomputed_adjacency: dict[str, list[tuple[str, tuple[str, ...], float]]] | None = None
+        build_macro_adj = getattr(self._offline_pairs, "build_macro_adjacency", None)
         if pairs is not None:
             precomputed_adjacency = {}
             for (source, target), pair in pairs.items():
                 precomputed_adjacency.setdefault(source, []).append(
                     (target, pair.h3_path, pair.scalar_cost)
                 )
+        elif callable(build_macro_adj) and is_pure and base_obj in OBJECTIVE_NAMES:
+            excluded = set(penalties_by_parent.keys()) | set(blocked_by_parent.keys())
+            start_parent = self._parent(start) if start in temporary_ports else None
+            if start_parent:
+                excluded.add(start_parent)
+            scale = profile.scales.get(base_obj, 1.0)
+            weight = profile.weights.get(base_obj, 1.0)
+            precomputed_adjacency = build_macro_adj(
+                base_obj, scale=scale, weight=weight, excluded_parents=excluded
+            )
+            if goal_connections:
+                for port_u, (g_cost, g_path) in goal_connections.items():
+                    precomputed_adjacency.setdefault(port_u, []).append((goal, g_path, g_cost))
 
         # Admissible heuristic lower bound (includes travel_cost lower bound of 1.0 m/m)
         w_dist = profile.weights.get("distance", 0.0) / profile.scales["distance"]
@@ -897,9 +1050,13 @@ class PortsMapSearchContext:
         best_cost: dict[str, float] = {start: 0.0}
         came_from: dict[str, tuple[str, tuple[str, ...]]] = {}
         visited_parents: set[str] = set()
+        settled: set[str] = set()
 
         while heap:
             priority, cost, current = heappop(heap)
+            if current in settled:
+                continue
+            settled.add(current)
             if cost > best_cost.get(current, inf) + EPSILON:
                 continue
             if current == goal:
@@ -953,6 +1110,8 @@ class PortsMapSearchContext:
                 active_pairs_count = 0
                 if pairs is not None:
                     active_pairs_count = len(pairs)
+                elif precomputed_adjacency is not None:
+                    active_pairs_count = sum(len(edges) for edges in precomputed_adjacency.values())
                 else:
                     for vp in visited_parents:
                         v_port_ids = topology.ports_by_parent.get(vp, ())
@@ -983,7 +1142,17 @@ class PortsMapSearchContext:
             parent = self._parent(current)
             visited_parents.add(parent)
             self._visited_parents.add(parent)
-            if precomputed_adjacency is not None:
+            start_parent_temp = self._parent(start) if start in temporary_ports else None
+            if precomputed_adjacency is not None and (
+                current in precomputed_adjacency
+                or (
+                    current not in temporary_ports
+                    and parent in self._offline_parents
+                    and parent not in penalties_by_parent
+                    and parent not in blocked_by_parent
+                    and parent != start_parent_temp
+                )
+            ):
                 outgoing.extend(precomputed_adjacency.get(current, []))
             else:
                 port_ids = topology.ports_by_parent.get(parent, ())
@@ -1005,16 +1174,24 @@ class PortsMapSearchContext:
                     port_hash,
                     temporary_ports=temporary_ports,
                     temporary_destinations=temporary_destinations,
+                    goal=goal,
+                    goal_connections=goal_connections,
                 )
                 outgoing.extend(internal_edges)
 
-            for neighbor, segment, step in sorted(outgoing):
+            for neighbor, segment, step in sorted(outgoing, key=lambda x: x[0]):
+                if neighbor in settled:
+                    continue
                 cand_cost = cost + step
                 current_best = best_cost.get(neighbor)
                 if current_best is None or cand_cost < current_best - EPSILON:
                     best_cost[neighbor] = cand_cost
                     came_from[neighbor] = (current, segment)
-                    cand_priority = cand_cost + _h(neighbor)
+                    cand_priority = (
+                        cand_cost + _h(neighbor)
+                        if unit_cost_lower_bound > EPSILON
+                        else cand_cost
+                    )
                     heappush(heap, (cand_priority, cand_cost, neighbor))
 
         raise PlanningFailedError(f"no exact PortsMap path from {start!r} to {goal!r}.")
