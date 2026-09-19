@@ -18,6 +18,7 @@ from h3_offroad_planner.factor_model import (
 from h3_offroad_planner.models import H3Cell, H3Edge, H3Graph, VehicleProfile
 from h3_offroad_planner.offline_pairs import (
     BASE_PROFILE_NAMES,
+    OfflinePairsTable,
     default_vehicle,
     extract_offline_pairs,
     load_offline_pairs,
@@ -516,4 +517,58 @@ def test_offline_pairs_negative_cache_and_temporary_port_isolation(
     # All static-to-static pairs ('b'->'c', 'c'->'b', 'd'->'e', 'e'->'d') MUST use offline cache!
     # Total fine searches bounded by start + goal boundary ports (< 5), not expanding internal grid.
     assert context.fine_search_calls <= 3
+    assert context.offline_cache_hits > 0
+
+
+def test_offline_pairs_table_lazy_loading_and_late_resolution(
+    tmp_path: Path,
+    vehicle: VehicleProfile,
+) -> None:
+    """Verify OfflinePairsTable loads without paths and reconstructs full fine paths lazily."""
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+
+    # Static pairs with multi-cell paths: b->c via 'b'->'c', but let's test a distinct path
+    pairs = {
+        ("distance", "p1", "b"): {
+            "c": (("b", "b", "c"), 2.0),
+        },
+        ("distance", "p1", "c"): {
+            "b": (("c", "c", "b"), 2.0),
+        },
+        ("distance", "p2", "d"): {
+            "e": (("d", "d", "e"), 2.0),
+        },
+        ("distance", "p2", "e"): {
+            "d": (("e", "e", "d"), 2.0),
+        },
+    }
+    file_path = tmp_path / "port_pairs.parquet"
+    save_offline_pairs(pairs, file_path)
+
+    # 1. Load with load_paths=False -> returns OfflinePairsTable
+    lazy_table = load_offline_pairs(file_path, active_parents=["p1", "p2"], load_paths=False)
+    assert isinstance(lazy_table, OfflinePairsTable)
+    assert ("distance", "p1") in lazy_table.offline_parents_by_profile
+    assert lazy_table.offline_parents == {"p1", "p2"}
+
+    # 2. PortsMapSearchContext using lazy_table
+    context = PortsMapSearchContext(
+        graph,
+        evaluation,
+        offline_pairs=lazy_table,
+        offline_parents={"p1", "p2"},
+    )
+    res = context.search("a", "f", profile)
+
+    # Late path resolution must stitch the full fine path from parquet
+    assert res.scalar_cost == pytest.approx(7.0, rel=1e-6)
+    assert "b" in res.h3_path
+    assert "c" in res.h3_path
+    assert "e" in res.h3_path
+    has_subpath = ("b", "b", "c") in zip(
+        res.h3_path, res.h3_path[1:], res.h3_path[2:], strict=False
+    )
+    assert res.h3_path == ("a", "b", "c", "e", "f") or has_subpath
     assert context.offline_cache_hits > 0

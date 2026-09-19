@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import h3
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BASE_PROFILE_NAMES",
     "OfflinePairs",
+    "OfflinePairsTable",
     "PORT_PAIRS_SCHEMA",
     "default_vehicle",
     "extract_offline_pairs",
@@ -124,13 +126,207 @@ def read_offline_pairs_vehicle_hash(path: Path) -> str | None:
     return None
 
 
+class OfflinePairsTable(
+    Mapping[tuple[str, str, str], Mapping[str, tuple[tuple[str, ...], float]]]
+):
+    """Lightweight, ultra-fast view of offline port pairs backed by PyArrow and NumPy slices.
+
+    Loads scalar costs into memory for macro graph search in sub-second time,
+    indexing contiguous slices per parent and unpacking pure Python dicts on-demand,
+    while deferring fine cell path resolution until the winning trajectory is found.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        active_parents: Collection[str] | None = None,
+    ) -> None:
+        self.parquet_path = Path(path)
+        self.active_parents: frozenset[str] = (
+            frozenset(active_parents) if active_parents is not None else frozenset()
+        )
+        self._path_cache: dict[tuple[str, str, str, str], tuple[str, ...]] = {}
+        self._parent_tables: dict[
+            tuple[str, str], dict[str, dict[str, tuple[tuple[str, ...], float]]]
+        ] = {}
+
+        dataset = ds.dataset(str(self.parquet_path), format="parquet")
+        if active_parents is not None:
+            parents_list = sorted(set(active_parents))
+            if not parents_list:
+                self._profs = np.empty(0, dtype=object)
+                self._parents = np.empty(0, dtype=object)
+                self._sources = np.empty(0, dtype=object)
+                self._targets = np.empty(0, dtype=object)
+                self._costs = np.empty(0, dtype=np.float64)
+                self._slices: dict[tuple[str, str], list[tuple[int, int]]] = {}
+                self.offline_parents_by_profile: frozenset[tuple[str, str]] = frozenset()
+                self.offline_parents: frozenset[str] = frozenset()
+                return
+            filter_expr = ds.field("parent_h3").isin(parents_list)
+            table = dataset.to_table(
+                columns=["profile", "parent_h3", "source", "target", "cost"],
+                filter=filter_expr,
+            )
+        else:
+            table = dataset.to_table(
+                columns=["profile", "parent_h3", "source", "target", "cost"],
+            )
+
+        if table.num_rows == 0:
+            self._profs = np.empty(0, dtype=object)
+            self._parents = np.empty(0, dtype=object)
+            self._sources = np.empty(0, dtype=object)
+            self._targets = np.empty(0, dtype=object)
+            self._costs = np.empty(0, dtype=np.float64)
+            self._slices = {}
+            self.offline_parents_by_profile = frozenset()
+            self.offline_parents = self.active_parents
+            return
+
+        self._profs = table["profile"].to_numpy(zero_copy_only=False)
+        self._parents = table["parent_h3"].to_numpy(zero_copy_only=False)
+        self._sources = table["source"].to_numpy(zero_copy_only=False)
+        self._targets = table["target"].to_numpy(zero_copy_only=False)
+        self._costs = table["cost"].to_numpy(zero_copy_only=False)
+
+        change_indices = (
+            np.where(
+                (self._parents[:-1] != self._parents[1:])
+                | (self._profs[:-1] != self._profs[1:])
+            )[0]
+            + 1
+        )
+        starts = np.concatenate(([0], change_indices))
+        ends = np.concatenate((change_indices, [len(self._parents)]))
+        slices: dict[tuple[str, str], list[tuple[int, int]]] = {}
+        for s, e in zip(starts, ends, strict=True):
+            slices.setdefault((str(self._profs[s]), str(self._parents[s])), []).append(
+                (int(s), int(e))
+            )
+        self._slices = slices
+        self.offline_parents_by_profile = frozenset(slices.keys())
+        self.offline_parents = (
+            self.active_parents
+            if self.active_parents
+            else frozenset(p for _, p in self.offline_parents_by_profile)
+        )
+
+    def _ensure_parent_table(
+        self,
+        parent_key: tuple[str, str],
+    ) -> dict[str, dict[str, tuple[tuple[str, ...], float]]] | None:
+        pt = self._parent_tables.get(parent_key)
+        if pt is not None:
+            return pt
+        slice_ranges = self._slices.get(parent_key)
+        if slice_ranges is None:
+            return None
+        pt = {}
+        for start_i, end_i in slice_ranges:
+            p_src = self._sources[start_i:end_i]
+            p_tgt = self._targets[start_i:end_i]
+            p_cost = self._costs[start_i:end_i]
+            for s, t, c in zip(p_src, p_tgt, p_cost, strict=True):
+                s_str = str(s)
+                t_str = str(t)
+                pt.setdefault(s_str, {})[t_str] = (
+                    (s_str, t_str),
+                    float(c),
+                )
+        self._parent_tables[parent_key] = pt
+        return pt
+
+    def get(  # type: ignore[override]
+        self,
+        key: tuple[str, str, str],
+        default: Mapping[str, tuple[tuple[str, ...], float]] | None = None,
+    ) -> Mapping[str, tuple[tuple[str, ...], float]] | None:
+        profile, parent, source = key
+        pt = self._ensure_parent_table((profile, parent))
+        if pt is None:
+            return default
+        return pt.get(source, default)
+
+    def __getitem__(
+        self,
+        key: tuple[str, str, str],
+    ) -> Mapping[str, tuple[tuple[str, ...], float]]:
+        val = self.get(key)
+        if val is None:
+            raise KeyError(key)
+        return val
+
+    def __len__(self) -> int:
+        count = 0
+        for pk in self._slices:
+            pt = self._ensure_parent_table(pk)
+            if pt is not None:
+                count += len(pt)
+        return count
+
+    def __iter__(self) -> Iterator[tuple[str, str, str]]:
+        for pk in self._slices:
+            prof, parent = pk
+            pt = self._ensure_parent_table(pk)
+            if pt is not None:
+                for src in pt:
+                    yield (prof, parent, src)
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, tuple) and len(key) == 3:
+            return self.get(cast(tuple[str, str, str], key)) is not None
+        return False
+
+    def resolve_paths(
+        self,
+        queries: Iterable[tuple[str, str, str, str]],
+    ) -> dict[tuple[str, str, str, str], tuple[str, ...]]:
+        """Resolve full fine cell paths for requested (profile, parent, source, target) edges."""
+        query_list = list(queries)
+        missing = [q for q in query_list if q not in self._path_cache]
+        if missing:
+            missing_parents = sorted({q[1] for q in missing})
+            missing_sources = sorted({q[2] for q in missing})
+            target_keys = set(missing)
+            dataset = ds.dataset(str(self.parquet_path), format="parquet")
+            filter_expr = ds.field("parent_h3").isin(missing_parents) & ds.field(
+                "source"
+            ).isin(missing_sources)
+            table = dataset.to_table(
+                columns=["profile", "parent_h3", "source", "target", "path"],
+                filter=filter_expr,
+            )
+            if table.num_rows > 0:
+                profs = table["profile"].to_pylist()
+                parents = table["parent_h3"].to_pylist()
+                sources = table["source"].to_pylist()
+                targets = table["target"].to_pylist()
+                paths = table["path"]
+                for i in range(table.num_rows):
+                    k = (profs[i], parents[i], sources[i], targets[i])
+                    if k in target_keys:
+                        self._path_cache[k] = tuple(str(x) for x in paths[i].as_py())
+            for q in missing:
+                if q not in self._path_cache:
+                    self._path_cache[q] = (q[2], q[3])
+        return {q: self._path_cache[q] for q in query_list}
+
+
 def load_offline_pairs(
     path: Path,
     active_parents: Collection[str] | None = None,
-) -> dict[tuple[str, str, str], dict[str, tuple[tuple[str, ...], float]]]:
+    *,
+    load_paths: bool = True,
+) -> OfflinePairs:
     """Load offline pairs from Parquet, optionally slicing via PyArrow predicate pushdown."""
     if not path.is_file():
         raise FileNotFoundError(f"offline pairs file does not exist: {path}")
+
+    if not load_paths:
+        if active_parents is not None and not active_parents:
+            return {}
+        return OfflinePairsTable(path, active_parents=active_parents)
 
     dataset = ds.dataset(str(path), format="parquet")
     if active_parents is not None:

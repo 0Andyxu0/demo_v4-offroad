@@ -223,17 +223,23 @@ class PortsMapSearchContext:
         self._offline_pairs = offline_pairs
         self._offline_cache_hits = 0
         if offline_pairs is not None:
-            self._offline_parents_by_profile: set[tuple[str, str]] = {
-                (prof, parent) for (prof, parent, _) in offline_pairs
-            }
-            self._offline_parents: set[str] = (
-                set(offline_parents)
-                if offline_parents is not None
-                else {parent for (_, parent, _) in offline_pairs}
-            )
+            if hasattr(offline_pairs, "offline_parents_by_profile"):
+                self._offline_parents_by_profile: set[tuple[str, str]] = set(
+                    offline_pairs.offline_parents_by_profile
+                )
+            else:
+                self._offline_parents_by_profile = {
+                    (prof, parent) for (prof, parent, _) in offline_pairs
+                }
+            if offline_parents is not None:
+                self._offline_parents: set[str] = set(offline_parents)
+            elif hasattr(offline_pairs, "offline_parents"):
+                self._offline_parents = set(offline_pairs.offline_parents)
+            else:
+                self._offline_parents = {parent for (_, parent, _) in offline_pairs}
         else:
             self._offline_parents_by_profile = set()
-            self._offline_parents = set()
+            self._offline_parents = set(offline_parents) if offline_parents is not None else set()
         if graph.parent_children:
             self._parent_children = graph.parent_children
         else:
@@ -897,15 +903,50 @@ class PortsMapSearchContext:
             if cost > best_cost.get(current, inf) + EPSILON:
                 continue
             if current == goal:
-                segments_rev: list[tuple[str, ...]] = []
+                segments_rev: list[tuple[str, str, tuple[str, ...]]] = []
                 curr = goal
                 while curr != start and curr in came_from:
                     prev, seg = came_from[curr]
-                    segments_rev.append(seg)
+                    segments_rev.append((prev, curr, seg))
                     curr = prev
 
+                # Late resolution of offline port paths
+                resolved_paths: dict[tuple[str, str, str, str], tuple[str, ...]] = {}
+                resolve_fn = getattr(self._offline_pairs, "resolve_paths", None)
+                base_obj = ""
+                if callable(resolve_fn):
+                    active_base_objs = [
+                        k for k, w in profile.weights.items()
+                        if w > 0.0 and k in OBJECTIVE_NAMES
+                    ]
+                    base_obj = (
+                        profile.name
+                        if profile.name in OBJECTIVE_NAMES
+                        else (active_base_objs[0] if len(active_base_objs) == 1 else "")
+                    )
+                    offline_queries = [
+                        (base_obj, self._parent(prev), prev, curr)
+                        for prev, curr, seg in segments_rev
+                        if self._parent(prev) == self._parent(curr)
+                        and self._parent(prev) in self._offline_parents
+                        and prev not in temporary_ports
+                        and curr not in temporary_ports
+                    ]
+                    if offline_queries and base_obj:
+                        resolved_paths = resolve_fn(offline_queries)
+
                 path_parts: list[str] = [start]
-                for seg in reversed(segments_rev):
+                for prev, curr, seg in reversed(segments_rev):
+                    parent_prev = self._parent(prev)
+                    if (
+                        parent_prev == self._parent(curr)
+                        and prev not in temporary_ports
+                        and curr not in temporary_ports
+                        and resolved_paths
+                    ):
+                        resolved = resolved_paths.get((base_obj, parent_prev, prev, curr))
+                        if resolved is not None:
+                            seg = resolved
                     path_parts.extend(seg[1:])
                 path = tuple(path_parts)
 

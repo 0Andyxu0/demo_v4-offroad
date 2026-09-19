@@ -127,12 +127,17 @@ class RoutingIndex:
         files = _manifest_mapping(self.manifest, "files")
         return files.get("port_pairs") is not None
 
-    def load_port_pairs(self, active_parents: Collection[str]) -> OfflinePairs:
+    def load_port_pairs(
+        self,
+        active_parents: Collection[str],
+        *,
+        load_paths: bool = False,
+    ) -> OfflinePairs:
         """Read only port-pair rows matching the requested res11 parents."""
         if not self.has_port_pairs or not active_parents:
             return {}
         pairs_path = _manifest_path(self.build_dir, self.manifest, "port_pairs")
-        return load_offline_pairs(pairs_path, active_parents=active_parents)
+        return load_offline_pairs(pairs_path, active_parents=active_parents, load_paths=load_paths)
 
 
 def build_routing_index(
