@@ -470,8 +470,9 @@ def _coarse_shortest_path(
 def _coarse_weight(metrics: Mapping[str, float], profile: str) -> float:
     distance = metrics["distance"]
     passable = max(0.0, min(1.0, metrics.get("passable", 1.0)))
-    risk = max(0.0, metrics.get("risk", metrics.get("slope", 0.0) + metrics.get("tri", 0.0)))
-    barrier_penalty = 1.0 + 0.8 * (1.0 - passable) + 0.01 * risk
+    barrier_penalty = 1.0
+    if passable < 0.5:
+        barrier_penalty += 2.0 * (0.5 - passable)
 
     if profile == "eta_road":
         road = max(0.0, metrics.get("road", 0.0))

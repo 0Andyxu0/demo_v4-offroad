@@ -54,6 +54,12 @@ def main() -> int:
         help="Limit number of parent tiles to precompute",
     )
     parser.add_argument(
+        "--parents-file",
+        type=Path,
+        default=None,
+        help="Optional path to file containing parent H3 indexes to precompute",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=50,
@@ -113,10 +119,22 @@ def main() -> int:
 
     vehicle_hash = canonical_hash(asdict(vehicle))
 
+    specific_parents = None
+    if args.parents_file is not None and args.parents_file.is_file():
+        text = args.parents_file.read_text(encoding="utf-8")
+        if args.parents_file.suffix == ".json":
+            import json
+
+            data = json.loads(text)
+            specific_parents = set(data) if isinstance(data, list) else set(data.keys())
+        else:
+            specific_parents = {line.strip() for line in text.splitlines() if line.strip()}
+
     pairs_df = precompute_port_pairs(
         index,
         vehicle=vehicle,
         factor_config=factor_config,
+        parents=specific_parents,
         max_parents=args.max_parents,
         batch_size=args.batch_size,
         workers=args.workers,
