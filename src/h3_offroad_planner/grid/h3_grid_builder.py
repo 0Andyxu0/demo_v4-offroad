@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from math import atan2, cos, degrees, inf, isfinite, radians, sin, sqrt
+from math import asin, atan2, cos, degrees, inf, isfinite, radians, sin, sqrt
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -434,13 +434,12 @@ class H3GridBuilder:
         for cell_id, cell in cells.items():
             if not cell.is_passable:
                 continue
-            for neighbor_id in _safe_neighbors(cell_id):
-                if neighbor_id in cells and cell_id < neighbor_id:
+            for neighbor_id in h3.grid_ring(cell_id, 1):
+                if cell_id < neighbor_id and neighbor_id in cells:
                     neighbor = cells[neighbor_id]
-                    if not neighbor.is_passable:
-                        continue
-                    distance_m = _haversine_m(cell.lat, cell.lng, neighbor.lat, neighbor.lng)
-                    edges[(cell_id, neighbor_id)] = _edge_from_cells(cell, neighbor, distance_m)
+                    if neighbor.is_passable:
+                        distance_m = _haversine_m(cell.lat, cell.lng, neighbor.lat, neighbor.lng)
+                        edges[(cell_id, neighbor_id)] = _edge_from_cells(cell, neighbor, distance_m)
         return edges
 
 
@@ -1099,7 +1098,7 @@ def _haversine_m(lat_a: float, lng_a: float, lat_b: float, lng_b: float) -> floa
     first_lat = radians(lat_a)
     second_lat = radians(lat_b)
     root = sin(d_lat / 2.0) ** 2 + cos(first_lat) * cos(second_lat) * sin(d_lng / 2.0) ** 2
-    return 2.0 * EARTH_RADIUS_M * atan2(sqrt(root), sqrt(max(0.0, 1.0 - root)))
+    return 2.0 * EARTH_RADIUS_M * asin(min(1.0, sqrt(max(0.0, root))))
 
 
 def _attach_surface_response(frame: pd.DataFrame) -> pd.DataFrame:

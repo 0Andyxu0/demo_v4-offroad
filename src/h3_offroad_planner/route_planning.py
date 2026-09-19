@@ -30,10 +30,8 @@ from h3_offroad_planner.factor_model import (
     build_directed_edge_cache,
     canonical_hash,
     evaluate_factor_model,
-    graph_topology_hash,
     load_factor_model,
     load_static_planning_config,
-    static_input_hash,
     write_effective_snapshots,
     write_static_planning_snapshot,
 )
@@ -170,14 +168,20 @@ def _incrementally_expand_route_graph(
 
     boundary_edges = {k: graph.edges[k] for k in new_edges if k not in extra_graph.edges}
     if boundary_edges:
+        b_cells = {
+            cid: graph.cells[cid]
+            for edge in boundary_edges.values()
+            for cid in (edge.cell_a, edge.cell_b)
+        }
+        b_nodes = {cid: combined_nodes[cid] for cid in b_cells}
         b_graph = H3Graph(
             resolution_fine=graph.resolution_fine,
             resolution_coarse=graph.resolution_coarse,
-            cells=graph.cells,
+            cells=b_cells,
             edges=boundary_edges,
         )
         b_directed = build_directed_edge_cache(
-            b_graph, combined_nodes, vehicle, factor_config, environment
+            b_graph, b_nodes, vehicle, factor_config, environment
         )
         combined_edges.update(b_directed)
 
@@ -186,8 +190,8 @@ def _incrementally_expand_route_graph(
         directed_edges=combined_edges,
         vehicle_hash=evaluation.vehicle_hash,
         factor_model_hash=evaluation.factor_model_hash,
-        static_input_hash=static_input_hash(graph),
-        graph_topology_hash=graph_topology_hash(graph),
+        static_input_hash=evaluation.static_input_hash,
+        graph_topology_hash=evaluation.graph_topology_hash,
     )
     eval_time = perf_counter() - t_eval_start
     return graph, new_evaluation, build_time, eval_time
@@ -299,7 +303,7 @@ def _run_route_plan_once(
         environment_snapshot_hash,
     )
     timings["factor_eval_s"] = perf_counter() - phase_started
-    phase_started = perf_counter()
+    reachability_started = perf_counter()
     start = _snap_evaluated(
         graph,
         evaluation,
@@ -464,6 +468,7 @@ def _run_route_plan_once(
     if repair_attempts > 0:
         source_metadata["targeted_dilation_attempts"] = repair_attempts
         source_metadata["targeted_dilation_parents"] = added_repair_parents
+    timings["reachability_s"] = perf_counter() - reachability_started
     base_cache_identity = None
     offline_pairs = None
     offline_parents = None
@@ -513,6 +518,7 @@ def _run_route_plan_once(
     )
     if progress is not None:
         progress("global_plan", start_pct + 14, "searching Pareto candidate routes")
+    phase_started = perf_counter()
     planner = DeterministicParetoPlanner(
         context,
         max_paths=request.max_candidate_paths,

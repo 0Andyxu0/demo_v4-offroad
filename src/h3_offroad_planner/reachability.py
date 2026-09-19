@@ -148,10 +148,8 @@ def diagnose_route_reachability(
 
     # Directed adjacency
     adj: dict[str, list[str]] = {}
-    rev_adj: dict[str, list[str]] = {}
     for from_h3, to_h3 in evaluation.directed_edges:
         adj.setdefault(from_h3, []).append(to_h3)
-        rev_adj.setdefault(to_h3, []).append(from_h3)
 
     if start not in adj:
         logger.error("[DIAG] Start cell %s has no passable outgoing edges; isolated", start)
@@ -189,6 +187,10 @@ def diagnose_route_reachability(
         )
 
     # Backward BFS from goal (to identify goal-side island if available)
+    rev_adj: dict[str, list[str]] = {}
+    for from_h3, to_h3 in evaluation.directed_edges:
+        rev_adj.setdefault(to_h3, []).append(from_h3)
+
     visited_goal: set[str] = set()
     if goal in evaluation.node_metrics and evaluation.node_metrics[goal].is_passable:
         visited_goal.add(goal)

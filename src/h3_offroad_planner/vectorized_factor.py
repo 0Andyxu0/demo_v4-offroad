@@ -92,6 +92,8 @@ class VectorizedEdgeArrays:
 
     u_keys: list[str]
     v_keys: list[str]
+    u_indices: npt.NDArray[np.int32]
+    v_indices: npt.NDArray[np.int32]
     distances_m: npt.NDArray[np.float64]
     slopes_deg: npt.NDArray[np.float64]
     grade_force_n: npt.NDArray[np.float64]
@@ -254,6 +256,8 @@ def compute_vectorized_edge_arrays(
     return VectorizedEdgeArrays(
         u_keys=u_keys,
         v_keys=v_keys,
+        u_indices=u_indices,
+        v_indices=v_indices,
         distances_m=distances,
         slopes_deg=slopes,
         grade_force_n=grade_force,
@@ -327,40 +331,103 @@ def evaluate_directed_edges_vectorized(
             )
     else:
         pressures = environment.comparison_pressures
-        p_keys = {p: _pressure_key(p) for p in pressures}
-        cell_mults: dict[float, dict[str, float]] = {
-            p: {
-                cid: environment_multiplier(cell, p, environment)[0]
-                for cid, cell in graph.cells.items()
-            }
-            for p in pressures
-        }
+        if not pressures:
+            for k, idx in enumerate(valid_indices):
+                u = arrays.u_keys[idx]
+                v = arrays.v_keys[idx]
+                bounded = bool(v_eta_upper_bounded[k])
+                eu = float(v_dists[k] / v_speed_lower[k]) if bounded else None
+                cache[(u, v)] = fast_create(
+                    u,
+                    v,
+                    float(v_dists[k]),
+                    float(v_eta_lower[k]),
+                    float(v_eta_nom[k]),
+                    eu,
+                    bounded,
+                    float(v_terrain_risk[k]),
+                    float(v_cost[k]),
+                    float(v_margin[k]),
+                    float(v_margin[k]),
+                    float(v_margin[k]),
+                    float(v_slopes[k]),
+                    _EMPTY_ENV,
+                )
+        else:
+            p_keys = [_pressure_key(p) for p in pressures]
+            num_pressures = len(pressures)
+            cell_keys = list(graph.cells.keys())
+            u_valid_idx = arrays.u_indices[valid_indices]
+            v_valid_idx = arrays.v_indices[valid_indices]
 
-        for k, idx in enumerate(valid_indices):
-            u = arrays.u_keys[idx]
-            v = arrays.v_keys[idx]
-            bounded = bool(v_eta_upper_bounded[k])
-            eu = float(v_dists[k] / v_speed_lower[k]) if bounded else None
-            d = float(v_dists[k])
-            env_map = {
-                p_keys[p]: d * (cell_mults[p][u] + cell_mults[p][v]) / 2.0
-                for p in pressures
-            }
-            cache[(u, v)] = fast_create(
-                u,
-                v,
-                d,
-                float(v_eta_lower[k]),
-                float(v_eta_nom[k]),
-                eu,
-                bounded,
-                float(v_terrain_risk[k]),
-                float(v_cost[k]),
-                float(v_margin[k]),
-                float(v_margin[k]),
-                float(v_margin[k]),
-                float(v_slopes[k]),
-                _EMPTY_ENV if not env_map else MappingProxyType(env_map),
-            )
+            env_dist_arrays: list[npt.NDArray[np.float64]] = []
+            for p in pressures:
+                cm = {
+                    cid: environment_multiplier(cell, p, environment)[0]
+                    for cid, cell in graph.cells.items()
+                }
+                m_arr = np.fromiter(
+                    (cm[cid] for cid in cell_keys),
+                    dtype=np.float64,
+                    count=len(cell_keys),
+                )
+                env_d = v_dists * (m_arr[u_valid_idx] + m_arr[v_valid_idx]) * 0.5
+                env_dist_arrays.append(env_d)
+
+            if num_pressures == 3:
+                pk0, pk1, pk2 = p_keys[0], p_keys[1], p_keys[2]
+                ed0, ed1, ed2 = env_dist_arrays[0], env_dist_arrays[1], env_dist_arrays[2]
+                for k, idx in enumerate(valid_indices):
+                    u = arrays.u_keys[idx]
+                    v = arrays.v_keys[idx]
+                    bounded = bool(v_eta_upper_bounded[k])
+                    eu = float(v_dists[k] / v_speed_lower[k]) if bounded else None
+                    env_map = {
+                        pk0: float(ed0[k]),
+                        pk1: float(ed1[k]),
+                        pk2: float(ed2[k]),
+                    }
+                    cache[(u, v)] = fast_create(
+                        u,
+                        v,
+                        float(v_dists[k]),
+                        float(v_eta_lower[k]),
+                        float(v_eta_nom[k]),
+                        eu,
+                        bounded,
+                        float(v_terrain_risk[k]),
+                        float(v_cost[k]),
+                        float(v_margin[k]),
+                        float(v_margin[k]),
+                        float(v_margin[k]),
+                        float(v_slopes[k]),
+                        MappingProxyType(env_map),
+                    )
+            else:
+                for k, idx in enumerate(valid_indices):
+                    u = arrays.u_keys[idx]
+                    v = arrays.v_keys[idx]
+                    bounded = bool(v_eta_upper_bounded[k])
+                    eu = float(v_dists[k] / v_speed_lower[k]) if bounded else None
+                    env_map = {
+                        p_keys[pi]: float(env_dist_arrays[pi][k])
+                        for pi in range(num_pressures)
+                    }
+                    cache[(u, v)] = fast_create(
+                        u,
+                        v,
+                        float(v_dists[k]),
+                        float(v_eta_lower[k]),
+                        float(v_eta_nom[k]),
+                        eu,
+                        bounded,
+                        float(v_terrain_risk[k]),
+                        float(v_cost[k]),
+                        float(v_margin[k]),
+                        float(v_margin[k]),
+                        float(v_margin[k]),
+                        float(v_slopes[k]),
+                        MappingProxyType(env_map),
+                    )
 
     return cache

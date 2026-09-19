@@ -912,20 +912,21 @@ def evaluate_factor_model(
             for cell, s, r in zip(soil_cells, sinkage_m, resistance_n, strict=True)
             if np.isfinite(s) and np.isfinite(r)
         }
-    evidence = {
-        cell_id: _raw_node_evidence(
-            cell,
-            vehicle,
-            config,
-            strict_static_mode=environment is not None,
-            soil_cone_cache=soil_cone_cache,
-            soil_sinkage_cache=soil_sinkage_cache,
-        )
-        for cell_id, cell in graph.cells.items()
-    }
+    strict_static_mode = environment is not None
     nodes = {
-        cell_id: _node_metrics(graph.cells[cell_id], evidence[cell_id], vehicle)
-        for cell_id in sorted(graph.cells)
+        cell_id: _node_metrics(
+            cell,
+            _raw_node_evidence(
+                cell,
+                vehicle,
+                config,
+                strict_static_mode=strict_static_mode,
+                soil_cone_cache=soil_cone_cache,
+                soil_sinkage_cache=soil_sinkage_cache,
+            ),
+            vehicle,
+        )
+        for cell_id, cell in sorted(graph.cells.items())
     }
     edges = build_directed_edge_cache(graph, nodes, vehicle, config, environment)
     return FactorEvaluation(
@@ -1031,6 +1032,10 @@ def canonical_hash(payload: object) -> str:
 
 def static_input_hash(graph: H3Graph) -> str:
     """Hash vehicle-independent facts only, excluding route-time score fields."""
+    cached = getattr(graph, "_cached_static_input_hash", None)
+    if cached is not None and getattr(graph, "_cached_cell_count", None) == len(graph.cells):
+        return str(cached)
+
     rows = []
     for cell_id in sorted(graph.cells):
         cell = graph.cells[cell_id]
@@ -1065,11 +1070,21 @@ def static_input_hash(graph: H3Graph) -> str:
                 "static_passable": cell.is_passable,
             }
         )
-    return canonical_hash(rows)
+    h = canonical_hash(rows)
+    try:
+        graph._cached_static_input_hash = h  # type: ignore[attr-defined]
+        graph._cached_cell_count = len(graph.cells)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return h
 
 
 def graph_topology_hash(graph: H3Graph) -> str:
     """Hash graph resolutions and deterministic undirected topology."""
+    cached = getattr(graph, "_cached_topology_hash", None)
+    if cached is not None and getattr(graph, "_cached_edge_count", None) == len(graph.edges):
+        return str(cached)
+
     edges = [
         {
             "a": edge.cell_a,
@@ -1080,7 +1095,7 @@ def graph_topology_hash(graph: H3Graph) -> str:
         }
         for edge in sorted(graph.edges.values(), key=lambda item: (item.cell_a, item.cell_b))
     ]
-    return canonical_hash(
+    h = canonical_hash(
         {
             "resolution_fine": graph.resolution_fine,
             "resolution_coarse": graph.resolution_coarse,
@@ -1088,6 +1103,12 @@ def graph_topology_hash(graph: H3Graph) -> str:
             "edges": edges,
         }
     )
+    try:
+        graph._cached_topology_hash = h  # type: ignore[attr-defined]
+        graph._cached_edge_count = len(graph.edges)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return h
 
 
 def write_effective_snapshots(
@@ -1250,6 +1271,10 @@ def _landcover_speed_interval(
     return _known_interval(0.0)
 
 
+_DEFAULT_BEKKER = BekkerChecker()
+_ORIGINAL_BEKKER_ENRICH_CELL = BekkerChecker.enrich_cell
+
+
 def _soil_speed_interval(
     cell: H3Cell,
     vehicle: VehicleProfile,
@@ -1270,27 +1295,56 @@ def _soil_speed_interval(
             None,
             None,
         )
-    clone = replace(cell)
-    if soil_cone_cache is not None and cell.h3index in soil_cone_cache:
-        clone.cone_index_kpa = soil_cone_cache[cell.h3index]
+
+    cone_index: float | None = None
+    sinkage: float | None = None
+    soil_mobility: float | None = cell.soil_mobility
+    fast_path = False
+
     if (
-        soil_sinkage_cache is not None
-        and cell.h3index in soil_sinkage_cache
-        and (clone.cone_index_kpa is None or clone.cone_index_kpa >= CI_THRESHOLD_KPA)
+        BekkerChecker.enrich_cell is _ORIGINAL_BEKKER_ENRICH_CELL
+        and soil_cone_cache is not None
+        and cell.h3index in soil_cone_cache
     ):
-        clone.sinkage_m, clone.sinkage_resistance = soil_sinkage_cache[cell.h3index]
-    try:
-        BekkerChecker().enrich_cell(clone, vehicle)
-    except AssessmentError:
-        reasons.extend(("MISSING_SOIL_EVIDENCE", "SOIL_MODEL_FALLBACK"))
-        return _floor_interval(missing, config.speed_floor_ratio), None, None
-    cone_index = clone.cone_index_kpa
-    sinkage = clone.sinkage_m
+        cone_index = soil_cone_cache[cell.h3index]
+        if cone_index < CI_THRESHOLD_KPA:
+            soil_mobility = 0.0
+            sinkage = None
+            fast_path = True
+        elif soil_sinkage_cache is not None and cell.h3index in soil_sinkage_cache:
+            sinkage = soil_sinkage_cache[cell.h3index][0]
+            fast_path = True
+        elif cell.sinkage_m is not None:
+            sinkage = cell.sinkage_m
+            fast_path = True
+        elif _cell_bekker_soil(cell) is None:
+            sinkage = None
+            fast_path = True
+
+    if not fast_path:
+        clone = replace(cell)
+        if soil_cone_cache is not None and cell.h3index in soil_cone_cache:
+            clone.cone_index_kpa = soil_cone_cache[cell.h3index]
+        if (
+            soil_sinkage_cache is not None
+            and cell.h3index in soil_sinkage_cache
+            and (clone.cone_index_kpa is None or clone.cone_index_kpa >= CI_THRESHOLD_KPA)
+        ):
+            clone.sinkage_m, clone.sinkage_resistance = soil_sinkage_cache[cell.h3index]
+        try:
+            BekkerChecker().enrich_cell(clone, vehicle)
+        except AssessmentError:
+            reasons.extend(("MISSING_SOIL_EVIDENCE", "SOIL_MODEL_FALLBACK"))
+            return _floor_interval(missing, config.speed_floor_ratio), None, None
+        cone_index = clone.cone_index_kpa
+        sinkage = clone.sinkage_m
+        soil_mobility = clone.soil_mobility
+
     configured = config.soil_speed_by_uscs.get(cell.uscs)
     if configured is not None:
         value = configured
-    elif clone.soil_mobility is not None:
-        value = max(0.0, min(1.0, clone.soil_mobility))
+    elif soil_mobility is not None:
+        value = max(0.0, min(1.0, soil_mobility))
     elif sinkage is not None:
         value = max(0.0, 1.0 - sinkage / vehicle.ground_clearance_m)
     else:
