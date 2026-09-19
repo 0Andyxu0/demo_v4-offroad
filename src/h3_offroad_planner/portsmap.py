@@ -1016,9 +1016,6 @@ class PortsMapSearchContext:
             precomputed_adjacency = build_macro_adj(
                 base_obj, scale=scale, weight=weight, excluded_parents=excluded
             )
-            if goal_connections:
-                for port_u, (g_cost, g_path) in goal_connections.items():
-                    precomputed_adjacency.setdefault(port_u, []).append((goal, g_path, g_cost))
 
         # Admissible heuristic lower bound (includes travel_cost lower bound of 1.0 m/m)
         w_dist = profile.weights.get("distance", 0.0) / profile.scales["distance"]
@@ -1133,6 +1130,9 @@ class PortsMapSearchContext:
                 return path, cost, active_pairs_count
 
             outgoing: list[tuple[str, tuple[str, ...], float]] = []
+            if goal_connections and current in goal_connections:
+                g_cost, g_path = goal_connections[current]
+                outgoing.append((goal, g_path, g_cost))
 
             # 1. Cross-parent edges
             if current in cross_by_source:

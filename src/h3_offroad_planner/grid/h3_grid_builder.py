@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from math import atan2, cos, degrees, inf, isfinite, radians, sin, sqrt
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 import geopandas as gpd
 import h3
@@ -929,43 +929,99 @@ def _point_near_road(
 
 
 def _cells_from_frame(frame: pd.DataFrame) -> dict[str, H3Cell]:
+    if frame.empty:
+        return {}
+    cols = set(frame.columns)
+
+    def col_list(c: str, default: object = None) -> list[object]:
+        return frame[c].tolist() if c in cols else [default] * len(frame)
+
+    h3s = col_list("h3index")
+    lats = col_list("lat")
+    lngs = col_list("lng")
+    elevs = col_list("elevation")
+    slopes = col_list("slope")
+    tris = col_list("tri")
+    lc_factors = col_list("lc_factor")
+    lc_codes = col_list("landcover_code")
+    lc_types = col_list("landcover_type")
+    soil_codes = col_list("soil_code")
+    soil_types = col_list("soil_type")
+    soil_textures = col_list("soil_texture")
+    uscss = col_list("uscs")
+    soil_moistures = col_list("soil_moisture")
+    depths = col_list("depth")
+    rowspacings = col_list("rowspacing")
+    cone_indexs = col_list("cone_index_kpa")
+    sinkages = col_list("sinkage_m")
+    sinkage_resists = col_list("sinkage_resistance")
+    soil_mobilitys = col_list("soil_mobility")
+    soil_sources = col_list("soil_source")
+    source_supports = col_list("source_support_m")
+    twis = col_list("twi")
+    drainage_senss = col_list("drainage_sensitivity")
+    drainage_valids = col_list("drainage_valid")
+    drainage_bounds = col_list("drainage_boundary_affected")
+    surface_resps = col_list("surface_response")
+    surface_evids = col_list("surface_evidence")
+    has_roads = col_list("has_road")
+    parents = col_list("parent_h3")
+    is_passables = col_list("is_passable")
+    scores = col_list("score", 0.0)
+    cost_scores = col_list("cost_score")
+
+    def opt_f(val: object) -> float | None:
+        return None if val is None or val != val else float(cast(Any, val))
+
+    def opt_s(val: object) -> str | None:
+        return None if val is None or val != val else str(val)
+
+    def opt_i(val: object) -> int | None:
+        return None if val is None or val != val else int(float(cast(Any, val)))
+
     cells: dict[str, H3Cell] = {}
-    for row in frame.itertuples(index=False):
-        soil_type = _optional_str(getattr(row, "soil_type", None))
-        cells[str(row.h3index)] = H3Cell(
-            h3index=str(row.h3index),
-            lat=_row_float(row, "lat"),
-            lng=_row_float(row, "lng"),
-            elevation=_row_float(row, "elevation"),
-            slope=_row_float(row, "slope"),
-            tri=_row_float(row, "tri"),
-            lc_factor=_row_float(row, "lc_factor"),
-            landcover_code=_optional_int(getattr(row, "landcover_code", None)),
-            landcover_type=_optional_str(getattr(row, "landcover_type", None)),
-            soil_code=_optional_int(getattr(row, "soil_code", None)),
-            soil_type=soil_type,
-            soil_texture=_optional_str(getattr(row, "soil_texture", None)),
-            uscs=_optional_str(getattr(row, "uscs", None)),
-            soil_moisture=_optional_float(getattr(row, "soil_moisture", None)),
-            depth=_optional_float(getattr(row, "depth", None)),
-            rowspacing=_optional_float(getattr(row, "rowspacing", None)),
-            cone_index_kpa=_optional_float(getattr(row, "cone_index_kpa", None)),
-            sinkage_m=_optional_float(getattr(row, "sinkage_m", None)),
-            sinkage_resistance=_optional_float(getattr(row, "sinkage_resistance", None)),
-            soil_mobility=_optional_float(getattr(row, "soil_mobility", None)),
-            soil_source=_optional_str(getattr(row, "soil_source", None)),
-            source_support_m=_optional_float(getattr(row, "source_support_m", None)),
-            twi=_optional_float(getattr(row, "twi", None)),
-            drainage_sensitivity=_optional_float(getattr(row, "drainage_sensitivity", None)),
-            drainage_valid=bool(getattr(row, "drainage_valid", False)),
-            drainage_boundary_affected=bool(getattr(row, "drainage_boundary_affected", False)),
-            surface_response=_optional_float(getattr(row, "surface_response", None)),
-            surface_evidence=_optional_str(getattr(row, "surface_evidence", None)),
-            has_road=bool(row.has_road),
-            parent_h3=str(row.parent_h3),
-            is_passable=bool(row.is_passable),
-            score=_optional_float(getattr(row, "score", 0.0)) or 0.0,
-            cost_score=_optional_float(getattr(row, "cost_score", None)),
+    for i in range(len(frame)):
+        h = str(h3s[i])
+        score_val = scores[i]
+        final_score = (
+            float(cast(Any, score_val or 0.0))
+            if score_val is not None and score_val == score_val
+            else 0.0
+        )
+        cells[h] = H3Cell(
+            h3index=h,
+            lat=float(lats[i]),  # type: ignore[arg-type]
+            lng=float(lngs[i]),  # type: ignore[arg-type]
+            elevation=float(elevs[i]),  # type: ignore[arg-type]
+            slope=float(slopes[i]),  # type: ignore[arg-type]
+            tri=float(tris[i]),  # type: ignore[arg-type]
+            lc_factor=float(lc_factors[i]),  # type: ignore[arg-type]
+            landcover_code=opt_i(lc_codes[i]),
+            landcover_type=opt_s(lc_types[i]),
+            soil_code=opt_i(soil_codes[i]),
+            soil_type=opt_s(soil_types[i]),
+            soil_texture=opt_s(soil_textures[i]),
+            uscs=opt_s(uscss[i]),
+            soil_moisture=opt_f(soil_moistures[i]),
+            depth=opt_f(depths[i]),
+            rowspacing=opt_f(rowspacings[i]),
+            cone_index_kpa=opt_f(cone_indexs[i]),
+            sinkage_m=opt_f(sinkages[i]),
+            sinkage_resistance=opt_f(sinkage_resists[i]),
+            soil_mobility=opt_f(soil_mobilitys[i]),
+            soil_source=opt_s(soil_sources[i]),
+            source_support_m=opt_f(source_supports[i]),
+            twi=opt_f(twis[i]),
+            drainage_sensitivity=opt_f(drainage_senss[i]),
+            drainage_valid=bool(drainage_valids[i]),
+            drainage_boundary_affected=bool(drainage_bounds[i]),
+            surface_response=opt_f(surface_resps[i]),
+            surface_evidence=opt_s(surface_evids[i]),
+            has_road=bool(has_roads[i]),
+            parent_h3=str(parents[i]),
+            is_passable=bool(is_passables[i]),
+            score=final_score,
+            cost_score=opt_f(cost_scores[i]),
         )
     return cells
 
@@ -1026,7 +1082,7 @@ def _safe_neighbors(h3index: str) -> list[str]:
 
 def _edge_from_cells(cell: H3Cell, neighbor: H3Cell, distance_m: float) -> H3Edge:
     slope_a_to_b = degrees(atan2(neighbor.elevation - cell.elevation, max(distance_m, 1.0)))
-    slope_b_to_a = degrees(atan2(cell.elevation - neighbor.elevation, max(distance_m, 1.0)))
+    slope_b_to_a = -slope_a_to_b
     return H3Edge(
         cell_a=cell.h3index,
         cell_b=neighbor.h3index,

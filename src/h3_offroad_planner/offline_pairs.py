@@ -295,7 +295,7 @@ class OfflinePairsTable(
         cache_key = (base_objective, factor, ex_key)
         cached = self._macro_adj_cache.get(cache_key)
         if cached is not None:
-            return {s: list(edges) for s, edges in cached.items()}
+            return cached
 
         if len(self._parents) == 0:
             return {}
@@ -319,7 +319,7 @@ class OfflinePairsTable(
                     adj.setdefault(s_str, []).append((t_str, (s_str, t_str), cost_val))
 
         self._macro_adj_cache[cache_key] = adj
-        return {s: list(edges) for s, edges in adj.items()}
+        return adj
 
     def resolve_paths(
         self,
