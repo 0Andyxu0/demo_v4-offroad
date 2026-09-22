@@ -233,10 +233,10 @@ class PortsMapSearchContext:
                 self._offline_parents_by_profile = {
                     (prof, parent) for (prof, parent, _) in offline_pairs
                 }
-            if offline_parents is not None:
-                self._offline_parents: set[str] = set(offline_parents)
-            elif hasattr(offline_pairs, "offline_parents"):
+            if hasattr(offline_pairs, "offline_parents"):
                 self._offline_parents = set(offline_pairs.offline_parents)
+            elif offline_parents is not None:
+                self._offline_parents = set(offline_parents)
             else:
                 self._offline_parents = {parent for (_, parent, _) in offline_pairs}
         else:
@@ -665,52 +665,7 @@ class PortsMapSearchContext:
                     self._offline_cache_hits += 1
                     if base_key is not None:
                         _base_pair_cache_put(base_key, base_pairs)
-                elif (
-                    source not in temporary_ports
-                    and (base_objective, parent) in self._offline_parents_by_profile
-                ):
-                    missing_temp = tuple(
-                        t
-                        for t in port_ids
-                        if t in temporary_destinations
-                        and t != source
-                    )
-                    if not missing_temp:
-                        base_pairs = ()
-                    elif (
-                        goal_connections is not None
-                        and goal is not None
-                        and missing_temp == (goal,)
-                    ):
-                        if source in goal_connections:
-                            g_cost, g_path = goal_connections[source]
-                            base_pairs = ((goal, g_path, g_cost),)
-                        else:
-                            base_pairs = ()
-                    else:
-                        allowed = {
-                            cell_id
-                            for cell_id in self._parent_children.get(parent, ())
-                            if cell_id not in blocked
-                        }
-                        effective_penalties = penalties if local_penalty_key else {}
-                        effective_penalty_factor = penalty_factor if local_penalty_key else 0.0
-                        fine_best = self._fine_tile_search(
-                            source,
-                            allowed,
-                            profile,
-                            effective_penalties,
-                            effective_penalty_factor,
-                            targets=set(missing_temp),
-                        )
-                        base_pairs = tuple(
-                            (t, fine_best[t][1], fine_best[t][0])
-                            for t in missing_temp
-                            if t in fine_best
-                        )
-                    self._offline_cache_hits += 1
-                    if base_key is not None:
-                        _base_pair_cache_put(base_key, base_pairs)
+
             if base_pairs is None:
                 if base_key is not None:
                     self._base_cache_misses += 1
@@ -952,6 +907,17 @@ class PortsMapSearchContext:
         temporary_ports = frozenset(p for p, port in topology.ports.items() if port.is_temporary)
         temporary_destinations = frozenset({goal}) if goal in temporary_ports else frozenset()
 
+        active_base_objs = [
+            k for k, w in profile.weights.items() if w > 0.0 and k in OBJECTIVE_NAMES
+        ]
+        is_pure = (
+            profile.environment_weight == 0.0
+            and (profile.environment_pressure is None or profile.environment_weight == 0.0)
+            and len(active_base_objs) == 1
+            and all(w == 0.0 for k, w in profile.weights.items() if k != active_base_objs[0])
+        )
+        base_obj = active_base_objs[0] if is_pure else ""
+
         goal_parent = self._parent(goal) if goal in temporary_ports else None
         goal_connections: dict[str, tuple[float, tuple[str, ...]]] = {}
         if goal_parent is not None and goal_parent in topology.ports_by_parent:
@@ -959,16 +925,6 @@ class PortsMapSearchContext:
             goal_ports.discard(goal)
             local_p_goal = penalties_by_parent.get(goal_parent, ())
             local_b_goal = blocked_by_parent.get(goal_parent, ())
-            active_base_objs = [
-                k for k, w in profile.weights.items() if w > 0.0 and k in OBJECTIVE_NAMES
-            ]
-            is_pure = (
-                profile.environment_weight == 0.0
-                and (profile.environment_pressure is None or profile.environment_weight == 0.0)
-                and len(active_base_objs) == 1
-                and all(w == 0.0 for k, w in profile.weights.items() if k != active_base_objs[0])
-            )
-            base_obj = active_base_objs[0] if is_pure else ""
             can_use_offline = (
                 self._offline_pairs is not None
                 and not local_p_goal
@@ -1048,6 +1004,7 @@ class PortsMapSearchContext:
         came_from: dict[str, tuple[str, tuple[str, ...]]] = {}
         visited_parents: set[str] = set()
         settled: set[str] = set()
+        offline_macro_edges: set[tuple[str, str]] = set()
         start_parent_temp = self._parent(start) if start in temporary_ports else None
 
         while heap:
@@ -1068,38 +1025,30 @@ class PortsMapSearchContext:
                 # Late resolution of offline port paths
                 resolved_paths: dict[tuple[str, str, str, str], tuple[str, ...]] = {}
                 resolve_fn = getattr(self._offline_pairs, "resolve_paths", None)
-                base_obj = ""
-                if callable(resolve_fn):
-                    active_base_objs = [
-                        k for k, w in profile.weights.items()
-                        if w > 0.0 and k in OBJECTIVE_NAMES
-                    ]
-                    base_obj = (
-                        profile.name
-                        if profile.name in OBJECTIVE_NAMES
-                        else (active_base_objs[0] if len(active_base_objs) == 1 else "")
-                    )
-                    offline_queries = [
-                        (base_obj, self._parent(prev), prev, curr)
-                        for prev, curr, seg in segments_rev
-                        if self._parent(prev) == self._parent(curr)
-                        and self._parent(prev) in self._offline_parents
-                        and prev not in temporary_ports
-                        and curr not in temporary_ports
-                    ]
-                    if offline_queries and base_obj:
+                if callable(resolve_fn) and base_obj:
+                    offline_queries = []
+                    for prev, curr, _seg in segments_rev:
+                        if (prev, curr) in offline_macro_edges:
+                            p = self._parent(prev)
+                            prof_key = (
+                                base_obj
+                                if (base_obj, p) in self._offline_parents_by_profile
+                                else profile.name
+                            )
+                            offline_queries.append((prof_key, p, prev, curr))
+                    if offline_queries:
                         resolved_paths = resolve_fn(offline_queries)
 
                 path_parts: list[str] = [start]
                 for prev, curr, seg in reversed(segments_rev):
-                    parent_prev = self._parent(prev)
-                    if (
-                        parent_prev == self._parent(curr)
-                        and prev not in temporary_ports
-                        and curr not in temporary_ports
-                        and resolved_paths
-                    ):
-                        resolved = resolved_paths.get((base_obj, parent_prev, prev, curr))
+                    if (prev, curr) in offline_macro_edges and resolved_paths:
+                        p = self._parent(prev)
+                        prof_key = (
+                            base_obj
+                            if (base_obj, p) in self._offline_parents_by_profile
+                            else profile.name
+                        )
+                        resolved = resolved_paths.get((prof_key, p, prev, curr))
                         if resolved is not None:
                             seg = resolved
                     path_parts.extend(seg[1:])
@@ -1110,6 +1059,23 @@ class PortsMapSearchContext:
                     active_pairs_count = len(pairs)
                 elif precomputed_adjacency is not None:
                     active_pairs_count = sum(len(edges) for edges in precomputed_adjacency.values())
+                    for vp in visited_parents:
+                        v_port_ids = topology.ports_by_parent.get(vp, ())
+                        v_port_hash = topology.port_hashes.get(vp)
+                        if v_port_hash is None:
+                            v_port_hash = canonical_hash(v_port_ids)
+                        v_local_p = penalties_by_parent.get(vp, ())
+                        v_local_b = blocked_by_parent.get(vp, ())
+                        v_cache_key = (
+                            vp,
+                            profile.signature,
+                            v_local_p,
+                            v_local_b,
+                            v_port_hash,
+                        )
+                        v_cached = self._pair_cache.get(v_cache_key)
+                        if v_cached:
+                            active_pairs_count += len(v_cached)
                 else:
                     for vp in visited_parents:
                         v_port_ids = topology.ports_by_parent.get(vp, ())
@@ -1143,13 +1109,20 @@ class PortsMapSearchContext:
             parent = self._parent(current)
             visited_parents.add(parent)
             self._visited_parents.add(parent)
+            cached_macro = (
+                precomputed_adjacency.get(current)
+                if precomputed_adjacency is not None
+                else None
+            )
             if (
-                precomputed_adjacency is not None
+                cached_macro is not None
                 and parent not in penalties_by_parent
                 and parent not in blocked_by_parent
                 and parent != start_parent_temp
             ):
-                outgoing.extend(precomputed_adjacency.get(current, []))
+                outgoing.extend(cached_macro)
+                for neighbor, _, _ in cached_macro:
+                    offline_macro_edges.add((current, neighbor))
             else:
                 port_ids = topology.ports_by_parent.get(parent, ())
                 local_p = penalties_by_parent.get(parent, ())

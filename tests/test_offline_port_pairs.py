@@ -572,3 +572,121 @@ def test_offline_pairs_table_lazy_loading_and_late_resolution(
     )
     assert res.h3_path == ("a", "b", "c", "e", "f") or has_subpath
     assert context.offline_cache_hits > 0
+
+
+def test_offline_pairs_partial_parent_coverage_online_fallback(
+    tmp_path: Path,
+    vehicle: VehicleProfile,
+) -> None:
+    """Verify that when only a subset of parents has offline pairs (e.g. p1 has pairs,
+    but p2 does not), macro search falls back to online fine Dijkstra for uncalculated
+    parents and successfully finds the optimal path.
+    """
+    graph = _ports_graph()
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+
+    # Offline pairs ONLY for p1; p2 is completely absent from offline pairs!
+    pairs = {
+        ("distance", "p1", "b"): {
+            "c": (("b", "c"), 2.0),
+        },
+        ("distance", "p1", "c"): {
+            "b": (("c", "b"), 2.0),
+        },
+    }
+    file_path = tmp_path / "port_pairs.parquet"
+    save_offline_pairs(pairs, file_path)
+
+    # Load with active_parents=["p1", "p2"]
+    lazy_table = load_offline_pairs(file_path, active_parents=["p1", "p2"], load_paths=False)
+    assert isinstance(lazy_table, OfflinePairsTable)
+    # p1 is in offline_parents, p2 is NOT
+    assert lazy_table.offline_parents == {"p1"}
+    assert ("distance", "p1") in lazy_table.offline_parents_by_profile
+    assert ("distance", "p2") not in lazy_table.offline_parents_by_profile
+
+    context = PortsMapSearchContext(
+        graph,
+        evaluation,
+        offline_pairs=lazy_table,
+    )
+    # Search from 'a' (in p1) to 'f' (in p2)
+    res = context.search("a", "f", profile)
+
+    # Optimal path: a -> b -> c -> e -> f (cost 2 + 2 + 1 + 2 = 7.0)
+    assert res.h3_path == ("a", "b", "c", "e", "f")
+    assert res.scalar_cost == pytest.approx(7.0, rel=1e-6)
+    # p2 was resolved via online fine search fallback
+    assert context.fine_search_calls > 0
+
+
+def test_offline_pairs_missing_port_outgoing_edges_online_fallback(
+    tmp_path: Path,
+    vehicle: VehicleProfile,
+) -> None:
+    """Verify that when a parent IS present in offline pairs but a specific port
+    lacks precomputed outgoing edges (e.g. newly discovered port or uncomputed source),
+    macro search falls back to online fine Dijkstra for that port and finds the optimal path.
+    """
+    def _mk_cell(idx: str, lng: float, parent: str) -> H3Cell:
+        return H3Cell(
+            h3index=idx,
+            lat=0.0,
+            lng=lng,
+            elevation=0.0,
+            slope=0.0,
+            tri=0.0,
+            lc_factor=1.0,
+            parent_h3=parent,
+            is_passable=True,
+        )
+
+    cells = {
+        "s": _mk_cell("s", 0.0, "p0"),
+        "x": _mk_cell("x", 1.0, "p0"),
+        "a": _mk_cell("a", 2.0, "p1"),
+        "b": _mk_cell("b", 3.0, "p1"),
+        "c": _mk_cell("c", 4.0, "p1"),
+        "e": _mk_cell("e", 5.0, "p2"),
+        "g": _mk_cell("g", 6.0, "p2"),
+    }
+    edges = {
+        ("s", "x"): H3Edge("s", "x", 1.0),
+        ("x", "s"): H3Edge("x", "s", 1.0),
+        ("x", "a"): H3Edge("x", "a", 1.0),
+        ("a", "x"): H3Edge("a", "x", 1.0),
+        ("a", "b"): H3Edge("a", "b", 1.0),
+        ("b", "a"): H3Edge("b", "a", 1.0),
+        ("b", "c"): H3Edge("b", "c", 1.0),
+        ("c", "b"): H3Edge("c", "b", 1.0),
+        ("c", "e"): H3Edge("c", "e", 1.0),
+        ("e", "c"): H3Edge("e", "c", 1.0),
+        ("e", "g"): H3Edge("e", "g", 1.0),
+        ("g", "e"): H3Edge("g", "e", 1.0),
+    }
+    graph = H3Graph(
+        cells=cells,
+        edges=edges,
+        parent_children={"p0": {"s", "x"}, "p1": {"a", "b", "c"}, "p2": {"e", "g"}},
+    )
+    evaluation = evaluate_factor_model(graph, vehicle, FactorModelConfig())
+    profile = ScalarProfile({"distance": 1.0}, name="distance")
+
+    pairs = {
+        ("distance", "p1", "b"): {
+            "c": (("b", "c"), 1.0),
+        },
+    }
+    file_path = tmp_path / "port_pairs.parquet"
+    save_offline_pairs(pairs, file_path)
+
+    lazy_table = load_offline_pairs(file_path, active_parents=["p0", "p1", "p2"], load_paths=False)
+    context = PortsMapSearchContext(graph, evaluation, offline_pairs=lazy_table)
+
+    res = context.search("s", "g", profile)
+    assert res.h3_path == ("s", "x", "a", "b", "c", "e", "g")
+    assert res.scalar_cost == pytest.approx(6.0, rel=1e-6)
+    assert context.fine_search_calls > 0
+
+

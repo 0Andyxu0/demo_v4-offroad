@@ -501,11 +501,13 @@ def _run_route_plan_once(
             if index.has_port_pairs and vehicle_matches:
                 active_parents = source_metadata.get("active_parent_h3")
                 if isinstance(active_parents, list) and active_parents:
-                    offline_parents = set(active_parents)
                     offline_pairs = index.load_port_pairs(active_parents)
                 elif graph.parent_children:
-                    offline_parents = set(graph.parent_children.keys())
-                    offline_pairs = index.load_port_pairs(list(offline_parents))
+                    offline_pairs = index.load_port_pairs(list(graph.parent_children.keys()))
+                if offline_pairs is not None:
+                    offline_parents = getattr(offline_pairs, "offline_parents", None)
+                    if offline_parents is None:
+                        offline_parents = {parent for (_, parent, _) in offline_pairs}
 
     context = PortsMapSearchContext(
         graph,

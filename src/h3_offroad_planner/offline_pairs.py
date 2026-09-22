@@ -185,7 +185,7 @@ class OfflinePairsTable(
             self._costs = np.empty(0, dtype=np.float64)
             self._slices = {}
             self.offline_parents_by_profile = frozenset()
-            self.offline_parents = self.active_parents
+            self.offline_parents = frozenset()
             return
 
         self._profs = table["profile"].to_numpy(zero_copy_only=False)
@@ -210,11 +210,7 @@ class OfflinePairsTable(
             )
         self._slices = slices
         self.offline_parents_by_profile = frozenset(slices.keys())
-        self.offline_parents = (
-            self.active_parents
-            if self.active_parents
-            else frozenset(p for _, p in self.offline_parents_by_profile)
-        )
+        self.offline_parents = frozenset(p for _, p in self.offline_parents_by_profile)
 
     def _ensure_parent_table(
         self,
