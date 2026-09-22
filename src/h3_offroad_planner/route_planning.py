@@ -90,7 +90,7 @@ def run_route_plan(
     progress: ProgressCallback | None = None,
     progress_range: tuple[int, int] = (75, 95),
     *,
-    export_gpkg: bool = False,
+    export_gpkg: bool = True,
 ) -> RoutePlan:
     """Plan through a 1-ring indexed corridor, with one bounded 2-ring retry."""
     request_started = perf_counter()
