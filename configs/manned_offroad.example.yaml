@@ -1,0 +1,41 @@
+# Run from the worktree root with scripts/run_local.py. Raw data remain external.
+route:
+  candidate_limit: 24
+  corridor_buffer_deg: 0.005
+  environment_snapshot_path: configs/scenes/baseline_986bd58_weather.json
+  factor_model_path: configs/static_factor_model.yaml
+  goal_lat: 31.9931786713
+  goal_lng: 118.9894117713
+  input_mode: coordinates
+  max_candidate_paths: 5
+  max_estimated_cells: 50000000
+  mission_profile: fastest
+  output_dir: outputs/manned_offroad_route
+  parquet_path: outputs/baseline_986bd58/qdx_tiles/tile_manifest.json
+  penalty_factor: 0.25
+  planner_config_path: configs/deterministic_pareto_planner.yaml
+  res_coarse: 11
+  res_fine: 14
+  roi_strategy: auto_corridor
+  start_lat: 31.9905769003
+  start_lng: 118.9960502257
+  static_planning_path: configs/static_gis_planning.yaml
+  theme_attributes:
+  - elevation
+  - tri
+  - landcover_type
+  - slope
+  vehicle_path: configs/vehicle.yaml
+tile_build:
+  dem_path: D:/Workspace/qdx数据/DEM-DSM/DEM_CGCS2000.tif
+  landcover_path: D:/Workspace/qdx数据/矢量数据
+  max_cells_per_tile: 1000
+  max_tiles: 10000
+  output_dir: outputs/qdx_tiles
+  overwrite: false
+  res_fine: 14
+  road_path: D:/Workspace/qdx数据/road/road_fina.shp
+  roi_layer_path: D:/Workspace/qdx数据/矢量数据/bound.shp
+  soil_catalog_path: D:/Workspace/demo_v1/data/soil_nanjing.tif.vat.dbf
+  soil_path: D:/Workspace/demo_v1/data/soil_nanjing.tif
+  tile_res: 11
