@@ -1,7 +1,7 @@
 # 当前实施状态
 
 更新：2026-10-15。工作树：`D:/Workspace/demo_v4-manned-offroad`。分支：`codex/manned-offroad-map`。
-历史基线：`986bd58eef846f6f8a34961a43b208c315471110`；当前提交以 `git rev-parse HEAD` 为准。
+历史基线：`986bd58eef846f6f8a34961a43b208c315471110`；M0 规范化提交：`5f30c5c`；当前最新提交以 `git rev-parse HEAD` 为准。
 
 ## 已完成
 
