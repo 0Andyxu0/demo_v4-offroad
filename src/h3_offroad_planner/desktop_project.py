@@ -20,6 +20,7 @@ from h3_offroad_planner.models import ConfigError
 __all__ = ["DesktopProjectState", "load_project_yaml", "validate_study_area"]
 
 _PROJECT_SECTIONS: frozenset[str] = frozenset({"tile_build", "route"})
+_PRESENTATION_SECTIONS: frozenset[str] = frozenset({"map_display"})
 
 
 @dataclass
@@ -63,7 +64,9 @@ class DesktopProjectState:
 
     def unsupported_fields(self) -> list[str]:
         """List imported field paths that the existing request adapters cannot run."""
-        unsupported = [str(key) for key in self.extra_sections]
+        unsupported = [
+            str(key) for key in self.extra_sections if key not in _PRESENTATION_SECTIONS
+        ]
         unsupported.extend(
             f"tile_build.{key}" for key in self.tile_build if key not in TILE_BUILD_FIELDS
         )
@@ -158,6 +161,7 @@ class DesktopProjectState:
         """Create one execution payload and materialize any map research geometry."""
         self.ensure_runnable()
         payload = self.to_mapping()
+        payload.pop("map_display", None)
         if self.study_area_geojson is not None:
             roi_path = write_session_study_area(self.study_area_geojson, session_root)
             tile = _mapping(payload, "tile_build")
@@ -165,6 +169,36 @@ class DesktopProjectState:
             tile["roi_layer_path"] = roi_path
             route["roi_layer_path"] = roi_path
         return payload
+
+    def orthophoto_overlay(self) -> tuple[Path, list[list[float]], float] | None:
+        """Read optional display-only orthophoto preview metadata from the project."""
+        display = self.extra_sections.get("map_display")
+        if display is None:
+            return None
+        if not isinstance(display, dict):
+            raise ConfigError("map_display must be a mapping.")
+        metadata_value = display.get("orthophoto_preview_metadata_path")
+        if metadata_value is None:
+            return None
+        if not isinstance(metadata_value, str) or not metadata_value:
+            raise ConfigError("map_display.orthophoto_preview_metadata_path must be a path string.")
+        metadata_path = Path(metadata_value)
+        if not metadata_path.is_file():
+            return None
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigError(f"cannot read orthophoto preview metadata: {metadata_path}") from exc
+        if not isinstance(metadata, dict):
+            raise ConfigError("orthophoto preview metadata must be a JSON object.")
+        preview_value = metadata.get("preview_path")
+        bounds = metadata.get("bounds_wgs84")
+        if not isinstance(preview_value, str) or not isinstance(bounds, list):
+            raise ConfigError("orthophoto preview metadata lacks preview_path or bounds_wgs84.")
+        opacity = display.get("orthophoto_opacity", 0.8)
+        if isinstance(opacity, bool) or not isinstance(opacity, (int, float)):
+            raise ConfigError("map_display.orthophoto_opacity must be numeric.")
+        return Path(preview_value), cast(list[list[float]], bounds), float(opacity)
 
     def export_yaml(self, path: Path) -> Path | None:
         """Write YAML and, for drawn geometry, a paired relative-path GeoJSON artifact."""

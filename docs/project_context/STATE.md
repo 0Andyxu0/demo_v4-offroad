@@ -5,56 +5,80 @@
 
 ## 已完成
 
-- 从指定基线创建同仓库工作树，原 `demo_v4` 保持原分支和文件。
-- 迁入固定实施方案、基线架构说明、模块资料索引与必要审核探针。
-- 使用本机默认 Python 3.12.10：`C:/Users/31287/AppData/Local/Programs/Python/Python312/python.exe`。GIS、PyQt5、QtWebEngine、pytest 依赖可用；没有安装或替换全局包。
-- `scripts/run_local.py` 提供 CLI、desktop、pytest、verify 入口，确保导入本工作树源码。
-- 独立复制基线瓦片与路由索引共 6,766 文件、595,784,161 字节，复制时逐文件 SHA-256 一致；只改写副本 `tile_manifest.json` 的缓存地址。原清单另存 `original_metadata`。
-- 验证 6,756 个瓦片路径存在且全部位于本工作树输出目录；读取 DEM、正射影像、土壤栅格、9 个矢量图层、3 份 CLDAS 静态含水率文件和 7 个水文栅格。
-- 森林 `rowspacing` 有值 557 条，水体 `depth` 有值 599 条，道路 `Width` 有值 124 条；原值保留，字段编码的物理解释由 M1 对齐。
-- 本地在线底图私有配置已复制，凭据仍留在 Git 忽略文件。
-- CLI 帮助正常；桌面项目和底图配置回归测试 15 passed。
+### M0 数据与基线准备（已规范化闭环）
 
-## 基线运行结果
+- **StaticScene 契约与接口落地**：按 `IMPLEMENTATION_PLAN.md` §5.1 和 §6.1 完整实现 `StaticScene` 数据结构与 `prepare_static_scene(inputs, weather_snapshot, build_config)` 函数。涵盖 `scene_id`、米制投影 CRS（`EPSG:4528`）、工区范围（WGS84 与米制投影双坐标边界）、源 DEM（`EPSG:4490`，原生分辨率约 2m，高程单位米）、地物矢量目录、道路矢量（124 条，含 Width 字段）、正射影像（`EPSG:4528`，0.5m 原生分辨率）、土壤栅格与分类表（27 类）、CLDAS 静态含水率（3 层深度）、上游水文域 D 场（7 个栅格）、制图期冻结气象快照、字段映射与模型版本（`m0_static_scene_v1`）。支持强类型 dataclass、字典与 JSON 的双向序列化/反序列化。
+- **固定真实工区、OD 与车辆配置**：
+  - 子工区范围：QDX `bound.shp`（CGCS2000 / `EPSG:4490`），WGS84 `[118.981333, 31.968832, 119.014808, 31.999863]`，米制投影 `EPSG:4528` `[40403708.17, 3538821.30, 40406902.65, 3542290.57]`。
+  - 正式 OD：Start `[31.9905769003, 118.9960502257]`，Goal `[31.9931786713, 118.9894117713]`，走廊缓冲 0.005°。
+  - 车辆配置：Iveco Daily 4x4 7t 单排 3480（宽度 2.056 m，轴距 3.48 m，后轴中心为参考点）。
+  - 制图期气象：真实 Open-Meteo 冻结快照 `configs/scenes/baseline_986bd58_weather.json`（有效时刻 `2026-10-15T08:00:00Z`，表层含水率 0.25 m³/m³，24h 降水 0.3 mm，`degraded=false`）。
+- **桌面正射影像预览与图层显示**：
+  - 实现了 `orthophoto_preview.py`，根据工区 WGS84 范围将本地高分正射影像 `T.tif` 裁剪下采样为 RGB 预览图（`outputs/m0_qdx_baseline/orthophoto_preview.png`，最大边 2048 像素），并记录像素映射与严格 WGS84 边界。
+  - 扩展桌面端 `DesktopMapView.set_orthophoto_overlay` 与 `DesktopProjectState`，以 base64 data URL 注入 Leaflet `L.imageOverlay`，支持 `map_display` 可视化配置与透明度调节。运行载荷自动剔除 `map_display`，明确正射影像仅用于桌面人工边界核对，不改变通行物理模型。
+  - 桌面客户端支持 `--project` 参数直接加载 `configs/manned_offroad_m0.yaml`。
+- **关键地物属性覆盖审计**：
+  - 对工区相交地物要素进行逐层统计与抽样验证：
+    - 森林 `forest.shp` 的 `rowspacing`：工区内有效要素 386 条，数值范围 [1.5, 8.0]，样本：`['4.9', '4.4', '2.1', '5.4', '6.3']`。
+    - 水体 `water.shp` 的 `depth`：工区内有效要素 454 条，数值范围 [0.5, 2.5]，样本：`['0.7', '1.9', '2.2', '1.0', '0.7']`。
+    - 道路 `road_fina.shp` 的 `Width`：工区内有效要素 124 条，数值范围 [30.0, 55.0]，样本：`['30', '30', '30', '30', '30']`。
+  - 保留原始数据编码，明确物理解释与车辆通过规则由 M1 对齐。
+- **M0 可复现基线管线与运行闭环**：
+  - 提供 `scripts/run_m0_baseline.py` 与 `python scripts/run_local.py m0-baseline`，自动执行：请求校验 → 正射预览生成 → 关键属性审计 → `prepare_static_scene` 契约生成与保存 → `cli plan` 基线运行 → 产物摘要与哈希归档。
+  - 产物写入独立目录 `outputs/m0_qdx_baseline/`，包含 `m0_baseline.json`、`static_scene.json`、`orthophoto_preview.png`、`orthophoto_preview.json`、`landcover_attribute_audit.json` 及路线结果。
+- **自动化测试**：
+  - 全套回归测试 512 passed, 4 skipped；
+  - 专门增加 `tests/test_static_scene.py`（StaticScene 强类型序列化、合成矢量/栅格 fixtures 场景准备、降级气象拦截、缺失输入拦截、已有场景文件解析、实际 QDX 数据准备回归）与 `tests/test_orthophoto_preview.py`（裁剪下采样、项目配置解析、Leaflet 地图叠加），全部通过。
 
-在新工作树实际运行原始 QDX OD，退出码 0，加载 41,503 个格元和 120,647 条边，返回 5 条候选并导出 GeoJSON/GPKG。`plan_ready_s=76.381761`，候选搜索 68.456878 s；这是本机一次启动验证，未作为新旧算法性能对比。
+## 基线运行结果（M0 可复现基准）
 
-5 条候选的旧自主轨迹检查状态均为 `invalid`，保留该原始结果；有人驾驶模式的评分/交付适配尚未实施。历史输出单独位于 `historical_route`。
-
-真实 Open-Meteo 请求成功（`degraded=false`），有效时刻 `2026-10-15T08:00:00+00:00`，表层含水率 0.25 m³/m³、前 24 h 降水 0.3 mm。已冻结到 `configs/scenes/baseline_986bd58_weather.json`。本地配置默认回放该快照，不把后续查询日天气混入同一基线。
+在固定工区与冻结气象下运行 `scripts/run_m0_baseline.py`，退出码 0：
+- 图规模：加载 41,503 个细格元和 120,647 条边；
+- 耗时：`plan_ready_s=81.616593`，候选搜索 76.416995 s；
+- 候选路线：生成 5 条候选（推荐 candidate ID：`route-6b6c07b10e2d5803`）；
+- 轨迹状态：5 条候选的旧自主平滑轨迹状态均为 `invalid`，保留该原始客观结果，未伪造通过性结论；
+- 产物哈希与配置校验一致记录于 `outputs/m0_qdx_baseline/m0_baseline.json`。
 
 ## 运行方式
 
 在工作树根目录执行：
 
 ```powershell
+# 1. 验证工作区数据引用与基线瓦片
 python scripts/run_local.py verify
+
+# 2. 一键执行 M0 规范化基准管线（生成场景契约、正射预览、属性审计及重跑基线）
+python scripts/run_local.py m0-baseline
+
+# 3. 运行 M0 场景契约、正射预览与桌面配置单元测试
+python scripts/run_local.py pytest tests/test_static_scene.py tests/test_orthophoto_preview.py tests/test_desktop_project_validation.py tests/test_map_config.py -v
+
+# 4. 运行全仓库测试
+python scripts/run_local.py pytest tests/ -q
+
+# 5. 启动桌面端并加载 M0 项目（包含本地正射影像底图叠加）
+python scripts/run_local.py desktop --project configs/manned_offroad_m0.yaml
+
+# 6. 使用固定私有配置运行规划
 python scripts/run_local.py cli plan --request configs/manned_offroad.local.private.yaml
-python scripts/run_local.py cli plan --request configs/manned_offroad.baseline.private.yaml
-python scripts/run_local.py desktop
-python scripts/run_local.py pytest tests/test_desktop_project_validation.py tests/test_map_config.py -q
 ```
 
-桌面启动器指定本工作树 QDX 配置，避免使用基线源码中指向 demo_v1 的默认示例。`plan` 使用迁移的缓存；`run` 会重建并规划，准备阶段不要用它替代 `plan`。
+## 本地配置与证据产物
 
-## 本地配置与证据
-
-- `configs/manned_offroad.local.private.yaml`：日常开发配置，源 GIS 外部引用，新路线写 `outputs/manned_offroad_route`。
-- `configs/manned_offroad.baseline.private.yaml`：冻结天气的基线复现配置，路线写 `outputs/baseline_986bd58/replay_route`，不覆盖首次 fresh_route。
-- `configs/manned_offroad.example.yaml`：可提交的相对工作树路径示例；本地私有配置保留实际绝对路径。
-- `configs/manned_assets.private.yaml`：正射影像、原始地物、CLDAS 和上游水文数据入口。
-- `.artifacts/workspace-preparation/migration.json`：复制与地址迁移摘要。
-- `.artifacts/workspace-preparation/cache_copy_hashes.json`：基线副本校验记录。
-- `.artifacts/workspace-preparation/data_check.json`：实际读取元数据、字段和值样本。
-- `.artifacts/workspace-preparation/baseline_stdout.json`、`baseline_stderr.log`：本轮运行日志。
-- `.artifacts/workspace-preparation/baseline_result.json`：本轮实际运行摘要。
-- `outputs/baseline_986bd58/`：独立缓存、原清单备份、历史结果与 fresh_route。
+- `configs/manned_offroad_m0.yaml`：M0 固定工区、OD、车辆、冻结气象与正射底图配置。
+- `configs/scenes/m0_qdx_scene.json`：符合 `StaticScene` 规范的固定场景元数据。
+- `configs/scenes/baseline_986bd58_weather.json`：2026-10-15T08:00Z 真实 Open-Meteo 冻结气象快照。
+- `outputs/m0_qdx_baseline/m0_baseline.json`：M0 运行摘要、输入哈希、性能与解释边界记录。
+- `outputs/m0_qdx_baseline/static_scene.json`：`prepare_static_scene` 运行时生成的正式静态场景元数据。
+- `outputs/m0_qdx_baseline/orthophoto_preview.png`、`orthophoto_preview.json`：本地正射影像裁剪预览图与几何元数据。
+- `outputs/m0_qdx_baseline/landcover_attribute_audit.json`：工区内关键属性覆盖与值域审计。
+- `outputs/m0_qdx_baseline/baseline_route/`：基线 5 条候选路线导出的 GeoJSON/GPKG 与性能记录。
 
 ## 下一步与未完成项
 
-当前完成的是工作树、数据入口和基线迁移，不是 M1–M5 实现。
+M0 规范化与基线准备已全部完成闭环，下一步严格按计划进入 **M1 静态通行属性**：
 
-1. M0 固定首个真实子工区和正式 OD/车辆/气象组合，保留本轮基线运行作为启动验证。
-2. `986bd58` 桌面底图目前是在线瓦片与本地通行图，未提供本地正射 GeoTIFF 图层接口。T.tif 已可读并登记；本地正射图层显示与物理建图用途在 M0/M1 接入，不能称已在现有界面展示。
-3. CLDAS 含水率和上游水文数据已接通文件入口，尚未替换基线物理链。旧静态模式的株距/水深旁路和土壤评价修复仍按 M1 实施。
-4. 基线缓存与旧路线不因迁移自动获得新方案能力。后续建图使用 `outputs/qdx_tiles` 等新目录，保留基线副本作对照。
+1. **静态地物属性旁路修复**：消除 `strict_static_mode = environment is not None` 对森林 `rowspacing` 和水体 `depth` 的旁路，统一标量与向量化因子模型。
+2. **土壤与含水率模型修复**：将 CLDAS 静态含水率与天气修正结合，复现文献适用土类与 Bekker/CI 评价规则，取代 `theta=0.44` 硬编码阻断阈值。
+3. **水文域与 D 场集成**：复用上游水文域 D 场与含水率修正，建立物理含水率与通行阻抗之间的显式映射。
+4. **有向纵横坡计算**：沿候选曲线切向/侧向分解 DEM 梯度，取代单一节点标量坡度阻断机制。

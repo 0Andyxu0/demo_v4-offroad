@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from math import isfinite
+from pathlib import Path
 from typing import cast
 
 from PyQt5.QtCore import QUrl, pyqtSignal
@@ -18,6 +20,7 @@ DEFAULT_CENTER_LAT: float = 32.03266
 DEFAULT_CENTER_LNG: float = 119.03144
 DEFAULT_ZOOM: int = 12
 MAX_DESKTOP_MAP_SCRIPT_CHARS: int = 7_000_000
+MAX_ORTHOPHOTO_PREVIEW_BYTES: int = 8_000_000
 
 _MAP_TEMPLATE: str = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -37,14 +40,15 @@ html,body,#map{height:100%;width:100%;margin:0}
 const KEY="__TIANDITU_KEY__";
 const DEFAULT_LAYER="__TIANDITU_LAYER__";
 const map=L.map("map",{center:[32.03266,119.03144],zoom:12,zoomControl:false,preferCanvas:true});
+map.createPane("orthophotoPane");map.getPane("orthophotoPane").style.zIndex=250;
 const image=L.tileLayer(`https://t{s}.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${KEY}`,{subdomains:"01234567",maxZoom:18});
 const imageAnno=L.tileLayer(`https://t{s}.tianditu.gov.cn/cia_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cia&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${KEY}`,{subdomains:"01234567",maxZoom:18});
 const vector=L.tileLayer(`https://t{s}.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${KEY}`,{subdomains:"01234567",maxZoom:18});
 const vectorAnno=L.tileLayer(`https://t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${KEY}`,{subdomains:"01234567",maxZoom:18});
 if(DEFAULT_LAYER==="vector"){vector.addTo(map);vectorAnno.addTo(map);}else{image.addTo(map);imageAnno.addTo(map);}
-L.control.layers({"卫星影像":image,"电子地图":vector},{"影像标注":imageAnno,"地图标注":vectorAnno},{position:"bottomleft"}).addTo(map);
+const layerControl=L.control.layers({"卫星影像":image,"电子地图":vector},{"影像标注":imageAnno,"地图标注":vectorAnno},{position:"bottomleft"}).addTo(map);
 L.control.zoom({position:"bottomright"}).addTo(map);
-const drawn=new L.FeatureGroup().addTo(map);const markerLayer=L.layerGroup().addTo(map);let gridLayer=L.geoJSON(null);let routeLayer=L.geoJSON(null);let startMarker=null;let goalMarker=null;let mode="none";let eventSequence=0;let blockageEnabled=false;let blockedCells=new Set();let activeTheme="slope";let themeMin=Infinity;let themeMax=-Infinity;const tools={};let hint=null;
+const drawn=new L.FeatureGroup().addTo(map);const markerLayer=L.layerGroup().addTo(map);let gridLayer=L.geoJSON(null);let routeLayer=L.geoJSON(null);let orthophotoOverlay=null;let startMarker=null;let goalMarker=null;let mode="none";let eventSequence=0;let blockageEnabled=false;let blockedCells=new Set();let activeTheme="slope";let themeMin=Infinity;let themeMax=-Infinity;const tools={};let hint=null;
 function emit(kind,payload){eventSequence+=1;document.title=`desktop:${eventSequence}:${kind}:${payload}`;}
 function color(feature,theme){const value=feature.properties[theme];if(typeof value==="number"&&isFinite(value)){let scaled=0.5;if(themeMax>themeMin){scaled=(value-themeMin)/(themeMax-themeMin);}if(theme==="slope"||theme==="tri"){scaled=1.0-scaled;}scaled=Math.max(0,Math.min(1,scaled));return `rgb(${Math.round(230*(1-scaled))},${Math.round(45+190*scaled)},70)`;}let hash=0;for(const char of String(value||"unknown"))hash=((hash<<5)-hash)+char.charCodeAt(0);return `hsl(${Math.abs(hash)%360},55%,48%)`;}
 function tip(p){if(p.resolution==="parent")return `<b>父格网：</b>${p.h3index}<br><b>状态：</b>${p.status}<br><b>子格网：</b>${p.cell_count??0}<br><b>说明：</b>${p.error??(p.selectable?"点击查看子格网":"不可下钻")}`;return `<b>H3：</b>${p.h3index}<br><b>通行评分：</b>${p.score??"—"}<br><b>地物：</b>${p.landcover_type??"未知"}<br><b>坡度：</b>${p.slope??"—"}°<br><b>土壤：</b>${p.soil_type??"未知"}<br><b>高程：</b>${p.elevation??"—"} m`;}
@@ -55,6 +59,7 @@ function marker(lat,lng,isStart){const markerColor=isStart?"#2e7d32":"#c62828";c
 function drawMarker(lat,lng,isStart){const next=marker(lat,lng,isStart);if(isStart){if(startMarker)markerLayer.removeLayer(startMarker);startMarker=next;}else{if(goalMarker)markerLayer.removeLayer(goalMarker);goalMarker=next;}}
 function clearEndpoints(){if(startMarker)markerLayer.removeLayer(startMarker);if(goalMarker)markerLayer.removeLayer(goalMarker);startMarker=null;goalMarker=null;}
 function setEndpoints(start,goal){clearEndpoints();if(Array.isArray(start))drawMarker(start[0],start[1],true);if(Array.isArray(goal))drawMarker(goal[0],goal[1],false);}
+function setOrthophotoOverlay(dataUrl,bounds,opacity){if(orthophotoOverlay){map.removeLayer(orthophotoOverlay);layerControl.removeLayer(orthophotoOverlay);orthophotoOverlay=null;}if(!dataUrl||!Array.isArray(bounds)||bounds.length!==2)return;orthophotoOverlay=L.imageOverlay(dataUrl,bounds,{opacity:opacity,pane:"orthophotoPane",interactive:false});orthophotoOverlay.addTo(map);layerControl.addOverlay(orthophotoOverlay,"本地正射预览");}
 function setBlockedCells(cells){blockedCells=new Set(Array.isArray(cells)?cells:[]);if(gridLayer)gridLayer.setStyle(gridStyle);}
 function setBlockageSelectionEnabled(enabled){blockageEnabled=Boolean(enabled);if(!blockageEnabled&&mode==="blocked")setSelectionMode("none");syncTools();}
 function modeHint(next){return({study:"在地图上单击顶点并双击完成研究区。",start:"请点击地图选择起点。",goal:"请点击地图选择终点。",blocked:"请点击细层 H3 格网切换动态障碍。"})[next]||"";}
@@ -62,7 +67,7 @@ function syncTools(){for(const name of ["study","start","goal","blocked"]){if(to
 function setSelectionMode(next){mode=next;syncTools();}
 function beginStudyArea(){setSelectionMode("study");new L.Draw.Polygon(map,{shapeOptions:{color:"#ff7f32",weight:2,fillOpacity:.12}}).enable();}
 function clearStudyArea(){drawn.clearLayers();setSelectionMode("none");emit("study_area","null");}
-function resetProjectOverlays(){drawn.clearLayers();clearEndpoints();blockedCells=new Set();if(gridLayer){map.removeLayer(gridLayer);gridLayer=L.geoJSON(null);}setSelectionMode("none");}
+function resetProjectOverlays(){drawn.clearLayers();clearEndpoints();setOrthophotoOverlay(null,null,0);blockedCells=new Set();if(gridLayer){map.removeLayer(gridLayer);gridLayer=L.geoJSON(null);}setSelectionMode("none");}
 function addTool(root,name,label,handler){const button=document.createElement("button");button.type="button";button.className="map-tool";button.textContent=label;button.onclick=handler;root.appendChild(button);tools[name]=button;}
 const ToolControl=L.Control.extend({onAdd:function(){const root=L.DomUtil.create("div","map-tools");L.DomEvent.disableClickPropagation(root);L.DomEvent.disableScrollPropagation(root);addTool(root,"study","绘制研究区",beginStudyArea);addTool(root,"clearStudy","清除研究区",clearStudyArea);addTool(root,"start","选取起点",()=>setSelectionMode("start"));addTool(root,"goal","选取终点",()=>setSelectionMode("goal"));addTool(root,"blocked","标记动态障碍",()=>{if(blockageEnabled)setSelectionMode("blocked");});addTool(root,"clearEndpoints","清除端点",()=>{clearEndpoints();setSelectionMode("none");emit("action","clear_endpoints");});addTool(root,"clearBlocked","清空障碍",()=>{setBlockedCells([]);setSelectionMode("none");emit("action","clear_blocked");});addTool(root,"cancel","取消当前操作",()=>setSelectionMode("none"));hint=L.DomUtil.create("div","map-hint",root);syncTools();return root;}});
 new ToolControl({position:"topright"}).addTo(map);
@@ -127,6 +132,38 @@ class DesktopMapView(QWebEngineView):
         start_json = json.dumps(list(start) if start is not None else None)
         goal_json = json.dumps(list(goal) if goal is not None else None)
         self._run_js(f"setEndpoints({start_json}, {goal_json});")
+
+    def set_orthophoto_overlay(
+        self,
+        preview_path: str | Path | None,
+        bounds_wgs84: list[list[float]] | None = None,
+        opacity: float = 0.8,
+    ) -> None:
+        """Render a generated local PNG preview beneath route and grid overlays."""
+        if preview_path is None:
+            self._run_js("setOrthophotoOverlay(null, null, 0);")
+            return
+        if not _is_wgs84_bounds(bounds_wgs84):
+            raise ValueError("orthophoto bounds must contain southwest and northeast WGS84 points.")
+        if not isfinite(opacity) or not 0.0 < opacity <= 1.0:
+            raise ValueError("orthophoto opacity must be within (0, 1].")
+        path = Path(preview_path)
+        if not path.is_file():
+            self.map_error.emit(f"本地正射预览不存在：{path}")
+            self._run_js("setOrthophotoOverlay(null, null, 0);")
+            return
+        content = path.read_bytes()
+        if len(content) > MAX_ORTHOPHOTO_PREVIEW_BYTES:
+            self.map_error.emit(
+                f"本地正射预览为 {len(content)} 字节，超过桌面上限 "
+                f"{MAX_ORTHOPHOTO_PREVIEW_BYTES}；未加载。"
+            )
+            return
+        data_url = "data:image/png;base64," + base64.b64encode(content).decode("ascii")
+        self._run_js(
+            "setOrthophotoOverlay("
+            f"{json.dumps(data_url)}, {json.dumps(bounds_wgs84)}, {opacity});"
+        )
 
     def set_blocked_cells(self, cells: list[str]) -> None:
         """Render the canonical dynamic blockage set on the current fine grid."""
@@ -251,3 +288,23 @@ class DesktopMapView(QWebEngineView):
 def _is_wgs84_point(lat: float, lng: float) -> bool:
     """Return whether one latitude/longitude pair is finite and WGS84 bounded."""
     return isfinite(lat) and isfinite(lng) and -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0
+
+
+def _is_wgs84_bounds(bounds: list[list[float]] | None) -> bool:
+    """Validate Leaflet southwest/northeast bounds for a local image overlay."""
+    if not isinstance(bounds, list) or len(bounds) != 2:
+        return False
+    southwest, northeast = bounds
+    if (
+        not isinstance(southwest, list)
+        or not isinstance(northeast, list)
+        or len(southwest) != 2
+        or len(northeast) != 2
+    ):
+        return False
+    try:
+        south, west = float(southwest[0]), float(southwest[1])
+        north, east = float(northeast[0]), float(northeast[1])
+    except (TypeError, ValueError):
+        return False
+    return _is_wgs84_point(south, west) and _is_wgs84_point(north, east) and south < north and west < east

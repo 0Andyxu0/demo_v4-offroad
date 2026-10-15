@@ -2,6 +2,7 @@
 
 Examples: python scripts/run_local.py cli --help
           python scripts/run_local.py desktop
+          python scripts/run_local.py desktop --project configs/manned_offroad_m0.yaml
           python scripts/run_local.py pytest tests/test_desktop_project.py -q
 """
 from pathlib import Path
@@ -16,7 +17,7 @@ os.environ['PYTHONPATH'] = str(ROOT / 'src') + (os.pathsep + os.environ['PYTHONP
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit('Usage: python scripts/run_local.py {cli|desktop|pytest|verify} [args]')
+        raise SystemExit('Usage: python scripts/run_local.py {cli|desktop|pytest|verify|m0-baseline} [args]')
     mode, args = sys.argv[1], sys.argv[2:]
     import h3_offroad_planner
     assert Path(h3_offroad_planner.__file__).resolve().is_relative_to(ROOT/'src')
@@ -27,6 +28,13 @@ def main():
     if mode == 'desktop':
         from h3_offroad_planner import desktop_client
         config=ROOT/'configs/manned_offroad.local.private.yaml'
+        if args[:1] == ['--project']:
+            if len(args) < 2:
+                raise SystemExit('desktop --project requires a YAML file path')
+            config=Path(args[1])
+            if not config.is_absolute():
+                config=ROOT/config
+            args=args[2:]
         if not config.is_file():
             raise SystemExit(f'Local project config missing: {config}')
         # Keep production source at 986bd58; only this launcher selects the local project.
@@ -38,6 +46,10 @@ def main():
         return pytest.main(args)
     if mode == 'verify':
         sys.argv=[str(ROOT/'scripts/verify_manned_workspace.py'),*args]
+        runpy.run_path(sys.argv[0],run_name='__main__')
+        return 0
+    if mode == 'm0-baseline':
+        sys.argv=[str(ROOT/'scripts/run_m0_baseline.py'),*args]
         runpy.run_path(sys.argv[0],run_name='__main__')
         return 0
     raise SystemExit(f'Unknown mode: {mode}')

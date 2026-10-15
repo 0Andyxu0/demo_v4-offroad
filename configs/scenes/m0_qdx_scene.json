@@ -1,0 +1,238 @@
+{
+  "schema_version": "m0_static_scene_v1",
+  "scene_id": "qdx-dem-coverage-001",
+  "metric_crs": "EPSG:4528",
+  "model_version": "m0_static_scene_v1",
+  "baseline_source_commit": "986bd58",
+  "mapping_time": "2026-10-15T08:00:00+00:00",
+  "study_area": {
+    "source_layer": "D:/Workspace/qdx数据/矢量数据/bound.shp",
+    "source_crs": "EPSG:4490",
+    "bounds_wgs84": [
+      118.98133288039901,
+      31.9688316093862,
+      119.01480816970525,
+      31.999863203876885
+    ],
+    "bounds_metric": [
+      40403708.16927369,
+      3538821.296937608,
+      40406902.65041413,
+      3542290.5712152794
+    ],
+    "metric_crs": "EPSG:4528",
+    "selection_basis": "The supplied study boundary, DEM, land-cover layers, road layer, soil raster, and local orthophoto overlap this area."
+  },
+  "dem": {
+    "path": "D:/Workspace/qdx数据/DEM-DSM/DEM_CGCS2000.tif",
+    "crs": "EPSG:4490",
+    "native_resolution": [
+      1.971536784943229e-05,
+      1.9715367849435506e-05
+    ],
+    "horizontal_unit": "degree",
+    "elevation_unit": "meter",
+    "bounds": [
+      118.98100737967127,
+      31.968565254574013,
+      119.01515439678649,
+      32.00010984313311
+    ]
+  },
+  "landcover": {
+    "source_directory": "D:/Workspace/qdx数据/矢量数据",
+    "crs": "EPSG:4490",
+    "layers": [
+      "bound.shp",
+      "building.shp",
+      "forest.shp",
+      "grass.shp",
+      "plowland.shp",
+      "shrubwood.shp",
+      "wasteland.shp",
+      "water.shp"
+    ],
+    "attribute_checks": [
+      {
+        "layer": "forest.shp",
+        "field": "rowspacing",
+        "features_in_study_area": 386,
+        "non_null": 386,
+        "sample_raw_values": [
+          "4.9",
+          "4.4",
+          "2.1",
+          "5.4",
+          "6.3"
+        ],
+        "numeric_min": 1.5,
+        "numeric_max": 8.0,
+        "semantic_status": "raw source field retained; physical units and vehicle rule remain M1 work"
+      },
+      {
+        "layer": "water.shp",
+        "field": "depth",
+        "features_in_study_area": 454,
+        "non_null": 454,
+        "sample_raw_values": [
+          "0.7",
+          "1.9",
+          "2.2",
+          "1.0",
+          "0.7"
+        ],
+        "numeric_min": 0.5,
+        "numeric_max": 2.5,
+        "semantic_status": "raw source field retained; physical units and crossing rule remain M1 work"
+      },
+      {
+        "layer": "road_fina.shp",
+        "field": "Width",
+        "features_in_study_area": 124,
+        "non_null": 124,
+        "sample_raw_values": [
+          "30",
+          "30",
+          "30",
+          "30",
+          "30"
+        ],
+        "numeric_min": 30.0,
+        "numeric_max": 55.0,
+        "semantic_status": "raw source field retained; road-area construction remains M1 work"
+      }
+    ]
+  },
+  "road": {
+    "path": "D:/Workspace/qdx数据/road/road_fina.shp",
+    "crs": "EPSG:4490",
+    "width_field": "Width",
+    "feature_count": 124,
+    "sample_widths": [
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0
+    ]
+  },
+  "orthophoto": {
+    "source_path": "D:/Workspace/qdx数据/正射影像/T.tif",
+    "crs": "EPSG:4528",
+    "native_resolution_m": 0.5,
+    "bounds_wgs84": [
+      [
+        31.956438301309387,
+        118.93593934758229
+      ],
+      [
+        32.00099496838421,
+        119.06399104016847
+      ]
+    ],
+    "preview_path": null,
+    "purpose": "Desktop display and manual boundary verification only; it is not an M0 classification or factor-model input."
+  },
+  "soil": {
+    "raster_path": "D:/Workspace/demo_v1/data/soil_nanjing.tif",
+    "catalog_path": "D:/Workspace/demo_v1/data/soil_nanjing.tif.vat.dbf",
+    "crs": "EPSG:4326",
+    "native_resolution": [
+      0.0003363351959999979,
+      0.00033633519599999987
+    ],
+    "class_count": 27
+  },
+  "moisture": {
+    "paths": [
+      "D:/Workspace/demo_v4/data/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM000005-2026010100.nc",
+      "D:/Workspace/demo_v4/data/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM000010-2026010100.nc",
+      "D:/Workspace/demo_v4/data/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM010040-2026010100.nc"
+    ],
+    "unit": "m3/m3",
+    "depth_layers": [
+      "0-5cm",
+      "5-10cm",
+      "10-40cm"
+    ],
+    "tags": {}
+  },
+  "hydrology": {
+    "upstream_layers": {
+      "accumulation": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/accumulation.tif",
+      "analysis_dem_metric": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/analysis_dem_metric.tif",
+      "boundary_influence": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/boundary_influence.tif",
+      "drainage_direction": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/drainage_direction.tif",
+      "drainage_sensitivity": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/drainage_sensitivity.tif",
+      "drainage_validity": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/drainage_validity.tif",
+      "twi": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/twi.tif"
+    },
+    "crs": "EPSG:32650",
+    "purpose": "Fixed upstream hydrology D-field reference; not recalibrated on small ROI."
+  },
+  "weather": {
+    "snapshot_path": "configs/scenes/baseline_986bd58_weather.json",
+    "provider": "open-meteo",
+    "valid_at": "2026-10-15T08:00:00+00:00",
+    "precipitation_24h_mm": 0.3,
+    "soil_moisture_surface_m3_m3": 0.25,
+    "degraded": false,
+    "model": "best_match",
+    "replay_rule": "All M0 reruns read this frozen snapshot; do not query new weather for this baseline."
+  },
+  "field_mapping": {
+    "forest.shp": {
+      "rowspacing": "rowspacing"
+    },
+    "water.shp": {
+      "depth": "depth"
+    },
+    "road_fina.shp": {
+      "width": "Width"
+    }
+  },
+  "key_landcover_attributes": [
+    {
+      "layer": "forest.shp",
+      "field": "rowspacing",
+      "verification_scope": "features intersecting the fixed study boundary",
+      "semantic_status": "raw source field retained; physical units and vehicle rule remain M1 work"
+    },
+    {
+      "layer": "water.shp",
+      "field": "depth",
+      "verification_scope": "features intersecting the fixed study boundary",
+      "semantic_status": "raw source field retained; physical units and crossing rule remain M1 work"
+    },
+    {
+      "layer": "road_fina.shp",
+      "field": "Width",
+      "verification_scope": "features intersecting the fixed study boundary",
+      "semantic_status": "raw source field retained; road-area construction remains M1 work"
+    }
+  ],
+  "primary_od": {
+    "id": "qdx-od-001",
+    "start_wgs84": [
+      31.9905769003,
+      118.9960502257
+    ],
+    "goal_wgs84": [
+      31.9931786713,
+      118.9894117713
+    ],
+    "input_mode": "coordinates",
+    "corridor_buffer_deg": 0.005
+  },
+  "vehicle": {
+    "config_path": "configs/vehicle.yaml",
+    "id": "iveco-daily-4x4-7t-single-cab-3480",
+    "reference_point": "rear_axle_center",
+    "width_m": 2.056,
+    "wheelbase_m": 3.48
+  },
+  "quality_and_budget_status": "M0 freezes no quality-cost parameters or length budget because those interfaces begin at M2/M3; this baseline is baseline_original, not B0 under a common A2 layer.",
+  "metadata": {
+    "request_path": "configs/manned_offroad_m0.yaml"
+  }
+}

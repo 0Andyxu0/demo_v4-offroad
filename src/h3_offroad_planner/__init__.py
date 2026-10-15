@@ -43,9 +43,37 @@ from h3_offroad_planner.route_models import (
 )
 from h3_offroad_planner.route_planning import run_route_plan
 from h3_offroad_planner.routing import run_route
+from h3_offroad_planner.scene import (
+    DemReference,
+    HydrologyReference,
+    LandcoverAttributeAudit,
+    LandcoverReference,
+    MoistureReference,
+    OrthophotoReference,
+    RoadReference,
+    SoilReference,
+    StaticScene,
+    StudyArea,
+    WeatherSnapshotReference,
+    load_static_scene,
+    prepare_static_scene,
+)
 from h3_offroad_planner.tiling import build_h3_tile_cache
 
 __all__ = [
+    "DemReference",
+    "HydrologyReference",
+    "LandcoverAttributeAudit",
+    "LandcoverReference",
+    "MoistureReference",
+    "OrthophotoReference",
+    "RoadReference",
+    "SoilReference",
+    "StaticScene",
+    "StudyArea",
+    "WeatherSnapshotReference",
+    "load_static_scene",
+    "prepare_static_scene",
     "ConfigError",
     "AssessmentError",
     "BlockageRecord",

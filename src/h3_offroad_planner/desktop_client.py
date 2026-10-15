@@ -653,6 +653,18 @@ class DesktopMainWindow(QMainWindow):
         self._status_bar.showMessage(message)
 
     def _sync_map_from_project(self) -> None:
+        try:
+            orthophoto = self._project.orthophoto_overlay()
+        except ConfigError as exc:
+            self._show_map_error(str(exc))
+        else:
+            set_orthophoto = getattr(self.map_view, "set_orthophoto_overlay", None)
+            if callable(set_orthophoto):
+                if orthophoto is None:
+                    set_orthophoto(None)
+                else:
+                    preview_path, bounds, opacity = orthophoto
+                    set_orthophoto(preview_path, bounds, opacity)
         mode = self._project.route.get("input_mode", "coordinates")
         start = self._project.endpoint("start") if mode == "coordinates" else None
         goal = self._project.endpoint("goal") if mode == "coordinates" else None
