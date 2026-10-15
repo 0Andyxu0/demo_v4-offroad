@@ -1,31 +1,100 @@
+# ==============================================================================
+# Bytecode and runtime artifacts
+# ==============================================================================
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# ==============================================================================
+# Testing, coverage, and linting caches
+# ==============================================================================
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-htmlcov/
-coverage.json
-outputs/
-build/
-dist/
-*.egg-info/
-*.whl
+.hypothesis/
+.tox/
+.nox/
 pytest_temp*/
 audit_pytest_temp/
 pytest_cache/
-.artifacts/
-.idea/
-.env
-*.private.yaml
-map.private.yaml
+.coverage
+.coverage.*
+htmlcov/
+coverage.json
+coverage.xml
 
-# Local GIS source datasets are large and machine-specific.
+# ==============================================================================
+# Packaging, builds, and virtual environments
+# ==============================================================================
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+.eggs/
+venv/
+.venv/
+env/
+ENV/
+
+# ==============================================================================
+# Project execution outputs, temp files, and logs
+# ==============================================================================
+outputs/
+.artifacts/
+logs/
+*.log
+tmp/
+temp/
+
+# ==============================================================================
+# IDE, editor, and operating system artifacts
+# ==============================================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ==============================================================================
+# Secrets, credentials, and machine-specific environment configurations
+# ==============================================================================
+.env
+.env.*
+!*.example
+*.private.yaml
+*.private.yml
+*.private.json
+map.private.yaml
+credentials.json
+secrets.json
+secrets.yaml
+secrets.yml
+service-account*.json
+service_account*.json
+*.key
+*.pem
+*.p12
+*.pfx
+*.cer
+*.crt
+*.jks
+*.keystore
+
+# ==============================================================================
+# Local GIS source datasets and large binary archives
+# ==============================================================================
 /data/**
 !/data/README.md
 !/data/.gitkeep
 
-# Large binary geospatial and routing artifacts.
+# Geospatial raster, netcdf, table, and database binaries
 *.tif
 *.tiff
 *.ovr
@@ -33,8 +102,15 @@ map.private.yaml
 *.gpkg
 *.parquet
 *.feather
+*.sqlite
+*.sqlite3
+*.db
+*.h5
+*.hdf5
+*.mbtiles
+*.geotiff
 
-# Shapefile datasets and their companion/index files.
+# Shapefile datasets and companion/index files
 *.shp
 *.shx
 *.dbf
@@ -46,3 +122,8 @@ map.private.yaml
 *.tfw
 *.aux.xml
 *.vat.*
+
+# GIS project temporary / backup files
+*.qgz
+*.qgs~
+*.qml.backup
