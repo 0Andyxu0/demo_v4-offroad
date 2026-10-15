@@ -13,6 +13,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 .hypothesis/
 .tox/
 .nox/
@@ -24,6 +25,7 @@ pytest_cache/
 htmlcov/
 coverage.json
 coverage.xml
+.ipynb_checkpoints/
 
 # ==============================================================================
 # Packaging, builds, and virtual environments
@@ -57,35 +59,60 @@ temp/
 *.swp
 *.swo
 *~
+*.bak
 .DS_Store
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+*.lnk
 
 # ==============================================================================
 # Secrets, credentials, and machine-specific environment configurations
 # ==============================================================================
 .env
 .env.*
+*.env
 !*.example
 *.private.yaml
 *.private.yml
 *.private.json
+*.local.yaml
+*.local.yml
+*.local.json
+local.yaml
+local.json
 map.private.yaml
 credentials.json
+credentials.yaml
+credentials.yml
 secrets.json
 secrets.yaml
 secrets.yml
+secret.json
+secret.yaml
+secret.yml
+*.secret.yaml
+*.secret.yml
+*.secret.json
 service-account*.json
 service_account*.json
+.netrc
+id_rsa
+id_ecdsa
+id_ed25519
+id_*
 *.key
 *.pem
 *.p12
 *.pfx
 *.cer
 *.crt
+*.der
 *.jks
 *.keystore
+*.token
+token.json
+tokens.json
 
 # ==============================================================================
 # Local GIS source datasets and large binary archives
@@ -97,8 +124,10 @@ service_account*.json
 # Geospatial raster, netcdf, table, and database binaries
 *.tif
 *.tiff
+*.dem
 *.ovr
 *.nc
+*.nc4
 *.gpkg
 *.parquet
 *.feather
@@ -107,8 +136,12 @@ service_account*.json
 *.db
 *.h5
 *.hdf5
+*.hdf
 *.mbtiles
 *.geotiff
+*.kml
+*.kmz
+*.gdb/
 
 # Shapefile datasets and companion/index files
 *.shp
@@ -120,8 +153,17 @@ service_account*.json
 *.sbx
 *.qix
 *.tfw
+*.wld
+*.jgw
+*.pgw
 *.aux.xml
+*.shp.xml
 *.vat.*
+
+# GIS lock files
+*.lock
+*.lck
+*.sr.lock
 
 # GIS project temporary / backup files
 *.qgz

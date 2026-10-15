@@ -19,3 +19,13 @@
 12. 固定工区（QDX DEM/bound 重叠区）、固定 OD、Iveco Daily 4x4 车辆配置与 2026-10-15T08:00Z 真实天气冻结快照作为 M0 可复现基准；路线结果以 baseline_original 形式保存，旧自主轨迹无效状态保持原始客观记录。
 13. `prepare_static_scene` 契约强化与 §5.1 属性补齐：严格校验米制投影 CRS（拒绝地理经纬度坐标）、研究区几何非空与有限性、DEM/土壤/正射栅格空间范围与工区的重叠判定；补齐道路类型（FuncClass）、正射影像时标、土壤适用范围与含水率观测时间；资产解析支持从已有场景字典/JSON 反向重新准备，并自动兜底私有资产配置。
 
+## 2026-10-15：版本控制规范、.gitignore 防护与远程仓库连接
+
+14. 建立正式远程版本库与忽略规范：
+    - 远程仓库连接：将有人驾驶 H3 独立开发分支 `codex/manned-offroad-map` 关联至远程 `origin`（`https://github.com/0Andyxu0/demo_v4-offroad.git`），建立上游跟踪并设为主分支，与历史 `main` 分离。
+    - .gitignore 完备防护：
+      - 与审计工具 `scripts/audit_gitignore.py` 全量契合，严格过滤所有敏感后缀（`.der`、`.key`、`.pem`、`.p12`、`.pfx`、`.cer`、`.crt`、`.jks`、`.keystore`、`.token`）与特定文件（`id_*`、`.netrc`、`credentials.*`、`secrets.*`、`secret.*`、`*.env`、`*.private.*`、`*.local.*`）；
+      - 全面阻断大体量 GIS 栅格/矢量/数据表/数据库及其各类伴生与运行锁文件（`*.shp.xml`、`*.lock`、`*.lck`、`*.sr.lock`、`*.wld`、`*.jgw`、`*.pgw`、`*.nc4`、`*.hdf`、`*.gdb/`、`*.kml`、`*.kmz`）；
+      - 增加 `tests/test_gitignore.py` 纳入 CI 与全库自动化测试，确保新代码与配置不破坏忽略防线。
+
+

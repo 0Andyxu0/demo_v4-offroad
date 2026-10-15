@@ -84,9 +84,19 @@ def _staged_text(root: Path, relative: str) -> str:
     return completed.stdout
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Run the sensitive-staging audit."""
-    root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
+    if argv is not None:
+        target = argv[0] if argv else "."
+    elif len(sys.argv) > 1 and Path(sys.argv[1]).exists():
+        target = sys.argv[1]
+    else:
+        target = "."
+    root = Path(target).resolve()
+    if root.is_file():
+        root = root.parent
+    elif not root.is_dir():
+        root = Path(".").resolve()
     if _git(root, "rev-parse", "--show-toplevel").returncode != 0:
         print("[audit-gitignore] FAIL: target is not a Git repository")
         return 1

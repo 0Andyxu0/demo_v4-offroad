@@ -5,6 +5,20 @@
 
 ## 已完成
 
+### 仓库审查、.gitignore 完备防护与远程仓库连接
+
+- **.gitignore 规则加固与全面覆盖**：
+  - 覆盖 Python 运行与构建缓存（`__pycache__/`, `*.so`, `*.pyd`, `*.egg-info/`, `build/`, `dist/`）；
+  - 覆盖测试、覆盖率、Lint 与 Notebook 缓存（`.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.cache/`, `.ipynb_checkpoints/`, `audit_pytest_temp/`, `pytest_temp*/`, `.coverage*`, `coverage.xml`）；
+  - 覆盖虚环境、操作系统与编辑器临时文件（`venv/`, `.venv/`, `.idea/`, `.vscode/`, `*.bak`, `*.lnk`, `Thumbs.db`, `.DS_Store`）；
+  - 覆盖日志、产物与临时工作目录（`outputs/`, `.artifacts/`, `logs/`, `*.log`, `tmp/`, `temp/`）；
+  - 覆盖敏感凭据、密钥与私有配置（`.env`, `*.env`, `.netrc`, `id_*`, `*.key`, `*.pem`, `*.der`, `*.p12`, `*.pfx`, `*.cer`, `*.crt`, `*.jks`, `*.keystore`, `*.token`, `token*.json`, `credentials.*`, `secrets.*`, `secret.*`, `*.private.yaml`, `*.local.yaml` 等），与 `scripts/audit_gitignore.py` 严格对齐；
+  - 覆盖大体量 GIS 源数据、栅格、空间库及伴生文件（`*.tif`, `*.dem`, `*.nc`, `*.nc4`, `*.gpkg`, `*.parquet`, `*.feather`, `*.sqlite*`, `*.db`, `*.h5`, `*.hdf`, `*.mbtiles`, `*.shp`, `*.shx`, `*.dbf`, `*.prj`, `*.cpg`, `*.shp.xml`, `*.tfw`, `*.wld`, `*.jgw`, `*.pgw`, `*.lock`, `*.lck`, `*.sr.lock`, `*.gdb/`, `*.kml`, `*.kmz`）。
+- **自动化测试保障**：新增 `tests/test_gitignore.py`（5 项测试全部通过），保证 `scripts/audit_gitignore.py` 顺利执行、现有版本追踪文件无一误拦截、敏感与私钥文件无遗漏拦截、GIS 二进制/伴生索引文件全量拦截、私有配置与产物目录隔离。
+- **远程仓库连接与上游跟踪**：
+  - 远程源配置：`origin` -> `https://github.com/0Andyxu0/demo_v4-offroad.git`（有人驾驶 H3 远程仓库）；
+  - 跟踪分支：`codex/manned-offroad-map` -> `origin/codex/manned-offroad-map`。
+
 ### M0 数据与基线准备（已规范化闭环）
 
 - **StaticScene 契约与接口落地**：按 `IMPLEMENTATION_PLAN.md` §5.1 和 §6.1 完整实现 `StaticScene` 数据结构与 `prepare_static_scene(inputs, weather_snapshot, build_config)` 函数。涵盖 `scene_id`、米制投影 CRS（`EPSG:4528`）、工区范围（WGS84 与米制投影双坐标边界）、源 DEM（`EPSG:4490`，原生分辨率约 2m，高程单位米）、地物矢量目录、道路矢量（124 条，含 Width 与 FuncClass 道路类型字段）、正射影像（`EPSG:4528`，0.5m 原生分辨率，采集时标 `2025-05-29T02:03:07Z`）、土壤栅格与分类表（27 类，标明适用范围说明）、CLDAS 静态含水率（3 层深度，观测日期 `2026-01-01`）、上游水文域 D 场（7 个栅格）、制图期冻结气象快照、字段映射与模型版本（`m0_static_scene_v1`）。实现严格的米制投影投影判定（拦截非投影经纬度 CRS）、研究区几何有效性与有限性校验（杜绝 NaN 边界）、栅格与研究区空间重叠检验、支持已有场景字典/JSON 反向重新准备及私有资产自动兜底。支持强类型 dataclass、字典与 JSON 的双向序列化/反序列化。
