@@ -72,12 +72,15 @@ def test_static_scene_roundtrip_serialization(tmp_path: Path) -> None:
         width_field="Width",
         feature_count=15,
         sample_widths=[30.0, 30.0],
+        road_type_field="FuncClass",
+        sample_road_types=["5", "5"],
     )
     orthophoto = OrthophotoReference(
         source_path="/path/to/T.tif",
         crs="EPSG:4528",
         native_resolution_m=0.5,
         bounds_wgs84=[[31.95, 118.93], [32.01, 119.06]],
+        acquisition_time="2025-05-29T02:03:07+00:00",
     )
     soil = SoilReference(
         raster_path="/path/to/soil.tif",
@@ -85,11 +88,13 @@ def test_static_scene_roundtrip_serialization(tmp_path: Path) -> None:
         crs="EPSG:4326",
         native_resolution=[0.0003, 0.0003],
         class_count=27,
+        applicability="M0 registers source classes",
     )
     moisture = MoistureReference(
         paths=["/path/to/cldas.nc"],
         unit="m3/m3",
         depth_layers=["0-5cm"],
+        observation_time="2026-01-01",
     )
     hydrology = HydrologyReference(
         upstream_layers={"twi": "/path/to/twi.tif"},
@@ -135,8 +140,13 @@ def test_static_scene_roundtrip_serialization(tmp_path: Path) -> None:
     assert reloaded.landcover.attribute_checks[0].field == "rowspacing"
     assert reloaded.road.feature_count == 15
     assert reloaded.road.sample_widths == [30.0, 30.0]
+    assert reloaded.road.road_type_field == "FuncClass"
+    assert reloaded.road.sample_road_types == ["5", "5"]
     assert reloaded.orthophoto.native_resolution_m == 0.5
+    assert reloaded.orthophoto.acquisition_time == "2025-05-29T02:03:07+00:00"
     assert reloaded.soil.class_count == 27
+    assert reloaded.soil.applicability == "M0 registers source classes"
+    assert reloaded.moisture.observation_time == "2026-01-01"
     assert reloaded.weather.degraded is False
     assert reloaded.primary_od is not None
     assert reloaded.primary_od["id"] == "od-001"
@@ -192,7 +202,7 @@ def test_prepare_static_scene_with_synthetic_fixtures(tmp_path: Path) -> None:
         count=3,
         dtype="uint8",
         crs="EPSG:3857",
-        transform=from_origin(13245000.0, 3762000.0, 1.0, 1.0),
+        transform=from_origin(13244000.0, 3764000.0, 500.0, 500.0),
     ) as ds:
         for b in range(1, 4):
             ds.write(np.full((10, 10), 128, dtype=np.uint8), b)
@@ -331,4 +341,273 @@ def test_prepare_static_scene_qdx_live_if_present() -> None:
     assert scene.scene_id == "qdx-dem-coverage-001"
     assert scene.dem.native_resolution[0] > 0
     assert scene.road.feature_count == 124
+    assert scene.road.road_type_field == "FuncClass"
     assert len(scene.landcover.attribute_checks) == 3
+    assert scene.orthophoto.acquisition_time is not None
+    assert scene.moisture.observation_time == "2026-01-01"
+    assert len(scene.moisture.paths) == 3
+    assert len(scene.hydrology.upstream_layers) == 7
+
+
+def test_prepare_static_scene_rejects_geographic_metric_crs(tmp_path: Path) -> None:
+    request_path = ROOT / "configs" / "manned_offroad_m0.yaml"
+    weather_path = ROOT / "configs" / "scenes" / "baseline_986bd58_weather.json"
+    if not request_path.is_file() or not weather_path.is_file():
+        pytest.skip("Local QDX config not present.")
+
+    with pytest.raises(ValueError, match="metric_crs must be a projected metric coordinate reference system"):
+        prepare_static_scene(
+            inputs=request_path,
+            weather_snapshot=weather_path,
+            build_config={"metric_crs": "EPSG:4326"},
+        )
+
+
+def test_prepare_static_scene_rejects_empty_or_degenerate_study_area(tmp_path: Path) -> None:
+    # 1. Empty geometry
+    roi_empty = tmp_path / "empty_roi.shp"
+    gdf_empty = gpd.GeoDataFrame({"geometry": [Polygon()]}, crs="EPSG:4326")
+    gdf_empty.to_file(roi_empty)
+
+    weather_path = tmp_path / "weather.json"
+    weather_path.write_text(
+        json.dumps({"valid_at": "2026-10-15T08:00:00Z", "degraded": False, "precipitation_24h_mm": 0.0, "soil_moisture_surface_m3_m3": 0.2}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="contains no valid geometries"):
+        prepare_static_scene(
+            inputs={
+                "dem": "dummy",
+                "orthophoto": "dummy",
+                "landcover": "dummy",
+                "road": "dummy",
+                "roi": str(roi_empty),
+                "soil": "dummy",
+                "soil_catalog": "dummy",
+            },
+            weather_snapshot=weather_path,
+        )
+
+
+def test_prepare_static_scene_rejects_non_overlapping_raster(tmp_path: Path) -> None:
+    # ROI in Nanjing
+    roi_path = tmp_path / "bound.shp"
+    roi_gdf = gpd.GeoDataFrame({"geometry": [box(118.98, 31.98, 118.99, 31.99)]}, crs="EPSG:4326")
+    roi_gdf.to_file(roi_path)
+
+    # DEM in Beijing (116.3, 39.9) - clearly non-overlapping
+    dem_path = tmp_path / "dem_beijing.tif"
+    with rasterio.open(
+        dem_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(116.3, 39.9, 0.001, 0.001),
+    ) as ds:
+        ds.write(np.full((10, 10), 10.0, dtype=np.float32), 1)
+
+    ortho_path = tmp_path / "ortho.tif"
+    with rasterio.open(
+        ortho_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=from_origin(118.98, 31.99, 0.001, 0.001),
+    ) as ds:
+        for b in range(1, 4):
+            ds.write(np.full((10, 10), 100, dtype=np.uint8), b)
+
+    lc_dir = tmp_path / "landcover"
+    lc_dir.mkdir()
+    road_path = tmp_path / "road.shp"
+    gpd.GeoDataFrame({"geometry": [LineString([(118.98, 31.98), (118.99, 31.99)])], "Width": [30.0]}, crs="EPSG:4326").to_file(road_path)
+
+    soil_path = tmp_path / "soil.tif"
+    with rasterio.open(
+        soil_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=from_origin(118.98, 31.99, 0.001, 0.001),
+    ) as ds:
+        ds.write(np.ones((10, 10), dtype=np.uint8), 1)
+
+    soil_cat = tmp_path / "soil.dbf"
+    gpd.GeoDataFrame({"VALUE": [1], "geometry": [None]}, crs="EPSG:4326").to_file(soil_cat)
+
+    weather_path = tmp_path / "weather.json"
+    weather_path.write_text(
+        json.dumps({"valid_at": "2026-10-15T08:00:00Z", "degraded": False}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="DEM raster.*does not overlap study area"):
+        prepare_static_scene(
+            inputs={
+                "dem": str(dem_path),
+                "orthophoto": str(ortho_path),
+                "landcover": str(lc_dir),
+                "road": str(road_path),
+                "roi": str(roi_path),
+                "soil": str(soil_path),
+                "soil_catalog": str(soil_cat),
+            },
+            weather_snapshot=weather_path,
+            build_config={"metric_crs": "EPSG:3857"},
+        )
+
+
+def test_prepare_static_scene_from_existing_scene_dict() -> None:
+    scene_file = ROOT / "configs" / "scenes" / "m0_qdx_scene.json"
+    weather_file = ROOT / "configs" / "scenes" / "baseline_986bd58_weather.json"
+    if not scene_file.is_file() or not weather_file.is_file():
+        pytest.skip("Local QDX scene not present.")
+
+    loaded = load_static_scene(scene_file)
+    reprepared = prepare_static_scene(
+        inputs=loaded.to_dict(),
+        weather_snapshot=weather_file,
+    )
+    assert reprepared.scene_id == loaded.scene_id
+    assert reprepared.metric_crs == loaded.metric_crs
+    assert len(reprepared.moisture.paths) == 3
+    assert len(reprepared.hydrology.upstream_layers) == 7
+
+
+def test_prepare_static_scene_auto_resolves_private_assets_fallback() -> None:
+    request_path = ROOT / "configs" / "manned_offroad_m0.yaml"
+    weather_path = ROOT / "configs" / "scenes" / "baseline_986bd58_weather.json"
+    if not request_path.is_file() or not weather_path.is_file():
+        pytest.skip("Local QDX assets not present.")
+
+    # Call WITHOUT passing build_config or assets_config_path
+    scene = prepare_static_scene(
+        inputs=request_path,
+        weather_snapshot=weather_path,
+    )
+    assert len(scene.moisture.paths) == 3
+    assert len(scene.hydrology.upstream_layers) == 7
+    assert scene.road.road_type_field == "FuncClass"
+
+
+def test_prepare_static_scene_validates_weather_values(tmp_path: Path) -> None:
+    bad_weather = tmp_path / "negative_rain.json"
+    bad_weather.write_text(
+        json.dumps({"valid_at": "2026-10-15T08:00:00Z", "degraded": False, "precipitation_24h_mm": -1.0}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Weather snapshot precipitation cannot be negative"):
+        prepare_static_scene(inputs={}, weather_snapshot=bad_weather)
+
+    bad_weather2 = tmp_path / "negative_moisture.json"
+    bad_weather2.write_text(
+        json.dumps({"valid_at": "2026-10-15T08:00:00Z", "degraded": False, "soil_moisture_surface_m3_m3": -0.1}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Weather snapshot surface soil moisture cannot be negative"):
+        prepare_static_scene(inputs={}, weather_snapshot=bad_weather2)
+
+    missing_valid_at = tmp_path / "no_valid_at.json"
+    missing_valid_at.write_text(
+        json.dumps({"degraded": False}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing required 'valid_at'"):
+        prepare_static_scene(inputs={}, weather_snapshot=missing_valid_at)
+
+
+def test_prepare_static_scene_rejects_missing_moisture_file(tmp_path: Path) -> None:
+    # 1. Create synthetic DEM, ROI, Road, Landcover, Ortho, Soil
+    dem_path = tmp_path / "dem.tif"
+    with rasterio.open(
+        dem_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(118.98, 32.00, 0.002, 0.002),
+    ) as ds:
+        ds.write(np.full((10, 10), 50.0, dtype=np.float32), 1)
+
+    roi_path = tmp_path / "bound.shp"
+    roi_poly = box(118.982, 31.982, 118.998, 31.998)
+    gpd.GeoDataFrame({"geometry": [roi_poly]}, crs="EPSG:4326").to_file(roi_path)
+
+    road_path = tmp_path / "road.shp"
+    gpd.GeoDataFrame({"geometry": [LineString([(118.985, 31.985), (118.995, 31.995)])], "Width": [30.0]}, crs="EPSG:4326").to_file(road_path)
+
+    lc_dir = tmp_path / "landcover"
+    lc_dir.mkdir()
+
+    ortho_path = tmp_path / "ortho.tif"
+    with rasterio.open(
+        ortho_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:3857",
+        transform=from_origin(13244000.0, 3764000.0, 500.0, 500.0),
+    ) as ds:
+        for b in range(1, 4):
+            ds.write(np.full((10, 10), 128, dtype=np.uint8), b)
+
+    soil_path = tmp_path / "soil.tif"
+    with rasterio.open(
+        soil_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=from_origin(118.98, 32.00, 0.002, 0.002),
+    ) as ds:
+        ds.write(np.ones((10, 10), dtype=np.uint8), 1)
+
+    catalog_path = tmp_path / "soil.dbf"
+    gpd.GeoDataFrame({"VALUE": [1], "geometry": [None]}, crs="EPSG:4326").to_file(catalog_path)
+
+    weather_path = tmp_path / "weather.json"
+    weather_path.write_text(
+        json.dumps({"valid_at": "2026-10-15T08:00:00Z", "degraded": False}),
+        encoding="utf-8",
+    )
+
+    inputs = {
+        "dem": str(dem_path),
+        "orthophoto": str(ortho_path),
+        "landcover": str(lc_dir),
+        "road": str(road_path),
+        "roi": str(roi_path),
+        "soil": str(soil_path),
+        "soil_catalog": str(catalog_path),
+        "static_moisture": ["/nonexistent/path/moisture.nc"],
+    }
+
+    with pytest.raises(FileNotFoundError, match="Static moisture file does not exist"):
+        prepare_static_scene(
+            inputs=inputs,
+            weather_snapshot=weather_path,
+            build_config={"metric_crs": "EPSG:3857"},
+        )
+

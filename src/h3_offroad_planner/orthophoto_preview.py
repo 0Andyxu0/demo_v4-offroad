@@ -55,6 +55,13 @@ def create_orthophoto_preview(
     if not source.is_file():
         raise FileNotFoundError(f"orthophoto raster does not exist: {source}")
     west, south, east, north = study_bounds_wgs84
+    if not (
+        -180.0 <= west <= 180.0
+        and -180.0 <= east <= 180.0
+        and -90.0 <= south <= 90.0
+        and -90.0 <= north <= 90.0
+    ):
+        raise ValueError("study bounds WGS84 coordinates are outside [-180, 180] or [-90, 90].")
     if not west < east or not south < north:
         raise ValueError("study bounds must be ordered west, south, east, north.")
 

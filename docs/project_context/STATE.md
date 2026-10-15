@@ -1,34 +1,34 @@
 # 当前实施状态
 
 更新：2026-10-15。工作树：`D:/Workspace/demo_v4-manned-offroad`。分支：`codex/manned-offroad-map`。
-历史基线：`986bd58eef846f6f8a34961a43b208c315471110`；M0 规范化提交：`5f30c5c`；当前最新提交以 `git rev-parse HEAD` 为准。
+历史基线：`986bd58eef846f6f8a34961a43b208c315471110`；M0 规范化与加固提交：`5f30c5c`，`a4c8642`；当前最新提交以 `git rev-parse HEAD` 为准。
 
 ## 已完成
 
 ### M0 数据与基线准备（已规范化闭环）
 
-- **StaticScene 契约与接口落地**：按 `IMPLEMENTATION_PLAN.md` §5.1 和 §6.1 完整实现 `StaticScene` 数据结构与 `prepare_static_scene(inputs, weather_snapshot, build_config)` 函数。涵盖 `scene_id`、米制投影 CRS（`EPSG:4528`）、工区范围（WGS84 与米制投影双坐标边界）、源 DEM（`EPSG:4490`，原生分辨率约 2m，高程单位米）、地物矢量目录、道路矢量（124 条，含 Width 字段）、正射影像（`EPSG:4528`，0.5m 原生分辨率）、土壤栅格与分类表（27 类）、CLDAS 静态含水率（3 层深度）、上游水文域 D 场（7 个栅格）、制图期冻结气象快照、字段映射与模型版本（`m0_static_scene_v1`）。支持强类型 dataclass、字典与 JSON 的双向序列化/反序列化。
+- **StaticScene 契约与接口落地**：按 `IMPLEMENTATION_PLAN.md` §5.1 和 §6.1 完整实现 `StaticScene` 数据结构与 `prepare_static_scene(inputs, weather_snapshot, build_config)` 函数。涵盖 `scene_id`、米制投影 CRS（`EPSG:4528`）、工区范围（WGS84 与米制投影双坐标边界）、源 DEM（`EPSG:4490`，原生分辨率约 2m，高程单位米）、地物矢量目录、道路矢量（124 条，含 Width 与 FuncClass 道路类型字段）、正射影像（`EPSG:4528`，0.5m 原生分辨率，采集时标 `2025-05-29T02:03:07Z`）、土壤栅格与分类表（27 类，标明适用范围说明）、CLDAS 静态含水率（3 层深度，观测日期 `2026-01-01`）、上游水文域 D 场（7 个栅格）、制图期冻结气象快照、字段映射与模型版本（`m0_static_scene_v1`）。实现严格的米制投影投影判定（拦截非投影经纬度 CRS）、研究区几何有效性与有限性校验（杜绝 NaN 边界）、栅格与研究区空间重叠检验、支持已有场景字典/JSON 反向重新准备及私有资产自动兜底。支持强类型 dataclass、字典与 JSON 的双向序列化/反序列化。
 - **固定真实工区、OD 与车辆配置**：
   - 子工区范围：QDX `bound.shp`（CGCS2000 / `EPSG:4490`），WGS84 `[118.981333, 31.968832, 119.014808, 31.999863]`，米制投影 `EPSG:4528` `[40403708.17, 3538821.30, 40406902.65, 3542290.57]`。
   - 正式 OD：Start `[31.9905769003, 118.9960502257]`，Goal `[31.9931786713, 118.9894117713]`，走廊缓冲 0.005°。
   - 车辆配置：Iveco Daily 4x4 7t 单排 3480（宽度 2.056 m，轴距 3.48 m，后轴中心为参考点）。
   - 制图期气象：真实 Open-Meteo 冻结快照 `configs/scenes/baseline_986bd58_weather.json`（有效时刻 `2026-10-15T08:00:00Z`，表层含水率 0.25 m³/m³，24h 降水 0.3 mm，`degraded=false`）。
 - **桌面正射影像预览与图层显示**：
-  - 实现了 `orthophoto_preview.py`，根据工区 WGS84 范围将本地高分正射影像 `T.tif` 裁剪下采样为 RGB 预览图（`outputs/m0_qdx_baseline/orthophoto_preview.png`，最大边 2048 像素），并记录像素映射与严格 WGS84 边界。
+  - 实现了 `orthophoto_preview.py`，根据工区 WGS84 范围将本地高分正射影像 `T.tif` 裁剪下采样为 RGB 预览图（`outputs/m0_qdx_baseline/orthophoto_preview.png`，最大边 2048 像素），并记录像素映射与严格 WGS84 边界，增加 WGS84 坐标合法范围校验。
   - 扩展桌面端 `DesktopMapView.set_orthophoto_overlay` 与 `DesktopProjectState`，以 base64 data URL 注入 Leaflet `L.imageOverlay`，支持 `map_display` 可视化配置与透明度调节。运行载荷自动剔除 `map_display`，明确正射影像仅用于桌面人工边界核对，不改变通行物理模型。
   - 桌面客户端支持 `--project` 参数直接加载 `configs/manned_offroad_m0.yaml`。
 - **关键地物属性覆盖审计**：
   - 对工区相交地物要素进行逐层统计与抽样验证：
     - 森林 `forest.shp` 的 `rowspacing`：工区内有效要素 386 条，数值范围 [1.5, 8.0]，样本：`['4.9', '4.4', '2.1', '5.4', '6.3']`。
     - 水体 `water.shp` 的 `depth`：工区内有效要素 454 条，数值范围 [0.5, 2.5]，样本：`['0.7', '1.9', '2.2', '1.0', '0.7']`。
-    - 道路 `road_fina.shp` 的 `Width`：工区内有效要素 124 条，数值范围 [30.0, 55.0]，样本：`['30', '30', '30', '30', '30']`。
+    - 道路 `road_fina.shp` 的 `Width`：工区内有效要素 124 条，数值范围 [30.0, 55.0]，样本：`['30', '30', '30', '30', '30']`；道路类型 `FuncClass` 样本 `['5', '5', '5', '5', '5']`。
   - 保留原始数据编码，明确物理解释与车辆通过规则由 M1 对齐。
 - **M0 可复现基线管线与运行闭环**：
-  - 提供 `scripts/run_m0_baseline.py` 与 `python scripts/run_local.py m0-baseline`，自动执行：请求校验 → 正射预览生成 → 关键属性审计 → `prepare_static_scene` 契约生成与保存 → `cli plan` 基线运行 → 产物摘要与哈希归档。
+  - 提供 `scripts/run_m0_baseline.py` 与 `python scripts/run_local.py m0-baseline`，自动执行：请求校验 → 正射预览生成 → 关键属性审计 → `prepare_static_scene` 契约生成与保存（正射预览路径贯通注入） → `cli plan` 基线运行 → 产物摘要与哈希归档。
   - 产物写入独立目录 `outputs/m0_qdx_baseline/`，包含 `m0_baseline.json`、`static_scene.json`、`orthophoto_preview.png`、`orthophoto_preview.json`、`landcover_attribute_audit.json` 及路线结果。
 - **自动化测试**：
-  - 全套回归测试 512 passed, 4 skipped；
-  - 专门增加 `tests/test_static_scene.py`（StaticScene 强类型序列化、合成矢量/栅格 fixtures 场景准备、降级气象拦截、缺失输入拦截、已有场景文件解析、实际 QDX 数据准备回归）与 `tests/test_orthophoto_preview.py`（裁剪下采样、项目配置解析、Leaflet 地图叠加），全部通过。
+  - 全套回归测试 520 passed, 4 skipped；
+  - 专门增加 `tests/test_static_scene.py`（StaticScene 强类型序列化、合成矢量/栅格 fixtures 场景准备、降级气象拦截、缺失输入拦截、已有场景文件/字典解析、实际 QDX 数据准备回归、地理 metric_crs 拦截、退化几何拦截、非重叠栅格拦截、气象数值合法性拦截、缺失含水率文件拦截）与 `tests/test_orthophoto_preview.py`（裁剪下采样、坐标越界拦截、项目配置解析、Leaflet 地图叠加），全部通过。
 
 ## 基线运行结果（M0 可复现基准）
 

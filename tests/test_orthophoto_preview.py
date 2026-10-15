@@ -48,6 +48,30 @@ def test_create_orthophoto_preview_crops_and_downsamples_rgb(tmp_path: Path) -> 
     assert preview.bounds_wgs84[0][1] < preview.bounds_wgs84[1][1]
 
 
+def test_create_orthophoto_preview_rejects_out_of_range_coordinates(tmp_path: Path) -> None:
+    import pytest
+    source = tmp_path / "orthophoto.tif"
+    with rasterio.open(
+        source,
+        "w",
+        driver="GTiff",
+        width=12,
+        height=8,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=from_origin(118.0, 32.0, 0.01, 0.01),
+    ) as dataset:
+        dataset.write(np.full((3, 8, 12), 100, dtype=np.uint8))
+
+    with pytest.raises(ValueError, match="study bounds WGS84 coordinates are outside"):
+        create_orthophoto_preview(
+            source,
+            tmp_path / "preview.png",
+            (-200.0, 31.0, 118.0, 32.0),
+        )
+
+
 def test_desktop_project_accepts_display_only_orthophoto_metadata(tmp_path: Path) -> None:
     preview = tmp_path / "preview.png"
     preview.write_bytes(b"png")

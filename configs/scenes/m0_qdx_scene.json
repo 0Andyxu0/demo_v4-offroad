@@ -114,6 +114,14 @@
       30.0,
       30.0,
       30.0
+    ],
+    "road_type_field": "FuncClass",
+    "sample_road_types": [
+      "5",
+      "5",
+      "5",
+      "5",
+      "5"
     ]
   },
   "orthophoto": {
@@ -130,7 +138,8 @@
         119.06399104016847
       ]
     ],
-    "preview_path": null,
+    "preview_path": "outputs/m0_qdx_baseline/orthophoto_preview.png",
+    "acquisition_time": "2025-05-29T02:03:07.253101+00:00",
     "purpose": "Desktop display and manual boundary verification only; it is not an M0 classification or factor-model input."
   },
   "soil": {
@@ -141,7 +150,8 @@
       0.0003363351959999979,
       0.00033633519599999987
     ],
-    "class_count": 27
+    "class_count": 27,
+    "applicability": "M0 registers source classes; M1 implements Bekker/CI vehicle rating rules."
   },
   "moisture": {
     "paths": [
@@ -155,6 +165,7 @@
       "5-10cm",
       "10-40cm"
     ],
+    "observation_time": "2026-01-01",
     "tags": {}
   },
   "hydrology": {

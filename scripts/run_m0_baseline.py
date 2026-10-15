@@ -61,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
             "metric_crs": scene.get("metric_crs", "EPSG:4528"),
             "baseline_source_commit": scene.get("baseline_source_commit", "986bd58"),
             "assets_config_path": ROOT / "configs" / "manned_assets.private.yaml",
+            "orthophoto_preview_path": output_dir / "orthophoto_preview.png",
             "primary_od": scene.get("primary_od"),
             "vehicle": scene.get("vehicle"),
             "quality_and_budget_status": scene.get("quality_and_budget_status"),
@@ -157,6 +158,16 @@ def _required_path(payload: dict[str, object], key: str) -> Path:
     return path
 
 
+def _required_directory(payload: dict[str, object], key: str) -> Path:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"M0 field {key} must be a non-empty path string.")
+    path = _resolve(Path(value))
+    if not path.is_dir():
+        raise FileNotFoundError(f"M0 directory does not exist: {path}")
+    return path
+
+
 def _study_bounds(tile_build: dict[str, object]) -> tuple[float, float, float, float]:
     roi_path = _required_path(tile_build, "roi_layer_path")
     roi = gpd.read_file(roi_path)
@@ -169,9 +180,13 @@ def _study_bounds(tile_build: dict[str, object]) -> tuple[float, float, float, f
 def _audit_key_attributes(
     tile_build: dict[str, object], scene: dict[str, object]
 ) -> dict[str, object]:
-    landcover_directory = _required_path(tile_build, "roi_layer_path").parent
+    landcover_directory = (
+        _required_directory(tile_build, "landcover_path")
+        if "landcover_path" in tile_build
+        else _required_path(tile_build, "roi_layer_path").parent
+    )
     study_area = gpd.read_file(_required_path(tile_build, "roi_layer_path"))
-    study_geometry = study_area.geometry.union_all()
+    study_geometry = study_area.geometry.make_valid().union_all()
     entries = scene.get("key_landcover_attributes")
     if not isinstance(entries, list):
         raise ValueError("M0 scene lacks key_landcover_attributes.")
@@ -191,7 +206,7 @@ def _audit_key_attributes(
         frame = gpd.read_file(path)
         if frame.crs is None:
             raise ValueError(f"landcover layer lacks a CRS: {path}")
-        if str(frame.crs) != str(study_area.crs):
+        if frame.crs != study_area.crs:
             frame = frame.to_crs(study_area.crs)
         if field not in frame.columns:
             raise ValueError(f"landcover field {field!r} is absent from {path}")

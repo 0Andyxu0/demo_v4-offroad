@@ -12,13 +12,16 @@ alterations or graph transformations.
 
 from __future__ import annotations
 
-import json
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import json
 from pathlib import Path
+import re
 from typing import Any, cast
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import pyproj
 import rasterio
@@ -109,13 +112,15 @@ class LandcoverReference:
 
 @dataclass(frozen=True)
 class RoadReference:
-    """Road network vector data and width attribute reference."""
+    """Road network vector data, type and width attribute reference."""
 
     path: str
     crs: str
     width_field: str
     feature_count: int
     sample_widths: list[float] = field(default_factory=list)
+    road_type_field: str | None = None
+    sample_road_types: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -130,6 +135,7 @@ class OrthophotoReference:
     native_resolution_m: float
     bounds_wgs84: list[list[float]]  # [[south, west], [north, east]]
     preview_path: str | None = None
+    acquisition_time: str | None = None
     purpose: str = (
         "Desktop display and manual boundary verification only; "
         "it is not an M0 classification or factor-model input."
@@ -148,6 +154,7 @@ class SoilReference:
     crs: str
     native_resolution: list[float]
     class_count: int
+    applicability: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -160,6 +167,7 @@ class MoistureReference:
     paths: list[str]
     unit: str = "m3/m3"
     depth_layers: list[str] = field(default_factory=list)
+    observation_time: str | None = None
     tags: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -324,6 +332,8 @@ class StaticScene:
             width_field=road_data.get("width_field", "Width"),
             feature_count=int(road_data.get("feature_count", 0)),
             sample_widths=[float(v) for v in road_data.get("sample_widths", [])],
+            road_type_field=road_data.get("road_type_field"),
+            sample_road_types=[str(v) for v in road_data.get("sample_road_types", [])],
         )
 
         ortho_data = data.get("orthophoto", {})
@@ -333,6 +343,7 @@ class StaticScene:
             native_resolution_m=float(ortho_data.get("native_resolution_m", 0.5)),
             bounds_wgs84=list(ortho_data.get("bounds_wgs84", [[0.0, 0.0], [0.0, 0.0]])),
             preview_path=ortho_data.get("preview_path"),
+            acquisition_time=ortho_data.get("acquisition_time"),
             purpose=ortho_data.get(
                 "purpose",
                 "Desktop display and manual boundary verification only; "
@@ -347,6 +358,7 @@ class StaticScene:
             crs=soil_data.get("crs", ""),
             native_resolution=list(soil_data.get("native_resolution", [0.0, 0.0])),
             class_count=int(soil_data.get("class_count", 0)),
+            applicability=soil_data.get("applicability"),
         )
 
         moisture_data = data.get("moisture", {})
@@ -354,6 +366,7 @@ class StaticScene:
             paths=list(moisture_data.get("paths", [])),
             unit=moisture_data.get("unit", "m3/m3"),
             depth_layers=list(moisture_data.get("depth_layers", [])),
+            observation_time=moisture_data.get("observation_time"),
             tags=dict(moisture_data.get("tags", {})),
         )
 
@@ -419,6 +432,20 @@ def load_static_scene(path: Path | str) -> StaticScene:
     return StaticScene.from_json(path)
 
 
+def _check_raster_overlaps_bounds(
+    ds: rasterio.DatasetReader, target_wgs84: list[float], raster_name: str
+) -> None:
+    """Verify that a raster overlaps the study area WGS84 bounding box."""
+    rw, rs, re, rn = transform_bounds(ds.crs, "EPSG:4326", *ds.bounds, densify_pts=21)
+    w, s, e, n = target_wgs84
+    if rw >= e or re <= w or rs >= n or rn <= s:
+        raise ValueError(
+            f"{raster_name} raster at '{ds.name}' does not overlap study area: "
+            f"raster WGS84 bounds [{rw:.4f}, {rs:.4f}, {re:.4f}, {rn:.4f}], "
+            f"study area [{w:.4f}, {s:.4f}, {e:.4f}, {n:.4f}]."
+        )
+
+
 def prepare_static_scene(
     inputs: dict[str, Any] | str | Path,
     weather_snapshot: dict[str, Any] | str | Path,
@@ -436,10 +463,25 @@ def prepare_static_scene(
     """
     config = dict(build_config or {})
     weather_ref = _resolve_weather_reference(weather_snapshot)
-    inputs_dict = _resolve_inputs_dict(inputs, config.get("assets_config_path"))
+    inputs_dict = _resolve_inputs_dict(
+        inputs,
+        assets_fallback_path=config.get("assets_config_path"),
+        preview_fallback_path=config.get("orthophoto_preview_path"),
+    )
 
     scene_id = str(config.get("scene_id", "qdx-dem-coverage-001"))
     metric_crs = str(config.get("metric_crs", "EPSG:4528"))
+
+    # Validate that metric_crs is a valid projected metric CRS (not geographic degree CRS)
+    try:
+        metric_proj = pyproj.CRS.from_user_input(metric_crs)
+    except Exception as exc:
+        raise ValueError(f"Invalid metric CRS: {metric_crs}") from exc
+    if not metric_proj.is_projected:
+        raise ValueError(
+            f"metric_crs must be a projected metric coordinate reference system, got geographic CRS: {metric_crs}"
+        )
+
     model_version = str(config.get("model_version", "m0_static_scene_v1"))
     baseline_source_commit = str(config.get("baseline_source_commit", "986bd58"))
     mapping_time = str(config.get("mapping_time", datetime.now(timezone.utc).isoformat()))
@@ -460,15 +502,28 @@ def prepare_static_scene(
     roi_gdf = gpd.read_file(roi_path)
     if roi_gdf.empty or roi_gdf.crs is None:
         raise ValueError(f"Study boundary layer is empty or has no CRS: {roi_path}")
+    if roi_gdf.geometry.isnull().all() or roi_gdf.geometry.is_empty.all():
+        raise ValueError(f"Study boundary layer contains no valid geometries: {roi_path}")
 
     # Compute WGS84 bounds [west, south, east, north]
     wgs84_gdf = roi_gdf.to_crs("EPSG:4326")
-    w, s, e, n = [float(v) for v in wgs84_gdf.total_bounds]
+    wgs_bounds = wgs84_gdf.total_bounds
+    if len(wgs_bounds) != 4 or any(not np.isfinite(v) for v in wgs_bounds):
+        raise ValueError(f"Study boundary produces non-finite or empty WGS84 bounds: {wgs_bounds}")
+    w, s, e, n = [float(v) for v in wgs_bounds]
+    if not w < e or not s < n:
+        raise ValueError(f"Study boundary WGS84 bounds are degenerate: west={w}, south={s}, east={e}, north={n}")
     bounds_wgs84 = [w, s, e, n]
 
     # Compute metric bounds [left, bottom, right, top]
     metric_gdf = roi_gdf.to_crs(metric_crs)
-    bounds_metric = [float(v) for v in metric_gdf.total_bounds]
+    metric_bounds = metric_gdf.total_bounds
+    if len(metric_bounds) != 4 or any(not np.isfinite(v) for v in metric_bounds):
+        raise ValueError(f"Study boundary produces non-finite or empty metric bounds: {metric_bounds}")
+    left, bottom, right, top = [float(v) for v in metric_bounds]
+    if not left < right or not bottom < top:
+        raise ValueError(f"Study boundary metric bounds are degenerate: left={left}, bottom={bottom}, right={right}, top={top}")
+    bounds_metric = [left, bottom, right, top]
 
     study_area = StudyArea(
         source_layer=roi_path.as_posix(),
@@ -492,6 +547,7 @@ def prepare_static_scene(
     with rasterio.open(dem_path) as dem_ds:
         if dem_ds.crs is None:
             raise ValueError(f"DEM raster has no CRS: {dem_path}")
+        _check_raster_overlaps_bounds(dem_ds, bounds_wgs84, "DEM")
         is_geo = dem_ds.crs.is_geographic
         h_unit = "degree" if is_geo else "meter"
         dem = DemReference(
@@ -513,7 +569,7 @@ def prepare_static_scene(
     if not landcover_dir.is_dir():
         raise FileNotFoundError(f"Landcover directory does not exist: {landcover_dir}")
     shp_files = sorted(p.name for p in landcover_dir.glob("*.shp"))
-    study_geom = roi_gdf.geometry.union_all()
+    study_geom = roi_gdf.geometry.make_valid().union_all()
 
     attribute_checks: list[LandcoverAttributeAudit] = []
     semantic_statuses = {
@@ -533,7 +589,7 @@ def prepare_static_scene(
         layer_gdf = gpd.read_file(layer_file)
         if layer_gdf.crs is None:
             continue
-        if str(layer_gdf.crs) != str(roi_gdf.crs):
+        if layer_gdf.crs != roi_gdf.crs:
             layer_gdf = layer_gdf.to_crs(roi_gdf.crs)
 
         for src_field in fields_dict.values():
@@ -573,12 +629,22 @@ def prepare_static_scene(
     if "Width" in road_gdf.columns:
         w_series = pd.to_numeric(road_gdf["Width"], errors="coerce").dropna()
         sample_widths = [float(v) for v in w_series.head(5).tolist()]
+    sample_types: list[str] = []
+    road_type_col = (
+        "FuncClass"
+        if "FuncClass" in road_gdf.columns
+        else ("Kind" if "Kind" in road_gdf.columns else None)
+    )
+    if road_type_col and road_type_col in road_gdf.columns:
+        sample_types = [str(v) for v in road_gdf[road_type_col].dropna().head(5).tolist()]
     road = RoadReference(
         path=road_path.as_posix(),
         crs=str(road_gdf.crs),
         width_field="Width",
         feature_count=len(road_gdf),
         sample_widths=sample_widths,
+        road_type_field=road_type_col,
+        sample_road_types=sample_types,
     )
 
     # 5. Orthophoto Reference
@@ -589,10 +655,23 @@ def prepare_static_scene(
     with rasterio.open(ortho_path) as ortho_ds:
         if ortho_ds.crs is None:
             raise ValueError(f"Orthophoto raster has no CRS: {ortho_path}")
+        _check_raster_overlaps_bounds(ortho_ds, bounds_wgs84, "Orthophoto")
         ortho_bounds_wgs84 = transform_bounds(
             ortho_ds.crs, "EPSG:4326", *ortho_ds.bounds, densify_pts=21
         )
         ortho_res_m = float(ortho_ds.res[0])
+
+        acquisition_time = config.get("orthophoto_acquisition_time")
+        if not acquisition_time:
+            with suppress(Exception):
+                dt_tag = ortho_ds.tags().get("TIFFTAG_DATETIME")
+                if dt_tag:
+                    acquisition_time = str(dt_tag)
+        if not acquisition_time:
+            with suppress(Exception):
+                mtime_val = ortho_path.stat().st_mtime
+                acquisition_time = datetime.fromtimestamp(mtime_val, tz=timezone.utc).isoformat()
+
         orthophoto = OrthophotoReference(
             source_path=ortho_path.as_posix(),
             crs=str(ortho_ds.crs),
@@ -602,6 +681,7 @@ def prepare_static_scene(
                 [float(ortho_bounds_wgs84[3]), float(ortho_bounds_wgs84[2])],
             ],
             preview_path=Path(preview_path).as_posix() if preview_path else None,
+            acquisition_time=acquisition_time,
         )
 
     # 6. Soil Reference
@@ -612,6 +692,9 @@ def prepare_static_scene(
     if not catalog_path.is_file():
         raise FileNotFoundError(f"Soil catalog does not exist: {catalog_path}")
     with rasterio.open(soil_path) as soil_ds:
+        if soil_ds.crs is None:
+            raise ValueError(f"Soil raster has no CRS: {soil_path}")
+        _check_raster_overlaps_bounds(soil_ds, bounds_wgs84, "Soil")
         soil_crs = str(soil_ds.crs)
         soil_res = [float(soil_ds.res[0]), float(soil_ds.res[1])]
     catalog_gdf = gpd.read_file(catalog_path)
@@ -621,23 +704,41 @@ def prepare_static_scene(
         crs=soil_crs,
         native_resolution=soil_res,
         class_count=len(catalog_gdf),
+        applicability=str(
+            config.get(
+                "soil_applicability",
+                "M0 registers source classes; M1 implements Bekker/CI vehicle rating rules.",
+            )
+        ),
     )
 
     # 7. Moisture Reference
     moisture_paths = [Path(p).as_posix() for p in inputs_dict.get("static_moisture_paths", [])]
+    for mp in moisture_paths:
+        if not Path(mp).is_file():
+            raise FileNotFoundError(f"Static moisture file does not exist: {mp}")
+    observation_time = config.get("moisture_observation_time")
+    if not observation_time and moisture_paths:
+        first_name = Path(moisture_paths[0]).name
+        match = re.search(r"(\d{4})(\d{2})(\d{2})\d{2}\.nc", first_name)
+        if match:
+            observation_time = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
     moisture = MoistureReference(
         paths=moisture_paths,
         unit="m3/m3",
         depth_layers=["0-5cm", "5-10cm", "10-40cm"],
+        observation_time=observation_time,
     )
 
     # 8. Hydrology Reference
     hydro_dict = {str(k): Path(v).as_posix() for k, v in inputs_dict.get("hydrology_layers", {}).items()}
     hydro_crs: str | None = None
-    if hydro_dict:
-        first_layer = Path(next(iter(hydro_dict.values())))
-        if first_layer.is_file():
-            with rasterio.open(first_layer) as hds:
+    for hname, hpath in hydro_dict.items():
+        hp = Path(hpath)
+        if not hp.is_file():
+            raise FileNotFoundError(f"Hydrology layer '{hname}' does not exist: {hpath}")
+        if hydro_crs is None:
+            with rasterio.open(hp) as hds:
                 hydro_crs = str(hds.crs)
     hydrology = HydrologyReference(
         upstream_layers=hydro_dict,
@@ -679,8 +780,9 @@ def prepare_static_scene(
 def _resolve_inputs_dict(
     inputs: dict[str, Any] | str | Path,
     assets_fallback_path: str | Path | None = None,
+    preview_fallback_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Normalize input parameters from various request mappings or files."""
+    """Normalize input parameters from various request mappings, serialized scenes, or files."""
     payload: dict[str, Any]
     if isinstance(inputs, (str, Path)):
         p = Path(inputs)
@@ -696,60 +798,98 @@ def _resolve_inputs_dict(
     tile_build = payload.get("tile_build")
     map_display = payload.get("map_display")
 
+    # Detect nested StaticScene format (dem, orthophoto, landcover, road, soil, study_area)
+    dem_val = payload.get("dem")
+    ortho_val = payload.get("orthophoto")
+    lc_val = payload.get("landcover")
+    road_val = payload.get("road")
+    soil_val = payload.get("soil")
+    sa_val = payload.get("study_area")
+    moisture_val = payload.get("moisture")
+    hydro_val = payload.get("hydrology")
+
     dem = (
         (tile_build.get("dem_path") if isinstance(tile_build, dict) else None)
-        or payload.get("dem")
+        or (dem_val.get("path") if isinstance(dem_val, dict) else dem_val)
         or payload.get("dem_path")
     )
     ortho = (
         (map_display.get("orthophoto_source_path") if isinstance(map_display, dict) else None)
-        or payload.get("orthophoto")
+        or (ortho_val.get("source_path") if isinstance(ortho_val, dict) else ortho_val)
         or payload.get("orthophoto_path")
         or payload.get("orthophoto_source_path")
     )
     preview = (
-        (map_display.get("orthophoto_preview_path") if isinstance(map_display, dict) else None)
+        preview_fallback_path
+        or (map_display.get("orthophoto_preview_path") if isinstance(map_display, dict) else None)
+        or (ortho_val.get("preview_path") if isinstance(ortho_val, dict) else None)
         or payload.get("orthophoto_preview_path")
     )
+    if not preview and isinstance(map_display, dict):
+        preview_meta_path = map_display.get("orthophoto_preview_metadata_path")
+        if preview_meta_path and Path(preview_meta_path).is_file():
+            with suppress(Exception):
+                pm = json.loads(Path(preview_meta_path).read_text(encoding="utf-8"))
+                if isinstance(pm, dict) and "preview_path" in pm:
+                    preview = pm["preview_path"]
+
     landcover = (
         (tile_build.get("landcover_path") if isinstance(tile_build, dict) else None)
+        or (lc_val.get("source_directory") if isinstance(lc_val, dict) else lc_val)
         or payload.get("landcover_directory")
         or payload.get("landcover_path")
     )
     road = (
         (tile_build.get("road_path") if isinstance(tile_build, dict) else None)
-        or payload.get("road")
+        or (road_val.get("path") if isinstance(road_val, dict) else road_val)
         or payload.get("road_path")
     )
     roi = (
         (tile_build.get("roi_layer_path") if isinstance(tile_build, dict) else None)
+        or (sa_val.get("source_layer") if isinstance(sa_val, dict) else sa_val)
         or payload.get("roi")
         or payload.get("roi_layer_path")
         or payload.get("roi_path")
     )
     soil = (
         (tile_build.get("soil_path") if isinstance(tile_build, dict) else None)
-        or payload.get("soil")
+        or (soil_val.get("raster_path") if isinstance(soil_val, dict) else soil_val)
         or payload.get("soil_path")
     )
     soil_cat = (
         (tile_build.get("soil_catalog_path") if isinstance(tile_build, dict) else None)
+        or (soil_val.get("catalog_path") if isinstance(soil_val, dict) else None)
         or payload.get("soil_catalog")
         or payload.get("soil_catalog_path")
     )
 
-    static_moisture = payload.get("static_moisture") or payload.get("static_moisture_paths")
-    hydrology = payload.get("hydrology") or payload.get("hydrology_layers")
+    static_moisture = (
+        (moisture_val.get("paths") if isinstance(moisture_val, dict) else None)
+        or payload.get("static_moisture")
+        or payload.get("static_moisture_paths")
+    )
+    hydrology = (
+        (hydro_val.get("upstream_layers") if isinstance(hydro_val, dict) else None)
+        or payload.get("hydrology")
+        or payload.get("hydrology_layers")
+    )
 
-    # If moisture or hydrology are missing, attempt fallback to assets config
-    if (not static_moisture or not hydrology) and assets_fallback_path:
-        ap = Path(assets_fallback_path)
-        if ap.is_file():
-            assets = cast(dict[str, Any], yaml.safe_load(ap.read_text(encoding="utf-8")))
-            if not static_moisture:
-                static_moisture = assets.get("static_moisture", [])
-            if not hydrology:
-                hydrology = assets.get("hydrology", {})
+    # Automatic fallback to standard private assets file if not in payload and not passed
+    if not static_moisture or not hydrology:
+        if not assets_fallback_path:
+            std_assets = (
+                Path(__file__).resolve().parents[2] / "configs" / "manned_assets.private.yaml"
+            )
+            if std_assets.is_file():
+                assets_fallback_path = std_assets
+        if assets_fallback_path:
+            ap = Path(assets_fallback_path)
+            if ap.is_file():
+                assets = cast(dict[str, Any], yaml.safe_load(ap.read_text(encoding="utf-8")))
+                if not static_moisture:
+                    static_moisture = assets.get("static_moisture", [])
+                if not hydrology:
+                    hydrology = assets.get("hydrology", {})
 
     if not dem or not ortho or not landcover or not road or not roi or not soil or not soil_cat:
         missing = [
@@ -802,12 +942,26 @@ def _resolve_weather_reference(
         reason = raw.get("degradation_reason", "unknown")
         raise ValueError(f"Weather snapshot is marked degraded: {reason}")
 
+    valid_at = str(raw.get("valid_at", ""))
+    if not valid_at:
+        raise ValueError("Weather snapshot missing required 'valid_at' timestamp.")
+
+    precip = float(raw.get("precipitation_24h_mm", 0.0))
+    if precip < 0.0:
+        raise ValueError(f"Weather snapshot precipitation cannot be negative: {precip}")
+
+    moisture_surface = float(raw.get("soil_moisture_surface_m3_m3", 0.0))
+    if moisture_surface < 0.0:
+        raise ValueError(
+            f"Weather snapshot surface soil moisture cannot be negative: {moisture_surface}"
+        )
+
     return WeatherSnapshotReference(
         snapshot_path=snapshot_path_str,
         provider=str(raw.get("provider", "open-meteo")),
-        valid_at=str(raw.get("valid_at", "")),
-        precipitation_24h_mm=float(raw.get("precipitation_24h_mm", 0.0)),
-        soil_moisture_surface_m3_m3=float(raw.get("soil_moisture_surface_m3_m3", 0.0)),
+        valid_at=valid_at,
+        precipitation_24h_mm=precip,
+        soil_moisture_surface_m3_m3=moisture_surface,
         degraded=bool(raw.get("degraded", False)),
         model=str(raw.get("model", "best_match")),
         replay_rule=str(
