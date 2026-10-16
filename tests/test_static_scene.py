@@ -342,7 +342,13 @@ def test_prepare_static_scene_qdx_live_if_present() -> None:
     assert scene.dem.native_resolution[0] > 0
     assert scene.road.feature_count == 124
     assert scene.road.road_type_field == "FuncClass"
-    assert len(scene.landcover.attribute_checks) == 3
+    assert len(scene.landcover.attribute_checks) == 4
+    assert {c.field for c in scene.landcover.attribute_checks} == {
+        "rowspacing",
+        "depth",
+        "Width",
+        "FuncClass",
+    }
     assert scene.orthophoto.acquisition_time is not None
     assert scene.moisture.observation_time == "2026-01-01"
     assert len(scene.moisture.paths) == 3

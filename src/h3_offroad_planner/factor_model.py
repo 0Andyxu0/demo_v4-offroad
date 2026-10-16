@@ -1479,7 +1479,7 @@ def _node_safety_margin(
         return 0.0
     margins: list[float] = []
     if abs(cell.slope) <= vehicle.max_climb_angle_deg:
-        margins.append(_slope_margin(cell.slope, vehicle))
+        margins.append(max(0.05, _slope_margin(cell.slope, vehicle)))
     else:
         margins.append(0.05)
     if cone_index is not None:

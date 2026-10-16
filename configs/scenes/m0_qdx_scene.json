@@ -199,7 +199,8 @@
       "depth": "depth"
     },
     "road_fina.shp": {
-      "width": "Width"
+      "width": "Width",
+      "functional_class": "FuncClass"
     }
   },
   "key_landcover_attributes": [
@@ -220,6 +221,12 @@
       "field": "Width",
       "verification_scope": "features intersecting the fixed study boundary",
       "semantic_status": "raw source field retained; road-area construction remains M1 work"
+    },
+    {
+      "layer": "road_fina.shp",
+      "field": "FuncClass",
+      "verification_scope": "features intersecting the fixed study boundary",
+      "semantic_status": "raw source functional classification field audited; road category modeling"
     }
   ],
   "primary_od": {

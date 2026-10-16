@@ -105,10 +105,13 @@ python scripts/run_local.py cli plan --request configs/manned_offroad.local.priv
   - 在标量 `_directed_edge_metrics` 与向量化 `evaluate_directed_edges_vectorized` 中，沿有向边将 DEM 地形梯度分解为纵向爬坡角 $\alpha$ 与侧向横坡角 $\beta = \sqrt{\max(0, \theta_{terrain}^2 - \alpha^2)}$；在 Iveco $30.96^\circ$ 爬坡角与 $25.0^\circ$ 横倾角限制下，成功保留 $31^\circ \sim 34^\circ$ 陡坡上的对角线与等高线平缓通行边，同时阻断直攀落线与侧向倾覆边；横坡裕度同步纳入边安全性指标。
 - **5 组多场景基准测试 OD 固化**：
   - 在 `configs/scenes/m1_benchmark_ods.json` 中固化了 5 组专项测试起终点，分别覆盖综合农田/路网全场景（`od_01_primary`）、密林行距安全宽度约束（`od_02_forest_rowspacing`）、水深涉水与低洼冲沟湿软规避（`od_03_water_gully`）、道路与自然土界面（`od_04_narrow_road`）以及 $30^\circ$ 陡坡斜切纵横坡解耦（`od_05_slope_traverse`），为 M1–M5 提供一致的基准测试基底。
+- **道路图层双字段对齐与审计贯通 (argon1657 审计项 3)**：
+  - 在 `configs/scenes/m0_qdx_scene.json` 与 `src/h3_offroad_planner/scene.py` 的默认 `field_mapping` 中，将 `road_fina.shp` 的 `width` 映射到 `Width`，`functional_class` 映射到 `FuncClass`；
+  - `prepare_static_scene` 与 `scripts/run_m0_baseline.py` 的关键地物属性审计扩展为 4 项（林地 `rowspacing` 386 条、水深 `depth` 454 条、路宽 `Width` 124 条、道路等级 `FuncClass` 124 条），避免在后续 M2 道路多边形构建时硬编码字段。
 - **自动化消融实验脚本与全量测试验证**：
   - 新增 `scripts/run_m1_ablation.py` 与 `scripts/run_local.py m1-ablation` 命令行接口，产出标准化消融报告 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`；
-  - 新增专项测试 `tests/test_m1_ablation.py`（5 项单变量消融测试全部通过）；
-  - 全仓库测试集 530 passed, 4 skipped，零回归。
+  - 新增专项测试 `tests/test_m1_ablation.py`（8 项单变量消融与边界测试全部通过，覆盖 A1a、A1b、A1c、A2、陡坡裕度单调性、$\theta_{terrain} < \alpha$ 精度边界及道路字段对齐）；
+  - 全仓库测试集 533 passed, 4 skipped，零回归。
 
 ## 运行方式
 

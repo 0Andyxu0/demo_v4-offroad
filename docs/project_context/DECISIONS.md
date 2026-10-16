@@ -35,5 +35,6 @@
 17. 建立静态真实降雨冻结快照与水文域地表阻抗机制：保留原晴干基线日快照（$P=0.3\text{mm}$, `derived_pressure=0.0`），增补真实暴雨日冻结快照 `rainy_weather.json`（$P=28.5\text{mm}$, $ET_0=1.85\text{mm}$, `derived_pressure=0.8`），结合固定上游水文域 D 场，在低洼汇水冲沟区施加地表阻抗倍率（$1.864\times$），主动规避湿软走廊，并明确区分物理含水率更新与地表阻抗倍率。
 18. 实现有向纵横坡解耦机制：移除仅因节点 DEM 标量坡度超限即在构图时硬删除整个节点的粗暴逻辑，改为在有向边与切向曲线上分别计算纵向坡度 $\alpha$ 与侧向横坡 $\beta = \sqrt{\max(0, \theta_{terrain}^2 - \alpha^2)}$；在 Iveco 爬坡角 $30.96^\circ$ 与横倾角 $25.0^\circ$ 约束下，成功保留 $31^\circ \sim 34^\circ$ 陡坡上的对角线与等高线平缓通行边，同时阻断直攀落线与高横坡倾覆边，标量与向量化引擎严格对齐。
 19. 固化 5 组多场景基准测试 OD（`configs/scenes/m1_benchmark_ods.json`），覆盖混合地貌、密林行距、涉水冲沟、路土交界与 $30^\circ$ 陡坡斜切，确保 M1 至 M5 全周期在相同工区与相同起终点上具备确定性评估依据。
+20. 道路图层属性映射显式对齐 Width 与 FuncClass 并消除陡坡裕度反转：按 argon1657 审核要求，在 `m0_qdx_scene.json` 与 `scene.py` 默认 `field_mapping` 中显式绑定 `road_fina.shp` 的 `width -> Width` 与 `functional_class -> FuncClass`，作为第 4 项关键地物属性纳入场景准备审计；修正节点坡度裕度在 $30.96^\circ$ 爬坡限制临界区的不连续下跳，确保节点安全性指标单调平滑。
 
 

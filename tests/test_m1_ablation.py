@@ -497,3 +497,133 @@ def test_a2_directed_slope_decoupling_preserves_diagonal_traverse(
     assert (u_cell.h3index, v_diag.h3index) in vec_cache
     assert (u_cell.h3index, v_fall.h3index) not in vec_cache
     assert (u_cell.h3index, v_contour.h3index) not in vec_cache
+
+
+def test_a2_directed_slope_precision_and_monotonicity(
+    default_vehicle: VehicleProfile,
+    default_factor_config: FactorModelConfig,
+) -> None:
+    """Edge cases on slope decoupling:
+
+    1. Slight numerical precision where edge pitch exceeds cell terrain slope
+       (terrain_slope < abs(slope)) does not crash and yields roll_deg = 0.
+    2. Node safety margin is strictly monotonic with slope:
+       a 30.5 deg slope node margin does not invert relative to a 32 deg slope node.
+    """
+    # 1. Monotonicity check
+    cell_moderate = H3Cell(
+        h3index="8f283082800000c",
+        lat=31.99,
+        lng=118.99,
+        elevation=100.0,
+        slope=25.0,
+        tri=0.0,
+        lc_factor=1.0,
+    )
+    cell_near_limit = H3Cell(
+        h3index="8f283082800000d",
+        lat=31.99,
+        lng=118.99,
+        elevation=100.0,
+        slope=30.5,
+        tri=0.0,
+        lc_factor=1.0,
+    )
+    cell_steep = H3Cell(
+        h3index="8f283082800000e",
+        lat=31.99,
+        lng=118.99,
+        elevation=100.0,
+        slope=32.0,
+        tri=0.0,
+        lc_factor=1.0,
+    )
+
+    ev_mod = _raw_node_evidence(cell_moderate, default_vehicle, default_factor_config, strict_static_mode=False)
+    ev_near = _raw_node_evidence(cell_near_limit, default_vehicle, default_factor_config, strict_static_mode=False)
+    ev_steep = _raw_node_evidence(cell_steep, default_vehicle, default_factor_config, strict_static_mode=False)
+
+    # Moderate slope margin > near limit margin >= steep margin (no inversion!)
+    assert ev_mod.safety_margin.nominal > ev_near.safety_margin.nominal
+    assert ev_near.safety_margin.nominal >= ev_steep.safety_margin.nominal
+    assert ev_steep.safety_margin.nominal == 0.05
+
+    # 2. Precision boundary: edge slope slightly larger than cell slope
+    # e.g. terrain_slope = 20.0, edge slope = 20.0001
+    # grade_force at 20.0001 deg is ~23,486 N <= vehicle max thrust 25,000 N
+    u = H3Cell("8f283082800000f", lat=31.99, lng=118.99, elevation=100.0, slope=20.0, tri=0.0, lc_factor=1.0)
+    v = H3Cell("8f2830828000010", lat=31.9902, lng=118.9902, elevation=108.55, slope=20.0, tri=0.0, lc_factor=1.0)
+    edge_precision = H3Edge(u.h3index, v.h3index, 25.0, slope_a_to_b=20.0001, slope_b_to_a=-20.0001)
+
+    node_u = _node_metrics(u, ev_mod, default_vehicle)
+    node_v = _node_metrics(v, ev_mod, default_vehicle)
+    graph = H3Graph(cells={u.h3index: u, v.h3index: v}, edges={(u.h3index, v.h3index): edge_precision})
+
+    # Should not crash, and roll_deg = 0.0 via max(0.0, ...)
+    metrics = _directed_edge_metrics(
+        graph,
+        edge_precision,
+        u.h3index,
+        v.h3index,
+        {u.h3index: node_u, v.h3index: node_v},
+        default_vehicle,
+        default_factor_config,
+        environment=None,
+    )
+    assert metrics is not None
+    assert metrics.directed_slope_deg == pytest.approx(20.0001)
+
+
+def test_a1b_bekker_loam_high_moisture_collapse(default_vehicle: VehicleProfile) -> None:
+    """Loam soil also collapses when moisture is too high (kc <= 0 in Shahgholi et al.)."""
+    from h3_offroad_planner.models import AssessmentError
+    checker = BekkerChecker()
+    # Loam collapses at w_percent >= 1065.9 / 24.59 = 43.34%, meaning theta >= 0.4334 * 1.45 = 0.628
+    loam_saturated = H3Cell(
+        h3index="8f2830828000011",
+        lat=31.99,
+        lng=118.99,
+        elevation=20.0,
+        slope=1.0,
+        tri=0.0,
+        lc_factor=1.0,
+        uscs="SM",  # maps to loam
+        soil_moisture=0.65,
+    )
+    # Direct compute_sinkage raises AssessmentError
+    with pytest.raises(AssessmentError, match="Bekker parameters must be finite positive values"):
+        checker.compute_sinkage(loam_saturated, default_vehicle)
+
+    # In cell evaluation: Cone Index collapses to ~26 kPa (< CI_THRESHOLD_KPA 185.73)
+    # mobility is forced to 0.0, and cell fails sinkage pass check
+    checker.enrich_cell(loam_saturated, default_vehicle)
+    assert loam_saturated.soil_mobility == 0.0
+    assert checker.check(loam_saturated, default_vehicle) is False
+
+    # Vectorized Bekker sinkage returns non-finite / NaN
+    s_m, r_n = vectorized_bekker_sinkage(
+        np.array(["loam"], dtype=np.str_),
+        np.array([0.65], dtype=np.float64),
+        default_vehicle,
+    )
+    assert not np.isfinite(s_m[0])
+    assert not np.isfinite(r_n[0])
+
+
+def test_road_field_mapping_includes_funcclass_and_width() -> None:
+    """Configs and default field mapping must audit both Width and FuncClass."""
+    import json
+    scene_path = ROOT / "configs" / "scenes" / "m0_qdx_scene.json"
+    scene_data = json.loads(scene_path.read_text(encoding="utf-8"))
+
+    field_map = scene_data["field_mapping"]
+    assert "road_fina.shp" in field_map
+    assert field_map["road_fina.shp"].get("width") == "Width"
+    assert field_map["road_fina.shp"].get("functional_class") == "FuncClass"
+
+    key_attribs = {entry["field"] for entry in scene_data["key_landcover_attributes"]}
+    assert "Width" in key_attribs
+    assert "FuncClass" in key_attribs
+    assert "rowspacing" in key_attribs
+    assert "depth" in key_attribs
+

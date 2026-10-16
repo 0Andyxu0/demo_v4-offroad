@@ -491,7 +491,7 @@ def prepare_static_scene(
         {
             "forest.shp": {"rowspacing": "rowspacing"},
             "water.shp": {"depth": "depth"},
-            "road_fina.shp": {"width": "Width"},
+            "road_fina.shp": {"width": "Width", "functional_class": "FuncClass"},
         },
     )
 
