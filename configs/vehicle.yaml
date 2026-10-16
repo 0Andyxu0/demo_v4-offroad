@@ -18,3 +18,4 @@ width_m: 2.056
 wheelbase_m: 3.480
 front_overhang_m: 0.928
 rear_overhang_m: 0.940
+max_roll_angle_deg: 25.0

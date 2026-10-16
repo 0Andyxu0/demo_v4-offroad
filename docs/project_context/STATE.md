@@ -1,6 +1,6 @@
 # 当前实施状态
 
-更新：2026-10-15。工作树：`D:/Workspace/demo_v4-manned-offroad`。分支：`codex/manned-offroad-map`。
+更新：2026-10-16。工作树：`D:/Workspace/demo_v4-manned-offroad`。分支：`codex/manned-offroad-map`。
 历史基线：`986bd58eef846f6f8a34961a43b208c315471110`；M0 规范化与加固提交：`5f30c5c`，`a4c8642`；当前最新提交以 `git rev-parse HEAD` 为准。
 
 ## 已完成
@@ -88,11 +88,71 @@ python scripts/run_local.py cli plan --request configs/manned_offroad.local.priv
 - `outputs/m0_qdx_baseline/landcover_attribute_audit.json`：工区内关键属性覆盖与值域审计。
 - `outputs/m0_qdx_baseline/baseline_route/`：基线 5 条候选路线导出的 GeoJSON/GPKG 与性能记录。
 
+### M1 静态通行属性修复与物理消融（已完成闭环）
+
+- **消除 `strict_static_mode` 属性旁路 (A1a)**：
+  - 移除了历史代码中 `strict_static_mode = environment is not None` 导致当传入气象快照时完全忽略林地株距与水深的逻辑；统一将 `strict_static_mode = False`；
+  - 无论是否传入气象快照，`forest.shp` 的 `rowspacing`（株距 `< 2.056m` 安全车宽即以 `ROWSPACING_BLOCKED` 阻断）与 `water.shp` 的 `depth`（浅水 `<= 0.308m` 涉水放行并计算阻力降速，深水 `> 0.308m` 离地间隙即以 `WATER_DEPTH_LIMIT` 阻断）均严格作为车辆物理硬约束生效；标量与向量化模型保持一致。
+- **土壤 Bekker/CI 模型高湿崩塌与空值放行修复 (A1b)**：
+  - 针对黏壤土等在含水率 $\theta=0.44$ 时因 $k_c \le 0$ 引发 `AssessmentError` 的物理失效，在 `dynamics/bekker.py` 的 `enrich_cell` 与 `_sinkage_passes` 中捕获该失效并显式赋予沉陷无穷大（`inf`）、沉陷阻力无穷大（`inf`）、土壤机动性 0.0；
+  - 在 `factor_model.py` 的 `_hard_constraints` 中拦截无限沉陷并以 `SINKAGE_CLEARANCE_EXCEEDED` 明确阻断；消除历史代码因 `NaN -> None` 回退导致高湿软土无条件放行的重大安全漏洞。
+- **静态真实天气修正与水文域地表阻抗 (A1c)**：
+  - 在 `configs/scenes/` 增补真实暴雨日冻结快照 `rainy_weather.json`（24h 降水 28.5 mm，潜在蒸散发 1.85 mm，`derived_pressure = 0.8`）；
+  - 与基线干旱日 `baseline_986bd58_weather.json`（`derived_pressure = 0.0`）形成对照，结合固定上游水文域 D 场（`drainage_sensitivity`），在降雨条件下对低洼冲沟区域施加 $1.864\times$ 地表阻抗惩罚，主动引导路线规避湿软冲沟走廊，明确区分物理含水率与地表阻抗倍率。
+- **有向纵横坡解耦 (A2)**：
+  - 在 `VehicleProfile` 与 `configs/vehicle.yaml` 中新增横倾角限制 `max_roll_angle_deg: 25.0` 与动态属性 `effective_max_roll_angle_deg`；
+  - 彻底移除了因子模型硬约束中单一 DEM 标量坡度超过爬坡限制即删除整个格元节点的粗暴逻辑；
+  - 在标量 `_directed_edge_metrics` 与向量化 `evaluate_directed_edges_vectorized` 中，沿有向边将 DEM 地形梯度分解为纵向爬坡角 $\alpha$ 与侧向横坡角 $\beta = \sqrt{\max(0, \theta_{terrain}^2 - \alpha^2)}$；在 Iveco $30.96^\circ$ 爬坡角与 $25.0^\circ$ 横倾角限制下，成功保留 $31^\circ \sim 34^\circ$ 陡坡上的对角线与等高线平缓通行边，同时阻断直攀落线与侧向倾覆边；横坡裕度同步纳入边安全性指标。
+- **5 组多场景基准测试 OD 固化**：
+  - 在 `configs/scenes/m1_benchmark_ods.json` 中固化了 5 组专项测试起终点，分别覆盖综合农田/路网全场景（`od_01_primary`）、密林行距安全宽度约束（`od_02_forest_rowspacing`）、水深涉水与低洼冲沟湿软规避（`od_03_water_gully`）、道路与自然土界面（`od_04_narrow_road`）以及 $30^\circ$ 陡坡斜切纵横坡解耦（`od_05_slope_traverse`），为 M1–M5 提供一致的基准测试基底。
+- **自动化消融实验脚本与全量测试验证**：
+  - 新增 `scripts/run_m1_ablation.py` 与 `scripts/run_local.py m1-ablation` 命令行接口，产出标准化消融报告 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`；
+  - 新增专项测试 `tests/test_m1_ablation.py`（5 项单变量消融测试全部通过）；
+  - 全仓库测试集 530 passed, 4 skipped，零回归。
+
+## 运行方式
+
+在工作树根目录执行：
+
+```powershell
+# 1. 验证工作区数据引用与基线瓦片
+python scripts/run_local.py verify
+
+# 2. 一键执行 M0 规范化基准管线
+python scripts/run_local.py m0-baseline
+
+# 3. 一键执行 M1 物理通行属性消融实验管线
+python scripts/run_local.py m1-ablation
+
+# 4. 运行 M1 消融测试
+python scripts/run_local.py pytest tests/test_m1_ablation.py -v
+
+# 5. 运行全仓库测试
+python scripts/run_local.py pytest tests/ -q
+
+# 6. 启动桌面端并加载 M0 项目（包含本地正射影像底图叠加）
+python scripts/run_local.py desktop --project configs/manned_offroad_m0.yaml
+```
+
+## 本地配置与证据产物
+
+- `configs/manned_offroad_m0.yaml`：M0 固定工区、OD、车辆、冻结气象与正射底图配置。
+- `configs/scenes/m0_qdx_scene.json`：符合 `StaticScene` 规范的固定场景元数据。
+- `configs/scenes/baseline_986bd58_weather.json`：2026-10-15T08:00Z 真实 Open-Meteo 冻结干旱/微雨气象快照。
+- `configs/scenes/rainy_weather.json`：2026-06-25T08:00Z 真实 Open-Meteo 冻结降雨日气象快照（$28.5\text{mm}$）。
+- `configs/scenes/m1_benchmark_ods.json`：M1–M5 固化的 5 组基准多场景测试起终点列表。
+- `outputs/m1_ablation/m1_ablation.json`：M1 物理通行属性消融实验原始数据。
+- `outputs/m1_ablation/m1_ablation_summary.md`：M1 物理消融对比报告（A0 -> A1a -> A1b -> A1c -> A2）。
+- `outputs/m0_qdx_baseline/m0_baseline.json`：M0 运行摘要、输入哈希、性能与解释边界记录。
+- `outputs/m0_qdx_baseline/static_scene.json`：`prepare_static_scene` 运行时生成的正式静态场景元数据。
+- `outputs/m0_qdx_baseline/orthophoto_preview.png`、`orthophoto_preview.json`：本地正射影像裁剪预览图与几何元数据。
+- `outputs/m0_qdx_baseline/landcover_attribute_audit.json`：工区内关键属性覆盖与值域审计。
+- `outputs/m0_qdx_baseline/baseline_route/`：基线 5 条候选路线导出的 GeoJSON/GPKG 与性能记录。
+
 ## 下一步与未完成项
 
-M0 规范化与基线准备已全部完成闭环，下一步严格按计划进入 **M1 静态通行属性**：
+M0 与 M1 阶段已全部完成代码级实现与测试验证。下一步严格按 `IMPLEMENTATION_PLAN.md` §4 & §6.2 启动 **M2：片段、入口和局部多通道**：
 
-1. **静态地物属性旁路修复**：消除 `strict_static_mode = environment is not None` 对森林 `rowspacing` 和水体 `depth` 的旁路，统一标量与向量化因子模型。
-2. **土壤与含水率模型修复**：将 CLDAS 静态含水率与天气修正结合，复现文献适用土类与 Bekker/CI 评价规则，取代 `theta=0.44` 硬编码阻断阈值。
-3. **水文域与 D 场集成**：复用上游水文域 D 场与含水率修正，建立物理含水率与通行阻抗之间的显式映射。
-4. **有向纵横坡计算**：沿候选曲线切向/侧向分解 DEM 梯度，取代单一节点标量坡度阻断机制。
+1. **物理片段拆分 (`InCellPatch`)**：在米制 CRS 下将源地物/障碍/道路边界与 H3 相交得到连通片段，道路和自然土保持各自属性。
+2. **公共开口与物理锚点 (`AnchorState`)**：从相邻片段实际公共开口建立物理锚点，宽开口保留多个锚点，拒绝无宽度空间纯拓扑相接。
+3. **局部约束三角细分与通道曲线 (`LocalCurveEdge`, `LocalPassageGraph`)**：边界约束三角细分，生成非支配多曲线（最短线、最大瓶颈净空线、最小累计 Q 线），保住真实走廊。

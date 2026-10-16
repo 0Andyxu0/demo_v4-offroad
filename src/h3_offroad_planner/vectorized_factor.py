@@ -205,7 +205,17 @@ def compute_vectorized_edge_arrays(
     grade_force = (vehicle.mass_kg * GRAVITY_MPS2) * uphill
     thrust_passable = grade_force <= vehicle.max_thrust_n
 
-    valid = passable & slope_passable & thrust_passable
+    cell_slopes = np.fromiter(
+        (graph.cells[cid].slope for cid in cell_ids),
+        dtype=np.float64,
+        count=num_cells,
+    )
+    edge_terrain_slopes = np.maximum(cell_slopes[u_indices], cell_slopes[v_indices])
+    roll_deg = np.sqrt(np.maximum(0.0, edge_terrain_slopes**2 - slopes**2))
+    max_roll = getattr(vehicle, "effective_max_roll_angle_deg", 25.0)
+    roll_passable = roll_deg <= max_roll
+
+    valid = passable & slope_passable & thrust_passable & roll_passable
 
     divisor = np.where(
         slopes >= 0.0,
@@ -236,9 +246,12 @@ def compute_vectorized_edge_arrays(
 
     slope_margin = np.clip(1.0 - abs_slope / vehicle.max_climb_angle_deg, 0.0, 1.0)
     thrust_margin = 1.0 - grade_force / vehicle.max_thrust_n
+    roll_margin = np.clip(1.0 - roll_deg / max_roll, 0.0, 1.0)
     node_margin = np.minimum(node_margin_lower[u_indices], node_margin_lower[v_indices])
     edge_margin = np.clip(
-        np.minimum(np.minimum(node_margin, slope_margin), thrust_margin), 0.0, 1.0
+        np.minimum(np.minimum(np.minimum(node_margin, slope_margin), thrust_margin), roll_margin),
+        0.0,
+        1.0,
     )
 
     slope_util = abs_slope / vehicle.max_climb_angle_deg

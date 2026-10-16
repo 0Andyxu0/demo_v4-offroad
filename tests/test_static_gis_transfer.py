@@ -615,7 +615,7 @@ def test_trajectory_value_objects_reject_invalid_states(factory: Callable[[], ob
         factory()
 
 
-def test_t08_strict_static_mode_blocks_water_and_does_not_use_rowspacing() -> None:
+def test_t08_static_mode_preserves_water_depth_and_rowspacing() -> None:
     water = _cell("a", landcover_code=5, landcover_type="water", depth=0.1)
     forest = _cell("b", landcover_code=2, landcover_type="forest", rowspacing=0.1)
     graph = H3Graph(
@@ -624,8 +624,10 @@ def test_t08_strict_static_mode_blocks_water_and_does_not_use_rowspacing() -> No
     )
     strict = evaluate_factor_model(graph, _vehicle(), FactorModelConfig(), EnvironmentConfig())
     legacy = evaluate_factor_model(graph, _vehicle(), FactorModelConfig())
-    assert strict.node_metrics["a"].is_passable is False
-    assert "ROWSPACING_BLOCKED" not in strict.node_metrics["b"].reason_codes
+    # Under M1 fix: neither static nor legacy bypasses rowspacing or shallow water passability
+    assert strict.node_metrics["a"].is_passable is True
+    assert "ROWSPACING_BLOCKED" in strict.node_metrics["b"].reason_codes
+    assert strict.node_metrics["b"].is_passable is False
     assert legacy.node_metrics["a"].is_passable is True
     assert legacy.node_metrics["b"].is_passable is False
 

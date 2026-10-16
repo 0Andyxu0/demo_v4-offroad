@@ -167,6 +167,7 @@ class VehicleProfile:
     front_overhang_m: float | None = None
     rear_overhang_m: float | None = None
     reference_point: str = "rear_axle_center"
+    max_roll_angle_deg: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -175,6 +176,10 @@ class VehicleProfile:
         _require_positive("max_climb_angle_deg", self.max_climb_angle_deg)
         if self.max_climb_angle_deg > 90.0:
             raise ValueError("max_climb_angle_deg must be in (0, 90].")
+        if self.max_roll_angle_deg is not None:
+            _require_positive("max_roll_angle_deg", self.max_roll_angle_deg)
+            if self.max_roll_angle_deg > 90.0:
+                raise ValueError("max_roll_angle_deg must be in (0, 90].")
         _require_positive("max_speed_kmh", self.max_speed_kmh)
         _require_positive("tire_width_m", self.tire_width_m)
         _require_positive("ground_clearance_m", self.ground_clearance_m)
@@ -189,6 +194,13 @@ class VehicleProfile:
         _require_optional_nonnegative("rear_overhang_m", self.rear_overhang_m)
         if self.reference_point != "rear_axle_center":
             raise ValueError("reference_point must be 'rear_axle_center'.")
+
+    @property
+    def effective_max_roll_angle_deg(self) -> float:
+        """Effective lateral roll limit (degrees) for vehicle stability."""
+        if self.max_roll_angle_deg is not None:
+            return self.max_roll_angle_deg
+        return min(self.max_climb_angle_deg * 0.85, 25.0)
 
     @property
     def has_complete_geometry(self) -> bool:

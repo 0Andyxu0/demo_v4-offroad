@@ -113,9 +113,16 @@ class BekkerChecker:
             return
         if cell.sinkage_m is not None and cell.sinkage_resistance is not None:
             return
-        terms = self.compute_sinkage(cell, vehicle)
-        cell.sinkage_m = terms["sinkage_m"]
-        cell.sinkage_resistance = terms["sinkage_resistance"]
+        try:
+            terms = self.compute_sinkage(cell, vehicle)
+            cell.sinkage_m = terms["sinkage_m"]
+            cell.sinkage_resistance = terms["sinkage_resistance"]
+        except AssessmentError:
+            # High moisture causes Bekker parameter stiffness collapse (e.g. k_c <= 0 at theta=0.44).
+            # Bearing capacity fails, sinkage exceeds ground clearance, and mobility collapses.
+            cell.sinkage_m = float("inf")
+            cell.sinkage_resistance = float("inf")
+            cell.soil_mobility = 0.0
 
     def compute_max_speed(self, cell: H3Cell, vehicle: VehicleProfile) -> float:
         """Return a conservative terrain speed cap in meters per second."""
@@ -177,7 +184,11 @@ def _bekker_stiffness(bekker_soil: str, w_percent: float) -> tuple[float, float]
 
 
 def _sinkage_passes(cell: H3Cell, vehicle: VehicleProfile) -> bool:
-    return cell.sinkage_m is None or cell.sinkage_m < vehicle.ground_clearance_m
+    if cell.sinkage_m is None:
+        if _cell_bekker_soil(cell) is not None and cell.soil_moisture is not None:
+            return False
+        return True
+    return cell.sinkage_m < vehicle.ground_clearance_m
 
 
 def _cell_bekker_soil(cell: H3Cell) -> str | None:

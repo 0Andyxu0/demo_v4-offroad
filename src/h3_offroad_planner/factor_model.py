@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
-from math import inf, isfinite, log, radians, sin
+from math import inf, isfinite, log, radians, sin, sqrt
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
@@ -960,12 +960,14 @@ def evaluate_factor_model(
         sinkage_m, resistance_n = vectorized_bekker_sinkage(
             bekker_soils, moisture_array, vehicle
         )
-        soil_sinkage_cache = {
-            cell.h3index: (float(s), float(r))
-            for cell, s, r in zip(soil_cells, sinkage_m, resistance_n, strict=True)
-            if np.isfinite(s) and np.isfinite(r)
-        }
-    strict_static_mode = environment is not None
+        soil_sinkage_cache = {}
+        for cell, s, r in zip(soil_cells, sinkage_m, resistance_n, strict=True):
+            if np.isfinite(s) and np.isfinite(r):
+                soil_sinkage_cache[cell.h3index] = (float(s), float(r))
+            elif _cell_bekker_soil(cell) is not None:
+                # Saturated / depleted Bekker stiffness (e.g. theta=0.44): mark infinite sinkage
+                soil_sinkage_cache[cell.h3index] = (float("inf"), float("inf"))
+    strict_static_mode = False
     nodes = {
         cell_id: _node_metrics(
             cell,
@@ -1291,8 +1293,7 @@ def _landcover_speed_interval(
 
     is_water = cell.landcover_code == 5 or (cell.landcover_type or "").lower() == "water"
     if (
-        not strict_static_mode
-        and is_water
+        is_water
         and cell.depth is not None
         and cell.depth <= vehicle.ground_clearance_m
     ):
@@ -1303,8 +1304,7 @@ def _landcover_speed_interval(
         return _known_interval(wading_speed)
 
     if (
-        not strict_static_mode
-        and cell.rowspacing is not None
+        cell.rowspacing is not None
         and (cell.landcover_code == 2 or (cell.landcover_type or "").lower() == "forest")
     ):
         safe_width = vehicle.width_m or 2.2
@@ -1392,8 +1392,12 @@ def _soil_speed_interval(
         try:
             BekkerChecker().enrich_cell(clone, vehicle)
         except AssessmentError:
-            reasons.extend(("MISSING_SOIL_EVIDENCE", "SOIL_MODEL_FALLBACK"))
-            return _floor_interval(missing, config.speed_floor_ratio), None, None
+            if _cell_bekker_soil(cell) is not None and cell.soil_moisture is not None:
+                clone.sinkage_m = float("inf")
+                clone.soil_mobility = 0.0
+            else:
+                reasons.extend(("MISSING_SOIL_EVIDENCE", "SOIL_MODEL_FALLBACK"))
+                return _floor_interval(missing, config.speed_floor_ratio), None, None
         cone_index = clone.cone_index_kpa
         sinkage = clone.sinkage_m
         soil_mobility = clone.soil_mobility
@@ -1403,8 +1407,10 @@ def _soil_speed_interval(
         value = configured
     elif soil_mobility is not None:
         value = max(0.0, min(1.0, soil_mobility))
-    elif sinkage is not None:
+    elif sinkage is not None and isfinite(sinkage):
         value = max(0.0, 1.0 - sinkage / vehicle.ground_clearance_m)
+    elif sinkage is not None and not isfinite(sinkage):
+        value = config.speed_floor_ratio
     else:
         reasons.extend(("MISSING_SOIL_EVIDENCE", "SOIL_MODEL_PARTIAL"))
         return _floor_interval(missing, config.speed_floor_ratio), cone_index, sinkage
@@ -1431,22 +1437,22 @@ def _hard_constraints(
         or cell.landcover_code == 5
     )
     if is_water:
-        if strict_static_mode or cell.depth is None:
+        if cell.depth is None:
             reasons.append("WATER")
-        if cell.depth is not None and cell.depth > vehicle.ground_clearance_m:
+        elif cell.depth > vehicle.ground_clearance_m:
             reasons.append("WATER_DEPTH_LIMIT")
-    if not strict_static_mode and cell.rowspacing is not None:
+    if cell.rowspacing is not None:
         safe_width = vehicle.width_m or 2.2
         if cell.rowspacing < safe_width:
             reasons.append("ROWSPACING_BLOCKED")
     if (cell.landcover_type or "").lower() == "building" or cell.landcover_code in {0, 6}:
         reasons.append("BUILDING")
     if abs(cell.slope) > vehicle.max_climb_angle_deg:
-        reasons.append("SLOPE_LIMIT")
+        reasons.append("STEEP_SLOPE")
     if cone_index is not None and cone_index < config.min_cone_index_kpa:
         reasons.append("CONE_INDEX_INSUFFICIENT")
     clearance_limit = vehicle.ground_clearance_m * config.max_sinkage_clearance_ratio
-    if sinkage is not None and sinkage >= clearance_limit:
+    if sinkage is not None and (sinkage >= clearance_limit or not isfinite(sinkage)):
         reasons.append("SINKAGE_CLEARANCE_EXCEEDED")
     hard_codes = {
         "STATIC_BLOCKED",
@@ -1454,7 +1460,6 @@ def _hard_constraints(
         "WATER_DEPTH_LIMIT",
         "BUILDING",
         "ROWSPACING_BLOCKED",
-        "SLOPE_LIMIT",
         "CONE_INDEX_INSUFFICIENT",
         "SINKAGE_CLEARANCE_EXCEEDED",
     }
@@ -1472,19 +1477,23 @@ def _node_safety_margin(
 ) -> float:
     if not passable:
         return 0.0
-    margins = [_slope_margin(cell.slope, vehicle)]
+    margins: list[float] = []
+    if abs(cell.slope) <= vehicle.max_climb_angle_deg:
+        margins.append(_slope_margin(cell.slope, vehicle))
+    else:
+        margins.append(0.05)
     if cone_index is not None:
         margins.append(1.0 - config.min_cone_index_kpa / cone_index)
     if sinkage is not None:
         clearance = vehicle.ground_clearance_m * config.max_sinkage_clearance_ratio
-        margins.append(1.0 - sinkage / clearance)
+        margins.append(1.0 - sinkage / clearance if isfinite(sinkage) else 0.0)
     if cell.depth is not None and cell.depth <= vehicle.ground_clearance_m:
         margins.append(1.0 - cell.depth / max(vehicle.ground_clearance_m, 0.01))
-    if not strict_static_mode and cell.rowspacing is not None:
+    if cell.rowspacing is not None:
         safe_width = vehicle.width_m or 2.2
         if cell.rowspacing >= safe_width:
             margins.append(min(1.0, (cell.rowspacing - safe_width) / max(safe_width, 0.01)))
-    return _clamp_ratio(min(margins))
+    return _clamp_ratio(min(margins) if margins else 1.0)
 
 
 def _node_metrics(
@@ -1547,16 +1556,19 @@ def _directed_edge_metrics(
         return None
     slope = _directional_slope(edge, from_h3, to_h3)
     grade_force = _grade_force_n(slope, vehicle)
-    if abs(slope) > vehicle.max_climb_angle_deg or grade_force > vehicle.max_thrust_n:
+    source_cell = graph.cells[from_h3]
+    target_cell = graph.cells[to_h3]
+    terrain_slope = max(source_cell.slope, target_cell.slope)
+    roll_deg = sqrt(max(0.0, terrain_slope**2 - slope**2))
+    max_roll = getattr(vehicle, "effective_max_roll_angle_deg", 25.0)
+    if abs(slope) > vehicle.max_climb_angle_deg or grade_force > vehicle.max_thrust_n or roll_deg > max_roll:
         return None
     directed = _directed_slope_factor(slope, vehicle, config)
     speeds = _edge_speed_interval(first, second, directed)
     speed_lower, speed_nominal, speed_upper = speeds
     if speed_nominal <= 0.0 or speed_upper <= 0.0:
         return None
-    margin = _edge_safety_margin(first, second, slope, grade_force, vehicle)
-    source_cell = graph.cells[from_h3]
-    target_cell = graph.cells[to_h3]
+    margin = _edge_safety_margin(first, second, slope, grade_force, vehicle, roll_deg=roll_deg)
     travel_cost = _travel_cost(edge, source_cell, target_cell, slope, vehicle, config)
     if not isfinite(travel_cost):
         return None
@@ -1609,13 +1621,16 @@ def _edge_safety_margin(
     slope_deg: float,
     grade_force_n: float,
     vehicle: VehicleProfile,
+    roll_deg: float = 0.0,
 ) -> float:
+    max_roll = getattr(vehicle, "effective_max_roll_angle_deg", 25.0)
     return _clamp_ratio(
         min(
             first.safety_margin.lower,
             second.safety_margin.lower,
             _slope_margin(slope_deg, vehicle),
             1.0 - grade_force_n / vehicle.max_thrust_n,
+            1.0 - roll_deg / max_roll,
         )
     )
 

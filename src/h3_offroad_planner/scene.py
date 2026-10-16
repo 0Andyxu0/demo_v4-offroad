@@ -576,6 +576,7 @@ def prepare_static_scene(
         "rowspacing": "raw source field retained; physical units and vehicle rule remain M1 work",
         "depth": "raw source field retained; physical units and crossing rule remain M1 work",
         "Width": "raw source field retained; road-area construction remains M1 work",
+        "FuncClass": "raw source functional classification field audited; road category modeling",
     }
 
     for layer_name, fields_dict in field_mapping.items():

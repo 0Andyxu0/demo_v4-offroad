@@ -1,0 +1,82 @@
+{
+  "schema_version": "m1_benchmark_ods_v1",
+  "scene_id": "qdx-dem-coverage-001",
+  "metric_crs": "EPSG:4528",
+  "ods": [
+    {
+      "id": "od_01_primary",
+      "name": "Primary Baseline OD",
+      "start_wgs84": [
+        31.9905769003,
+        118.9960502257
+      ],
+      "goal_wgs84": [
+        31.9931786713,
+        118.9894117713
+      ],
+      "category": "mixed_terrain",
+      "target_ablation": "A0_A1a_A1b_A1c_A2",
+      "description": "Baseline primary route OD traversing mixed farmland, road, and offroad terrain."
+    },
+    {
+      "id": "od_02_forest_rowspacing",
+      "name": "Forest Rowspacing Boundary OD",
+      "start_wgs84": [
+        31.9850,
+        118.9910
+      ],
+      "goal_wgs84": [
+        31.9890,
+        118.9940
+      ],
+      "category": "forest_rowspacing",
+      "target_ablation": "A1a",
+      "description": "Crosses forest boundary with varying tree rowspacing to test vehicle safe width passability."
+    },
+    {
+      "id": "od_03_water_gully",
+      "name": "Water and Low-Lying Gully OD",
+      "start_wgs84": [
+        31.9860,
+        118.9950
+      ],
+      "goal_wgs84": [
+        31.9890,
+        118.9970
+      ],
+      "category": "water_gully",
+      "target_ablation": "A1a_A1c",
+      "description": "Crosses water bodies and low-lying drainage gullies to test water depth clearance and rain weather impedance."
+    },
+    {
+      "id": "od_04_narrow_road",
+      "name": "Road and Offroad Soil Interface OD",
+      "start_wgs84": [
+        31.9890,
+        119.0050
+      ],
+      "goal_wgs84": [
+        31.9915,
+        119.0105
+      ],
+      "category": "road_interface",
+      "target_ablation": "A1b",
+      "description": "Transitions between paved road network and offroad soil corridors to test road width and soil properties."
+    },
+    {
+      "id": "od_05_slope_traverse",
+      "name": "Steep Slope Traverse OD",
+      "start_wgs84": [
+        31.9750,
+        118.9920
+      ],
+      "goal_wgs84": [
+        31.9790,
+        118.9970
+      ],
+      "category": "slope_traverse",
+      "target_ablation": "A2",
+      "description": "Traverses steep terrain (approx 30 deg slope) to test pitch and roll angle decoupling."
+    }
+  ]
+}

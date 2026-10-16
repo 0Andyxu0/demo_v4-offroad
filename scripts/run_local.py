@@ -17,7 +17,7 @@ os.environ['PYTHONPATH'] = str(ROOT / 'src') + (os.pathsep + os.environ['PYTHONP
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit('Usage: python scripts/run_local.py {cli|desktop|pytest|verify|m0-baseline} [args]')
+        raise SystemExit('Usage: python scripts/run_local.py {cli|desktop|pytest|verify|m0-baseline|m1-ablation} [args]')
     mode, args = sys.argv[1], sys.argv[2:]
     import h3_offroad_planner
     assert Path(h3_offroad_planner.__file__).resolve().is_relative_to(ROOT/'src')
@@ -50,6 +50,10 @@ def main():
         return 0
     if mode == 'm0-baseline':
         sys.argv=[str(ROOT/'scripts/run_m0_baseline.py'),*args]
+        runpy.run_path(sys.argv[0],run_name='__main__')
+        return 0
+    if mode == 'm1-ablation':
+        sys.argv=[str(ROOT/'scripts/run_m1_ablation.py'),*args]
         runpy.run_path(sys.argv[0],run_name='__main__')
         return 0
     raise SystemExit(f'Unknown mode: {mode}')

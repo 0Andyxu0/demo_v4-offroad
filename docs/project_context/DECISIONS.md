@@ -28,4 +28,12 @@
       - 全面阻断大体量 GIS 栅格/矢量/数据表/数据库及其各类伴生与运行锁文件（`*.shp.xml`、`*.lock`、`*.lck`、`*.sr.lock`、`*.wld`、`*.jgw`、`*.pgw`、`*.nc4`、`*.hdf`、`*.gdb/`、`*.kml`、`*.kmz`）；
       - 增加 `tests/test_gitignore.py` 纳入 CI 与全库自动化测试，确保新代码与配置不破坏忽略防线。
 
+## 2026-10-16：M1 静态通行属性修复与物理消融 (A0 -> A1a -> A1b -> A1c -> A2)
+
+15. 消除 `strict_static_mode = environment is not None` 导致的地物属性旁路漏洞：将 `strict_static_mode = False` 固化，确保在提供气象快照或静态规划时，森林 `rowspacing` 与水体 `depth` 均严格作为硬约束与阻力项参与计算，消除历史代码对行距与水深的跳过行为。
+16. 修复土壤 Bekker/CI 模型在饱和高湿下的刚度崩塌与空值放行漏洞：针对黏壤土等在 $\theta=0.44$（高湿）时 $k_c \le 0$ 引发 `AssessmentError` 的物理失效，明确将沉陷记为无穷大（`inf`）、沉陷阻力记为无穷大（`inf`）、土壤机动性设为 0.0，并在硬约束中以 `SINKAGE_CLEARANCE_EXCEEDED` 明确阻断，彻底消除因 `NaN -> None` 回退导致的无条件放行漏洞。
+17. 建立静态真实降雨冻结快照与水文域地表阻抗机制：保留原晴干基线日快照（$P=0.3\text{mm}$, `derived_pressure=0.0`），增补真实暴雨日冻结快照 `rainy_weather.json`（$P=28.5\text{mm}$, $ET_0=1.85\text{mm}$, `derived_pressure=0.8`），结合固定上游水文域 D 场，在低洼汇水冲沟区施加地表阻抗倍率（$1.864\times$），主动规避湿软走廊，并明确区分物理含水率更新与地表阻抗倍率。
+18. 实现有向纵横坡解耦机制：移除仅因节点 DEM 标量坡度超限即在构图时硬删除整个节点的粗暴逻辑，改为在有向边与切向曲线上分别计算纵向坡度 $\alpha$ 与侧向横坡 $\beta = \sqrt{\max(0, \theta_{terrain}^2 - \alpha^2)}$；在 Iveco 爬坡角 $30.96^\circ$ 与横倾角 $25.0^\circ$ 约束下，成功保留 $31^\circ \sim 34^\circ$ 陡坡上的对角线与等高线平缓通行边，同时阻断直攀落线与高横坡倾覆边，标量与向量化引擎严格对齐。
+19. 固化 5 组多场景基准测试 OD（`configs/scenes/m1_benchmark_ods.json`），覆盖混合地貌、密林行距、涉水冲沟、路土交界与 $30^\circ$ 陡坡斜切，确保 M1 至 M5 全周期在相同工区与相同起终点上具备确定性评估依据。
+
 

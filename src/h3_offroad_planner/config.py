@@ -93,6 +93,7 @@ def load_vehicle(path: str) -> VehicleProfile:
         front_overhang_m=_optional_float(data, "front_overhang_m"),
         rear_overhang_m=_optional_float(data, "rear_overhang_m"),
         reference_point=str(data.get("reference_point", "rear_axle_center")),
+        max_roll_angle_deg=_optional_float(data, "max_roll_angle_deg"),
     )
 
 
