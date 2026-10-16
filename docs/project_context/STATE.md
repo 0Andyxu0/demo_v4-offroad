@@ -48,11 +48,11 @@
 
 - **R1 道路有效宽度米制换算 (`resolve_road_effective_width_m`)**：
   - 对照高分正射影像与图层编码，确认 `road_fina.shp` 的 `Width` 字段为分米（0.1m）编码（值域 30.0~55.0）；
-  - 在 `src/h3_offroad_planner/scene.py` 与 `configs/scenes/m0_qdx_scene.json` 中增加 `width_unit_or_scale: "0.1m"` 与 `effective_width_m_range: [3.0, 5.5]`，提供统一辅助函数 `resolve_road_effective_width_m(raw_width, func_class, scale=0.1, default_m=3.5) -> float`；杜绝直接将原始 30.0~55.0 当作米使用而生成 30~55 米巨型虚假走廊。
+  - 在 `src/h3_offroad_planner/scene.py` 与 `configs/scenes/m0_qdx_scene.json` 中增加 `width_unit_or_scale: "0.1m"` 与 `effective_width_m_range: [3.0, 5.5]`，提供统一辅助函数 `resolve_road_effective_width_m(raw_width, func_class, scale=0.1, default_m=3.5) -> float`；杜绝直接将原始 30.0~55.0 当作米使用而生成 30~55 米巨型虚假走廊；场景准备解析时安全过滤非字段配置项，支持从 `road_mapping` 动态解析配置。
 - **R2 土壤 Bekker/CI 物理参数、干密度换算与超限阻断 (修复 A1b)**：
   - 严格依据 Shahgholi et al. (2024) 农艺壤土/黏壤土实测数据修正 $k_c, k_\phi, n$ 回归系数（黏壤土：$k_c = -34.53 w_{\%} + 1475.7$，$k_\phi = -33.606 w_{\%} + 2560.6$；壤土：$k_c = -24.59 w_{\%} + 1065.9$，$k_\phi = -24.482 w_{\%} + 2087.4$）；
   - 建立体积含水率 $\theta_v$（$\text{m}^3/\text{m}^3$）与质量含水率 $w_{\%}$ 的干密度物理换算：$w_{\%} = (\theta_v \cdot \rho_{\text{water}} / \rho_d) \times 100\%$（取 $\rho_{\text{water}} = 1.0\text{ g/cm}^3, \rho_d = 1.4\text{ g/cm}^3$）；在实测 $10\%\sim 40\%$ 范围内 $k_c$ 始终为确定正物理值；
-  - 针对极端饱和（$\theta_v \ge 0.65$）走标准圆锥指数规则，CI 低于门限（`min_cone_index_kpa: 150`）时以 `CONE_INDEX_INSUFFICIENT` 明确阻断；当沉陷超过离地间隙时以 `SINKAGE_CLEARANCE_EXCEEDED` 阻断；标量 `BekkerChecker` 与向量化 `evaluate_soil_bekker_vectorized` 保持完全一致。
+  - 超出文献适用土类或参数失效时规范回退至声明的土类与圆锥指数（CI）评价规则，不再将缺值直接赋为无穷大沉陷或零沉陷；针对极端饱和（$\theta_v \ge 0.65$）走标准圆锥指数规则，CI 低于门限（`min_cone_index_kpa: 150`）时以 `CONE_INDEX_INSUFFICIENT` 明确阻断；当沉陷超过离地间隙时以 `SINKAGE_CLEARANCE_EXCEEDED` 阻断；标量 `BekkerChecker` 与向量化 `evaluate_soil_bekker_vectorized` 保持完全一致。
 - **R3 CLDAS 静态含水率与水文 D 场接入，规范降雨场景 (修复 A1c)**：
   - 将工区格元与 CLDAS 静态含水率栅格采样（基底 $0.3080\text{ m}^3/\text{m}^3$）及固定上游水文域 D 场（`qdx_hydrology_upstream_v1/drainage_sensitivity.tif`，值域 $[0, 1]$）全面打通；
   - 针对暴雨对照，新增 `configs/scenes/synthetic_rainy_weather.json`，在配置与元数据中显式标注为“合成降雨敏感性对照场景”（`synthetic_rainy_weather_sensitivity_contrast`，`derived_pressure = 0.8`），与真实历史 API 快照严格区分，杜绝冒充真实观测；降雨时在低洼汇水冲沟区产生最高 $2.44\times$ 地表阻抗倍率（基准倍率 $1.864\times$），主动引导路径规避湿软冲沟。

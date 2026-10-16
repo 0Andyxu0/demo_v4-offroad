@@ -1,4 +1,6 @@
 {
+  "scene_type": "synthetic_rainy_weather_sensitivity_contrast",
+  "description": "合成降雨敏感性对照场景 (Synthetic rainy weather sensitivity contrast)",
   "age_s": 1800.0,
   "cache_hit": false,
   "calibration_status": "provisional_cldas_spatial_20260101",

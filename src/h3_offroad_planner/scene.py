@@ -144,10 +144,14 @@ def resolve_road_effective_width_m(
     preventing 30~55 m corridor explosions.
     """
     if raw_width is None:
+        if func_class is not None and str(func_class).strip() == "5":
+            return default_m
         return default_m
     try:
         val = float(raw_width)
     except (ValueError, TypeError):
+        if func_class is not None and str(func_class).strip() == "5":
+            return default_m
         return default_m
 
     if not np.isfinite(val) or val <= 0:
@@ -630,7 +634,9 @@ def prepare_static_scene(
         if layer_gdf.crs != roi_gdf.crs:
             layer_gdf = layer_gdf.to_crs(roi_gdf.crs)
 
-        for src_field in fields_dict.values():
+        for attr_key, src_field in fields_dict.items():
+            if attr_key in {"width_unit_or_scale", "effective_width_m_range"} or not isinstance(src_field, str):
+                continue
             if src_field not in layer_gdf.columns:
                 continue
             intersecting = layer_gdf.loc[layer_gdf.geometry.intersects(study_geom), src_field].dropna()
@@ -663,32 +669,61 @@ def prepare_static_scene(
     if not road_path.is_file():
         raise FileNotFoundError(f"Road shapefile does not exist: {road_path}")
     road_gdf = gpd.read_file(road_path)
+    road_mapping = field_mapping.get("road_fina.shp", {})
+    width_col = (
+        road_mapping.get("width")
+        if isinstance(road_mapping.get("width"), str) and road_mapping.get("width") in road_gdf.columns
+        else ("Width" if "Width" in road_gdf.columns else None)
+    )
+    scale_raw = road_mapping.get("width_unit_or_scale", "0.1m")
+    scale = 0.1
+    if isinstance(scale_raw, str):
+        cleaned = scale_raw.rstrip("m").strip()
+        try:
+            scale = float(cleaned)
+        except ValueError:
+            scale = 0.1
+    elif isinstance(scale_raw, (int, float)):
+        scale = float(scale_raw)
+
     sample_widths: list[float] = []
     effective_widths: list[float] = []
-    if "Width" in road_gdf.columns:
-        w_series = pd.to_numeric(road_gdf["Width"], errors="coerce").dropna()
+    if width_col and width_col in road_gdf.columns:
+        w_series = pd.to_numeric(road_gdf[width_col], errors="coerce").dropna()
         sample_widths = [float(v) for v in w_series.head(5).tolist()]
-        eff_series = w_series.apply(resolve_road_effective_width_m)
+        eff_series = w_series.apply(lambda w: resolve_road_effective_width_m(w, scale=scale))
         if not eff_series.empty:
             effective_widths = [float(eff_series.min()), float(eff_series.max())]
+
     sample_types: list[str] = []
     road_type_col = (
-        "FuncClass"
-        if "FuncClass" in road_gdf.columns
-        else ("Kind" if "Kind" in road_gdf.columns else None)
+        road_mapping.get("functional_class")
+        if isinstance(road_mapping.get("functional_class"), str) and road_mapping.get("functional_class") in road_gdf.columns
+        else (
+            "FuncClass"
+            if "FuncClass" in road_gdf.columns
+            else ("Kind" if "Kind" in road_gdf.columns else None)
+        )
     )
     if road_type_col and road_type_col in road_gdf.columns:
         sample_types = [str(v) for v in road_gdf[road_type_col].dropna().head(5).tolist()]
+
+    range_cfg = road_mapping.get("effective_width_m_range")
+    if isinstance(range_cfg, list) and len(range_cfg) == 2 and all(isinstance(v, (int, float)) for v in range_cfg):
+        fallback_range = [float(range_cfg[0]), float(range_cfg[1])]
+    else:
+        fallback_range = [3.0, 5.5]
+
     road = RoadReference(
         path=road_path.as_posix(),
         crs=str(road_gdf.crs),
-        width_field="Width",
+        width_field=width_col or "Width",
         feature_count=len(road_gdf),
         sample_widths=sample_widths,
         road_type_field=road_type_col,
         sample_road_types=sample_types,
-        width_unit_or_scale="0.1m",
-        effective_width_m_range=effective_widths if effective_widths else [3.0, 5.5],
+        width_unit_or_scale=str(scale_raw),
+        effective_width_m_range=effective_widths if effective_widths else fallback_range,
     )
 
     # 5. Orthophoto Reference

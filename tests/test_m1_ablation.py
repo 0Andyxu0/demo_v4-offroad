@@ -257,6 +257,41 @@ def test_a1b_bekker_saturated_soil_theta_0_65_blocked(
     assert cell_moderate.sinkage_m < default_vehicle.ground_clearance_m
 
 
+def test_a1b_bekker_out_of_range_falls_back_to_ci_rule(
+    default_vehicle: VehicleProfile,
+    default_factor_config: FactorModelConfig,
+) -> None:
+    """When Bekker parameters cannot be computed but CI is sufficient, cell follows declared CI rules.
+
+    Per IMPLEMENTATION_PLAN.md §5.2: '参数不适用时走已声明的土类/CI 评价规则，不能将缺值直接当作沉陷为零或无限通过能力。'
+    """
+    checker = BekkerChecker()
+    # Soil with high CI (e.g. SP: has CI params, but not in Bekker groups)
+    cell_high_ci = H3Cell(
+        h3index="8f2830828000007",
+        lat=31.99,
+        lng=118.99,
+        elevation=30.0,
+        slope=2.0,
+        tri=0.0,
+        lc_factor=1.0,
+        uscs="SP",
+        soil_moisture=0.15,
+    )
+    checker.enrich_cell(cell_high_ci, default_vehicle)
+    assert cell_high_ci.cone_index_kpa is not None
+    assert cell_high_ci.cone_index_kpa >= 185.73
+    assert cell_high_ci.sinkage_m is None
+    assert checker.check(cell_high_ci, default_vehicle) is True
+
+    # Factor model evaluation
+    graph = H3Graph(cells={cell_high_ci.h3index: cell_high_ci}, edges={})
+    factors = evaluate_factor_model(graph, default_vehicle, default_factor_config)
+    node_eval = factors.node_metrics[cell_high_ci.h3index]
+    assert node_eval.is_passable is True
+    assert "SINKAGE_CLEARANCE_EXCEEDED" not in node_eval.reason_codes
+
+
 # =========================================================================
 # A1c: Static Real Weather Surface Impedance
 # =========================================================================
@@ -269,7 +304,7 @@ def test_a1c_weather_surface_impedance_avoids_wet_gullies() -> None:
     When derived_pressure > 0.0 (rainy day), wet gully cells have significantly higher impedance.
     """
     dry_snapshot_path = ROOT / "configs" / "scenes" / "baseline_986bd58_weather.json"
-    rainy_snapshot_path = ROOT / "configs" / "scenes" / "rainy_weather.json"
+    rainy_snapshot_path = ROOT / "configs" / "scenes" / "synthetic_rainy_weather.json"
     assert dry_snapshot_path.is_file()
     assert rainy_snapshot_path.is_file()
 

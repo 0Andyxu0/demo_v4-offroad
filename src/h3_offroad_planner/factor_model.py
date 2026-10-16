@@ -961,13 +961,11 @@ def evaluate_factor_model(
         sinkage_m, resistance_n = vectorized_bekker_sinkage(
             bekker_soils, moisture_array, vehicle
         )
-        soil_sinkage_cache = {}
-        for cell, s, r in zip(soil_cells, sinkage_m, resistance_n, strict=True):
-            if np.isfinite(s) and np.isfinite(r):
-                soil_sinkage_cache[cell.h3index] = (float(s), float(r))
-            elif _cell_bekker_soil(cell) is not None:
-                # Saturated / depleted Bekker stiffness (e.g. theta=0.44): mark infinite sinkage
-                soil_sinkage_cache[cell.h3index] = (float("inf"), float("inf"))
+        soil_sinkage_cache = {
+            cell.h3index: (float(s), float(r))
+            for cell, s, r in zip(soil_cells, sinkage_m, resistance_n, strict=True)
+            if np.isfinite(s) and np.isfinite(r)
+        }
     strict_static_mode = False
     nodes = {
         cell_id: _node_metrics(
@@ -1376,7 +1374,7 @@ def _soil_speed_interval(
         elif cell.sinkage_m is not None:
             sinkage = cell.sinkage_m
             fast_path = True
-        elif _cell_bekker_soil(cell) is None:
+        elif _cell_bekker_soil(cell) is None or (soil_sinkage_cache is not None and cell.h3index not in soil_sinkage_cache):
             sinkage = None
             fast_path = True
 
@@ -1393,12 +1391,7 @@ def _soil_speed_interval(
         try:
             BekkerChecker().enrich_cell(clone, vehicle)
         except AssessmentError:
-            if _cell_bekker_soil(cell) is not None and cell.soil_moisture is not None:
-                clone.sinkage_m = float("inf")
-                clone.soil_mobility = 0.0
-            else:
-                reasons.extend(("MISSING_SOIL_EVIDENCE", "SOIL_MODEL_FALLBACK"))
-                return _floor_interval(missing, config.speed_floor_ratio), None, None
+            pass
         cone_index = clone.cone_index_kpa
         sinkage = clone.sinkage_m
         soil_mobility = clone.soil_mobility

@@ -27,6 +27,7 @@ from h3_offroad_planner.scene import (
     WeatherSnapshotReference,
     load_static_scene,
     prepare_static_scene,
+    resolve_road_effective_width_m,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -616,4 +617,143 @@ def test_prepare_static_scene_rejects_missing_moisture_file(tmp_path: Path) -> N
             weather_snapshot=weather_path,
             build_config={"metric_crs": "EPSG:3857"},
         )
+
+
+def test_resolve_road_effective_width_m() -> None:
+    """Test decimeter-to-meter scaling, boundary clipping, and fallback defaults."""
+    # Decimeter values scaled by 0.1
+    assert resolve_road_effective_width_m(30.0) == pytest.approx(3.0)
+    assert resolve_road_effective_width_m("30") == pytest.approx(3.0)
+    assert resolve_road_effective_width_m(55.0) == pytest.approx(5.5)
+    assert resolve_road_effective_width_m("55") == pytest.approx(5.5)
+
+    # Already meter values (< 15.0) preserved
+    assert resolve_road_effective_width_m(3.5) == pytest.approx(3.5)
+    assert resolve_road_effective_width_m(4.0) == pytest.approx(4.0)
+
+    # Default and fallback handling
+    assert resolve_road_effective_width_m(None) == pytest.approx(3.5)
+    assert resolve_road_effective_width_m("invalid") == pytest.approx(3.5)
+    assert resolve_road_effective_width_m(-5.0) == pytest.approx(3.5)
+    assert resolve_road_effective_width_m(0.0) == pytest.approx(3.5)
+    assert resolve_road_effective_width_m(float("nan")) == pytest.approx(3.5)
+    assert resolve_road_effective_width_m(None, func_class="5") == pytest.approx(3.5)
+
+    # Clamping range [2.0, 15.0]
+    assert resolve_road_effective_width_m(0.5) == pytest.approx(2.0)
+    assert resolve_road_effective_width_m(200.0) == pytest.approx(15.0)
+
+
+def test_prepare_static_scene_with_road_field_mapping(tmp_path: Path) -> None:
+    """Ensure prepare_static_scene accepts field_mapping with width_unit_or_scale and effective_width_m_range."""
+    dem_path = tmp_path / "dem.tif"
+    with rasterio.open(
+        dem_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(118.98, 32.00, 0.002, 0.002),
+    ) as ds:
+        ds.write(np.ones((10, 10), dtype=np.float32) * 50.0, 1)
+
+    roi_path = tmp_path / "bound.shp"
+    gpd.GeoDataFrame({"geometry": [box(118.98, 31.97, 119.00, 31.99)]}, crs="EPSG:4326").to_file(roi_path)
+
+    road_path = tmp_path / "road.shp"
+    gpd.GeoDataFrame(
+        {
+            "Width": ["30", "55"],
+            "FuncClass": ["5", "5"],
+            "geometry": [
+                LineString([(118.985, 31.975), (118.995, 31.985)]),
+                LineString([(118.986, 31.976), (118.996, 31.986)]),
+            ],
+        },
+        crs="EPSG:4326",
+    ).to_file(road_path)
+
+    lc_dir = tmp_path / "landcover"
+    lc_dir.mkdir()
+    gpd.GeoDataFrame(
+        {"rowspacing": ["3.0"], "geometry": [box(118.98, 31.97, 118.99, 31.98)]},
+        crs="EPSG:4326",
+    ).to_file(lc_dir / "forest.shp")
+
+    ortho_path = tmp_path / "ortho.tif"
+    with rasterio.open(
+        ortho_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=from_origin(118.98, 32.00, 0.002, 0.002),
+    ) as ds:
+        ds.write(np.ones((10, 10), dtype=np.uint8), 1)
+
+    soil_path = tmp_path / "soil.tif"
+    with rasterio.open(
+        soil_path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=from_origin(118.98, 32.00, 0.002, 0.002),
+    ) as ds:
+        ds.write(np.ones((10, 10), dtype=np.uint8), 1)
+
+    catalog_path = tmp_path / "soil.dbf"
+    gpd.GeoDataFrame({"VALUE": [1], "geometry": [None]}, crs="EPSG:4326").to_file(catalog_path)
+
+    weather_path = tmp_path / "weather.json"
+    weather_path.write_text(
+        json.dumps({
+            "scene_type": "synthetic_rainy_weather_sensitivity_contrast",
+            "valid_at": "2026-10-15T08:00:00Z",
+            "degraded": False,
+            "derived_pressure": 0.8,
+        }),
+        encoding="utf-8",
+    )
+
+    inputs = {
+        "dem": str(dem_path),
+        "orthophoto": str(ortho_path),
+        "landcover": str(lc_dir),
+        "road": str(road_path),
+        "roi": str(roi_path),
+        "soil": str(soil_path),
+        "soil_catalog": str(catalog_path),
+    }
+
+    # Pass field_mapping containing list and scale entries as defined in m0_qdx_scene.json
+    field_mapping = {
+        "forest.shp": {"rowspacing": "rowspacing"},
+        "road_fina.shp": {
+            "width": "Width",
+            "functional_class": "FuncClass",
+            "width_unit_or_scale": "0.1m",
+            "effective_width_m_range": [3.0, 5.5],
+        },
+    }
+
+    scene = prepare_static_scene(
+        inputs=inputs,
+        weather_snapshot=weather_path,
+        build_config={"metric_crs": "EPSG:3857", "field_mapping": field_mapping},
+    )
+
+    assert scene.road.width_field == "Width"
+    assert scene.road.width_unit_or_scale == "0.1m"
+    assert scene.road.effective_width_m_range == [3.0, 5.5]
+    assert scene.road.sample_widths == [30.0, 55.0]
 
