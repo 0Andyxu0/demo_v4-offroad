@@ -122,6 +122,11 @@
       "5",
       "5",
       "5"
+    ],
+    "width_unit_or_scale": "0.1m",
+    "effective_width_m_range": [
+      3.0,
+      5.5
     ]
   },
   "orthophoto": {
@@ -200,7 +205,12 @@
     },
     "road_fina.shp": {
       "width": "Width",
-      "functional_class": "FuncClass"
+      "functional_class": "FuncClass",
+      "width_unit_or_scale": "0.1m",
+      "effective_width_m_range": [
+        3.0,
+        5.5
+      ]
     }
   },
   "key_landcover_attributes": [
@@ -220,7 +230,7 @@
       "layer": "road_fina.shp",
       "field": "Width",
       "verification_scope": "features intersecting the fixed study boundary",
-      "semantic_status": "raw source field retained; road-area construction remains M1 work"
+      "semantic_status": "raw source field in decimeters (0.1m scale); converted to effective width 3.0~5.5m"
     },
     {
       "layer": "road_fina.shp",

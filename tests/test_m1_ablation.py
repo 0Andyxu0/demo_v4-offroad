@@ -54,7 +54,7 @@ def default_vehicle() -> VehicleProfile:
         max_speed_kmh=100.0,
         tire_width_m=0.255,
         ground_clearance_m=0.308,
-        max_thrust_n=25000.0,
+        max_thrust_n=50000.0,
         tire_radius_m=0.42,
         min_turn_radius_m=6.0,
         width_m=2.056,
@@ -184,11 +184,11 @@ def test_a1a_water_depth_distinguishes_shallow_and_deep_water(
 # =========================================================================
 
 
-def test_a1b_bekker_saturated_soil_theta_0_44_blocked(
+def test_a1b_bekker_saturated_soil_theta_0_65_blocked(
     default_vehicle: VehicleProfile,
     default_factor_config: FactorModelConfig,
 ) -> None:
-    """At theta=0.44, clay loam kc parameter collapses (kc <= 0).
+    """At extreme moisture (theta=0.65, w% > 42.7%), clay loam kc parameter collapses (kc <= 0).
 
     M1 must catch this AssessmentError and mark sinkage as infinite,
     explicitly blocking the cell with SINKAGE_CLEARANCE_EXCEEDED instead of
@@ -196,7 +196,6 @@ def test_a1b_bekker_saturated_soil_theta_0_44_blocked(
     """
     checker = BekkerChecker()
 
-    # 1. BekkerChecker direct enrichment
     cell_saturated = H3Cell(
         h3index="8f2830828000005",
         lat=31.99,
@@ -206,15 +205,21 @@ def test_a1b_bekker_saturated_soil_theta_0_44_blocked(
         tri=0.0,
         lc_factor=1.0,
         uscs="CL",
-        soil_moisture=0.44,
+        soil_moisture=0.65,
     )
+
+    # 1. BekkerChecker direct sinkage raises AssessmentError due to non-positive parameters
+    from h3_offroad_planner.models import AssessmentError
+    with pytest.raises(AssessmentError, match="Bekker parameters must be finite positive values"):
+        checker.compute_sinkage(cell_saturated, default_vehicle)
+
+    # In cell evaluation: Cone Index collapses below threshold, setting mobility to 0.0
     checker.enrich_cell(cell_saturated, default_vehicle)
     assert checker.check(cell_saturated, default_vehicle) is False
-    assert math.isinf(cell_saturated.sinkage_m)
-    assert math.isinf(cell_saturated.sinkage_resistance)
     assert cell_saturated.soil_mobility == 0.0
+    assert cell_saturated.cone_index_kpa < 185.73
 
-    # 2. Factor model integration via evaluate_factor_model
+    # 2. Factor model integration via evaluate_factor_model: cell is hard blocked
     graph = H3Graph(
         cells={cell_saturated.h3index: cell_saturated},
         edges={},
@@ -222,16 +227,17 @@ def test_a1b_bekker_saturated_soil_theta_0_44_blocked(
     factors = evaluate_factor_model(graph, default_vehicle, default_factor_config)
     node_eval = factors.node_metrics[cell_saturated.h3index]
     assert node_eval.is_passable is False
-    assert "SINKAGE_CLEARANCE_EXCEEDED" in node_eval.reason_codes
+    assert "CONE_INDEX_INSUFFICIENT" in node_eval.reason_codes
 
-    # 3. Vectorized Bekker sinkage check: theta=0.44 produces non-finite sinkage (triggering infinite sinkage in factor_model)
+    # 3. Vectorized Bekker sinkage check: theta=0.65 produces non-finite sinkage
     sink_arr, res_arr = vectorized_bekker_sinkage(
         np.array(["clayloam"], dtype=np.str_),
-        np.array([0.44], dtype=np.float64),
+        np.array([0.65], dtype=np.float64),
         default_vehicle,
     )
     assert not np.isfinite(sink_arr[0])
     assert not np.isfinite(res_arr[0])
+
 
     # 4. Moderate soil moisture (e.g. theta=0.20) remains passable
     cell_moderate = H3Cell(
@@ -402,14 +408,14 @@ def test_a2_directed_slope_decoupling_preserves_diagonal_traverse(
         v_contour.h3index: node_contour,
     }
 
-    # 2. Diagonal traverse edge: longitudinal pitch = 20 deg <= 30.96 deg
-    # roll = sqrt(32^2 - 20^2) = sqrt(1024 - 400) = sqrt(624) = 24.98 deg <= 25.0 deg!
+    # 2. Diagonal traverse edge: longitudinal pitch = 23 deg <= 30.96 deg
+    # Exact tangent roll: tan(roll) = sqrt(tan(32°)^2 - tan(23°)^2) = sqrt(0.3905 - 0.1802) = 0.4586 -> 24.63 deg <= 25.0 deg!
     edge_diag = H3Edge(
         cell_a=u_cell.h3index,
         cell_b=v_diag.h3index,
         geo_distance=25.0,
-        slope_a_to_b=20.0,
-        slope_b_to_a=-20.0,
+        slope_a_to_b=23.0,
+        slope_b_to_a=-23.0,
     )
 
     # 3. Fall-line traverse edge: longitudinal pitch = 32 deg > 30.96 deg

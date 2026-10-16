@@ -56,6 +56,15 @@ def main():
         sys.argv=[str(ROOT/'scripts/run_m1_ablation.py'),*args]
         runpy.run_path(sys.argv[0],run_name='__main__')
         return 0
+    if mode == 'run':
+        if not args:
+            raise SystemExit('Usage: python scripts/run_local.py run <script.py> [args]')
+        target = Path(args[0])
+        if not target.is_absolute():
+            target = ROOT / target
+        sys.argv = [str(target), *args[1:]]
+        runpy.run_path(str(target), run_name='__main__')
+        return 0
     raise SystemExit(f'Unknown mode: {mode}')
 
 

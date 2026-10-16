@@ -211,7 +211,12 @@ def compute_vectorized_edge_arrays(
         count=num_cells,
     )
     edge_terrain_slopes = np.maximum(cell_slopes[u_indices], cell_slopes[v_indices])
-    roll_deg = np.sqrt(np.maximum(0.0, edge_terrain_slopes**2 - slopes**2))
+    rad_terrain = np.radians(np.maximum(edge_terrain_slopes, 0.0))
+    rad_pitch = np.radians(np.abs(slopes))
+    tan_terrain = np.tan(rad_terrain)
+    tan_pitch = np.tan(rad_pitch)
+    tan_roll_sq = np.maximum(0.0, tan_terrain * tan_terrain - tan_pitch * tan_pitch)
+    roll_deg = np.degrees(np.arctan(np.sqrt(tan_roll_sq)))
     max_roll = getattr(vehicle, "effective_max_roll_angle_deg", 25.0)
     roll_passable = roll_deg <= max_roll
 

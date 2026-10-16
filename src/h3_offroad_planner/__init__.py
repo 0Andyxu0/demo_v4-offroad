@@ -57,6 +57,7 @@ from h3_offroad_planner.scene import (
     WeatherSnapshotReference,
     load_static_scene,
     prepare_static_scene,
+    resolve_road_effective_width_m,
 )
 from h3_offroad_planner.tiling import build_h3_tile_cache
 
@@ -74,6 +75,7 @@ __all__ = [
     "WeatherSnapshotReference",
     "load_static_scene",
     "prepare_static_scene",
+    "resolve_road_effective_width_m",
     "ConfigError",
     "AssessmentError",
     "BlockageRecord",

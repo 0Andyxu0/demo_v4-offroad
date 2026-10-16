@@ -37,4 +37,14 @@
 19. 固化 5 组多场景基准测试 OD（`configs/scenes/m1_benchmark_ods.json`），覆盖混合地貌、密林行距、涉水冲沟、路土交界与 $30^\circ$ 陡坡斜切，确保 M1 至 M5 全周期在相同工区与相同起终点上具备确定性评估依据。
 20. 道路图层属性映射显式对齐 Width 与 FuncClass 并消除陡坡裕度反转：按 argon1657 审核要求，在 `m0_qdx_scene.json` 与 `scene.py` 默认 `field_mapping` 中显式绑定 `road_fina.shp` 的 `width -> Width` 与 `functional_class -> FuncClass`，作为第 4 项关键地物属性纳入场景准备审计；修正节点坡度裕度在 $30.96^\circ$ 爬坡限制临界区的不连续下跳，确保节点安全性指标单调平滑。
 
+## 2026-10-16：M1 综合审核与整改落地 (argon1909 R1–R6)
+
+21. 道路 Width 字段米制有效宽度换算 (R1)：核实 `road_fina.shp` 中 `FuncClass = "5"` 的 `Width` 原始值为分米（0.1m）编码（值域 30.0~55.0 分米），在 `m0_qdx_scene.json` 与 `scene.py` 中显式增加 `width_unit_or_scale: "0.1m"` 与 `effective_width_m_range: [3.0, 5.5]`，提供统一辅助函数 `resolve_road_effective_width_m` 进行米制换算（"30" -> 3.0m，"55" -> 5.5m），杜绝将原始分米值直接当米使用而生成 30~55 米巨型虚假走廊。
+22. 土壤 Bekker/CI 物理参数修正与干密度含水率换算 (R2)：依据 Shahgholi et al. (2024) 农艺土壤实测数据修正黏壤土与壤土的 $k_c, k_\phi, n$ 回归模型，按干密度 $\rho_d = 1.4\text{ g/cm}^3$ 严格换算体积含水率与质量含水率（$w_{\%} = (\theta_v \cdot \rho_{\text{water}} / \rho_d) \times 100\%$），保证实测含水率下 $k_c > 0$；极端饱和高湿（$\theta_v \ge 0.65$）时规范走圆锥指数不足（`CONE_INDEX_INSUFFICIENT`）或沉陷超限（`SINKAGE_CLEARANCE_EXCEEDED`）阻断，消除对错误回归抛异常的依赖，标量与向量化计算保持完全一致。
+23. 接入 CLDAS 静态含水率与水文 D 场，规范气象快照 (R3)：打通工区格元与 CLDAS 静态含水率栅格（基底 $0.3080\text{ m}^3/\text{m}^3$）及上游水文域 D 场（`drainage_sensitivity.tif`）的真实栅格采样；将手工构造的降雨场景明确命名为 `synthetic_rainy_weather.json` 并标注为合成对照场景（`synthetic_rainy_weather_sensitivity_contrast`，`derived_pressure = 0.8`），与真实观测快照严格隔离。
+24. 零近似误差正切纵横坡解耦 (R4)：废除角度直接平方相减的近似公式，统一采用 $\tan\theta_{\text{roll}} = \sqrt{\max(0, \tan^2\theta_{\text{terrain}} - \tan^2\theta_{\text{pitch}})}, \theta_{\text{roll}} = \arctan(\tan\theta_{\text{roll}})$，标量与 NumPy 向量化逐元素误差 $< 10^{-12}$，在 Iveco 爬坡 $31.0^\circ$ 与横倾 $25.0^\circ$ 双约束下精确保留安全对角通行边。
+25. 真实 QDX 瓦片图与 5 组基准 OD 端到端消融验证 (R5)：彻底废除仅测试 7 个内存单元格的旧脚本，重写 `scripts/run_m1_ablation.py`，在真实 QDX 瓦片图（454,475 格元，2,133,478 有向边）和 5 组基准 OD 上运行 A0 至 A2 真实图搜索，准确记录可通行统计、阻断原因码分布及路径物理规避行为，输出至 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`。
+26. 状态记录与实施事实全面对齐 (R6)：消除 `STATE.md` 与实际代码、配置之间的矛盾，修正 OD 标识（`od_01_primary` ~ `od_05_slope_traverse`）、车辆涉水深配置（$0.225\text{ m}$ 与测试车 $0.308\text{ m}$）及气象衍生压力参数（`0.8`），以真实 QDX 消融统计数据更新消融对比记录。
+
+
 

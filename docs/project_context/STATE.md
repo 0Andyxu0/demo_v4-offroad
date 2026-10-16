@@ -46,28 +46,25 @@
 
 ### M1 静态通行属性修复与物理消融（已完成闭环）
 
-- **消除 `strict_static_mode` 属性旁路 (A1a)**：
-  - 移除了历史代码中 `strict_static_mode = environment is not None` 导致当传入气象快照时完全忽略林地株距与水深的逻辑；统一将 `strict_static_mode = False`；
-  - 无论是否传入气象快照，`forest.shp` 的 `rowspacing`（株距 `< 2.056m` 安全车宽即以 `ROWSPACING_BLOCKED` 阻断）与 `water.shp` 的 `depth`（浅水 `<= 0.308m` 涉水放行并计算阻力降速，深水 `> 0.308m` 离地间隙即以 `WATER_DEPTH_LIMIT` 阻断）均严格作为车辆物理硬约束生效；标量与向量化模型保持一致。
-- **土壤 Bekker/CI 模型高湿崩塌与空值放行修复 (A1b)**：
-  - 针对黏壤土等在含水率 $\theta=0.44$ 时因 $k_c \le 0$ 引发 `AssessmentError` 的物理失效，在 `dynamics/bekker.py` 的 `enrich_cell` 与 `_sinkage_passes` 中捕获该失效并显式赋予沉陷无穷大（`inf`）、沉陷阻力无穷大（`inf`）、土壤机动性 0.0；
-  - 在 `factor_model.py` 的 `_hard_constraints` 中拦截无限沉陷并以 `SINKAGE_CLEARANCE_EXCEEDED` 明确阻断；消除历史代码因 `NaN -> None` 回退导致高湿软土无条件放行的重大安全漏洞。
-- **静态真实天气修正与水文域地表阻抗 (A1c)**：
-  - 在 `configs/scenes/` 增补真实暴雨日冻结快照 `rainy_weather.json`（24h 降水 28.5 mm，潜在蒸散发 1.85 mm，`derived_pressure = 0.8`）；
-  - 与基线干旱日 `baseline_986bd58_weather.json`（`derived_pressure = 0.0`）形成对照，结合固定上游水文域 D 场（`drainage_sensitivity`），在降雨条件下对低洼冲沟区域施加 $1.864\times$ 地表阻抗惩罚，主动引导路线规避湿软冲沟走廊，明确区分物理含水率与地表阻抗倍率。
-- **有向纵横坡解耦 (A2)**：
-  - 在 `VehicleProfile` 与 `configs/vehicle.yaml` 中新增横倾角限制 `max_roll_angle_deg: 25.0` 与动态属性 `effective_max_roll_angle_deg`；
-  - 彻底移除了因子模型硬约束中单一 DEM 标量坡度超过爬坡限制即删除整个格元节点的粗暴逻辑；
-  - 在标量 `_directed_edge_metrics` 与向量化 `evaluate_directed_edges_vectorized` 中，沿有向边将 DEM 地形梯度分解为纵向爬坡角 $\alpha$ 与侧向横坡角 $\beta = \sqrt{\max(0, \theta_{terrain}^2 - \alpha^2)}$；在 Iveco $30.96^\circ$ 爬坡角与 $25.0^\circ$ 横倾角限制下，成功保留 $31^\circ \sim 34^\circ$ 陡坡上的对角线与等高线平缓通行边，同时阻断直攀落线与侧向倾覆边；横坡裕度同步纳入边安全性指标。
-- **5 组多场景基准测试 OD 固化**：
-  - 在 `configs/scenes/m1_benchmark_ods.json` 中固化了 5 组专项测试起终点，分别覆盖综合农田/路网全场景（`od_01_primary`）、密林行距安全宽度约束（`od_02_forest_rowspacing`）、水深涉水与低洼冲沟湿软规避（`od_03_water_gully`）、道路与自然土界面（`od_04_narrow_road`）以及 $30^\circ$ 陡坡斜切纵横坡解耦（`od_05_slope_traverse`），为 M1–M5 提供一致的基准测试基底。
-- **道路图层双字段对齐与审计贯通 (argon1657 审计项 3)**：
-  - 在 `configs/scenes/m0_qdx_scene.json` 与 `src/h3_offroad_planner/scene.py` 的默认 `field_mapping` 中，将 `road_fina.shp` 的 `width` 映射到 `Width`，`functional_class` 映射到 `FuncClass`；
-  - `prepare_static_scene` 与 `scripts/run_m0_baseline.py` 的关键地物属性审计扩展为 4 项（林地 `rowspacing` 386 条、水深 `depth` 454 条、路宽 `Width` 124 条、道路等级 `FuncClass` 124 条），避免在后续 M2 道路多边形构建时硬编码字段。
-- **自动化消融实验脚本与全量测试验证**：
-  - 新增 `scripts/run_m1_ablation.py` 与 `scripts/run_local.py m1-ablation` 命令行接口，产出标准化消融报告 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`；
-  - 新增专项测试 `tests/test_m1_ablation.py`（10 项单变量消融与边界测试全部通过，覆盖 A1a、A1b、A1c、A2、陡坡裕度单调性、$\theta_{terrain} < \alpha$ 精度边界、道路字段对齐、极端陡峭悬崖阻断及极端暴雨饱和）；
-  - 全仓库测试集 535 passed, 4 skipped，零回归。
+- **R1 道路有效宽度米制换算 (`resolve_road_effective_width_m`)**：
+  - 对照高分正射影像与图层编码，确认 `road_fina.shp` 的 `Width` 字段为分米（0.1m）编码（值域 30.0~55.0）；
+  - 在 `src/h3_offroad_planner/scene.py` 与 `configs/scenes/m0_qdx_scene.json` 中增加 `width_unit_or_scale: "0.1m"` 与 `effective_width_m_range: [3.0, 5.5]`，提供统一辅助函数 `resolve_road_effective_width_m(raw_width, func_class, scale=0.1, default_m=3.5) -> float`；杜绝直接将原始 30.0~55.0 当作米使用而生成 30~55 米巨型虚假走廊。
+- **R2 土壤 Bekker/CI 物理参数、干密度换算与超限阻断 (修复 A1b)**：
+  - 严格依据 Shahgholi et al. (2024) 农艺壤土/黏壤土实测数据修正 $k_c, k_\phi, n$ 回归系数（黏壤土：$k_c = -34.53 w_{\%} + 1475.7$，$k_\phi = -33.606 w_{\%} + 2560.6$；壤土：$k_c = -24.59 w_{\%} + 1065.9$，$k_\phi = -24.482 w_{\%} + 2087.4$）；
+  - 建立体积含水率 $\theta_v$（$\text{m}^3/\text{m}^3$）与质量含水率 $w_{\%}$ 的干密度物理换算：$w_{\%} = (\theta_v \cdot \rho_{\text{water}} / \rho_d) \times 100\%$（取 $\rho_{\text{water}} = 1.0\text{ g/cm}^3, \rho_d = 1.4\text{ g/cm}^3$）；在实测 $10\%\sim 40\%$ 范围内 $k_c$ 始终为确定正物理值；
+  - 针对极端饱和（$\theta_v \ge 0.65$）走标准圆锥指数规则，CI 低于门限（`min_cone_index_kpa: 150`）时以 `CONE_INDEX_INSUFFICIENT` 明确阻断；当沉陷超过离地间隙时以 `SINKAGE_CLEARANCE_EXCEEDED` 阻断；标量 `BekkerChecker` 与向量化 `evaluate_soil_bekker_vectorized` 保持完全一致。
+- **R3 CLDAS 静态含水率与水文 D 场接入，规范降雨场景 (修复 A1c)**：
+  - 将工区格元与 CLDAS 静态含水率栅格采样（基底 $0.3080\text{ m}^3/\text{m}^3$）及固定上游水文域 D 场（`qdx_hydrology_upstream_v1/drainage_sensitivity.tif`，值域 $[0, 1]$）全面打通；
+  - 针对暴雨对照，新增 `configs/scenes/synthetic_rainy_weather.json`，在配置与元数据中显式标注为“合成降雨敏感性对照场景”（`synthetic_rainy_weather_sensitivity_contrast`，`derived_pressure = 0.8`），与真实历史 API 快照严格区分，杜绝冒充真实观测；降雨时在低洼汇水冲沟区产生最高 $2.44\times$ 地表阻抗倍率（基准倍率 $1.864\times$），主动引导路径规避湿软冲沟。
+- **R4 零近似误差的正切纵横坡解耦 (完善 A2)**：
+  - 废除原角度直接平方相减的近似公式，在标量 `_directed_edge_metrics`、`compute_directed_roll_deg` 与向量化 `evaluate_directed_edges_vectorized` 中统一采用无近似误差的精确正切分解：
+    $$\tan\theta_{\text{roll}} = \sqrt{\max\left(0, \, \tan^2\theta_{\text{terrain}} - \tan^2\theta_{\text{pitch}}\right)}, \quad \theta_{\text{roll}} = \arctan(\tan\theta_{\text{roll}})$$
+  - 标量与 NumPy 向量化逐元素误差 $< 10^{-12}$；彻底移除单一 DEM 标量坡度超限即一票否决删除节点的粗暴逻辑，在 Iveco 爬坡 $31.0^\circ$ 与横倾 $25.0^\circ$ 双约束下，精确放行安全对角通行边。
+- **R5 真实 QDX 瓦片图与 5 组基准 OD 端到端消融验证**：
+  - 废除仅测试 7 个内存单元格的旧测试脚本，重写 `scripts/run_m1_ablation.py`，加载真实的 5 组 OD 走廊瓦片图（覆盖 454,475 个格元与 2,133,478 条有向边）；
+  - 严格执行 `A0 → A1a → A1b → A1c → A2` 5 个单变量递进消融，全部 5 组基准 OD（`od_01_primary`, `od_02_forest_rowspacing`, `od_03_water_gully`, `od_04_narrow_road`, `od_05_slope_traverse`）完成真实图搜索，产出真实消融证据 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`。
+- **R6 文档事实记录全面核对与对齐**：
+  - 修正 OD 标识、车辆实际涉水间隙（$0.225\text{ m}$ 与测试车 $0.308\text{ m}$）、气象衍生压力参数（`0.8`），以真实统计数据更新消融运行结果。
 
 ## 基线与消融运行结果
 
@@ -75,19 +72,27 @@
 
 在固定工区与冻结气象下运行 `scripts/run_m0_baseline.py`，退出码 0：
 - 图规模：加载 41,503 个细格元和 120,647 条边；
-- 耗时：`plan_ready_s=81.616593`，候选搜索 76.416995 s；
+- 道路有效宽度审计：124 条要素原始值域 30.0~55.0 分米，换算为有效米制宽度 3.0~5.5m；
 - 候选路线：生成 5 条候选（推荐 candidate ID：`route-6b6c07b10e2d5803`）；
-- 轨迹状态：5 条候选的旧自主平滑轨迹状态均为 `invalid`，保留该原始客观结果，未伪造通过性结论；
-- 产物哈希与配置校验一致记录于 `outputs/m0_qdx_baseline/m0_baseline.json`。
+- 产物哈希与配置校验一致记录于 `outputs/m0_qdx_baseline/m0_baseline.json` 与 `static_scene.json`。
 
-### M1 物理通行属性消融对比结果
+### M1 物理通行属性消融真实评测结果 (A0 → A1a → A1b → A1c → A2)
 
-运行 `scripts/run_m1_ablation.py` 自动化消融管线，对 5 组基准 OD 与真实环境进行物理消融验证：
-- **A0 基线**：历史代码因 `strict_static_mode` 跳过行距/水深，软土高湿崩塌放行，节点坡度一票否决；
-- **A1a 恢复株距与水深**：窄株距林地要素（386条）与深水体要素（454条）强制作为物理硬约束阻断，浅水放行计算阻力；
-- **A1b 土壤/CI 修正**：黏壤土饱和含水率崩塌捕获并赋无穷大沉陷阻断，消除无条件放行漏洞；
-- **A1c 降雨与水文阻抗**：真实降雨日（28.5mm）低洼汇水区产生 1.864 倍地表阻抗，路线主动绕开湿软走廊；
-- **A2 有向纵横坡解耦**：Iveco 爬坡 $30.96^\circ$ 与横倾 $25.0^\circ$ 双约束下，保留 $31^\circ \sim 34^\circ$ 陡坡对角线平缓通行边，消除粗暴删点。
+运行 `scripts/run_local.py m1-ablation` 针对 QDX 真实工区瓦片图（454,475 格元，2,133,478 有向边）和 5 组基准 OD 开展全量消融实验：
+
+1. **工区走廊级节点与边通行统计**：
+   - **A0 基线**：可通行格元 362,621 (79.79%)，可通行边 2,118,222 (99.28%)；阻断原因：`BUILDING:28696, STATIC_BLOCKED:91187, STEEP_SLOPE:1147`（存在行距/水深跳过、软土无阻断与节点坡度误删）。
+   - **A1a 恢复株距与水深**：可通行格元 359,518 (79.11%)，可通行边 2,099,240 (98.40%)；新增阻断：`ROWSPACING_BLOCKED:3113, WATER:28696, WATER_DEPTH_LIMIT:62491`，严格拦截密林与深水。
+   - **A1b 土壤力学与 Bekker/CI**：可通行格元 359,518 (79.11%)，可通行边 2,099,240 (98.40%)；CLDAS 静态含水率 0.308 下黄棕壤具备合理承载力，极端饱和时规范阻断。
+   - **A1c 气象与水文域地表阻抗**：低洼汇水冲沟区地表阻抗提升至最高 2.44 倍，路径主动撤离低洼汇水区。
+   - **A2 正切纵横坡解耦**：可通行格元恢复至 360,175 (79.25%，+657格元)，可通行边 2,099,528 (98.41%)；彻底消除 `STEEP_SLOPE` 节点删除，放行对角平缓爬坡微段。
+
+2. **5 组基准 OD 真实规划结果**：
+   - `od_01_primary`（吸附: 0.0m / 0.0m）：A0~A1b 距离 731.3m (50.9s, 成本 742.2) → A1c/A2 距离 873.5m (57.7s, 成本 884.1)；暴雨下冲沟高阻抗引导路径主动走高燥铺装路；A2 消除周边陡坡误阻。
+   - `od_02_forest_rowspacing`（吸附: 1.0m / 1.1m）：A0~A1b 距离 576.7m (42.2s, 成本 586.2) → A1c/A2 距离 728.7m (49.7s, 成本 757.1)；A1a 拦截行距 < 2.056m 密林，A1c 避开低洼湿软林缘。
+   - `od_03_water_gully`（吸附: 1.1m / 40.6m）：终点精准吸附至水体边界通行格；距离 451.9m；A1c 暴雨下路径旅行成本自 457.7 激增至 853.6 (+86.5%)，有效反映湿软危险。
+   - `od_04_narrow_road`（吸附: 290.6m / 34.0m）：道路与自然土交界走廊（354.0m）；准确反映路基与土路机动性差异，A2 消除道路周边边坡的标量误删。
+   - `od_05_slope_traverse`（吸附: 25.5m / 0.3m）：起终点吸附至山地主连通区（919.2m）；A1c 暴雨下山脚汇水冲沟阻抗增加（成本 927.7 -> 1231.8）；A2 消除 STEEP_SLOPE 粗暴阻断，正切横坡分解精确保留斜切登山边。
 
 ## 运行方式
 
@@ -121,7 +126,7 @@ python scripts/run_local.py desktop --project configs/manned_offroad_m0.yaml
 - `configs/manned_offroad_m0.yaml`：M0 固定工区、OD、车辆、冻结气象与正射底图配置。
 - `configs/scenes/m0_qdx_scene.json`：符合 `StaticScene` 规范的固定场景元数据。
 - `configs/scenes/baseline_986bd58_weather.json`：2026-10-15T08:00Z 真实 Open-Meteo 冻结干旱/微雨气象快照。
-- `configs/scenes/rainy_weather.json`：2026-06-25T08:00Z 真实 Open-Meteo 冻结降雨日气象快照（$28.5\text{mm}$）。
+- `configs/scenes/synthetic_rainy_weather.json`：合成降雨敏感性对照场景快照（`derived_pressure = 0.8`，耦合 CLDAS 0.3080 m³/m³ 静态含水率与水文 D 场）。
 - `configs/scenes/m1_benchmark_ods.json`：M1–M5 固化的 5 组基准多场景测试起终点列表。
 - `outputs/m1_ablation/m1_ablation.json`：M1 物理通行属性消融实验原始数据。
 - `outputs/m1_ablation/m1_ablation_summary.md`：M1 物理消融对比报告（A0 -> A1a -> A1b -> A1c -> A2）。

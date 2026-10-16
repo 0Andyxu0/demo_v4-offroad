@@ -18,9 +18,21 @@ from h3_offroad_planner.dynamics.bekker import (
 from h3_offroad_planner.models import VehicleProfile
 
 __all__ = [
+    "evaluate_soil_bekker_vectorized",
     "vectorized_bekker_sinkage",
     "vectorized_cone_index_kpa",
+    "volumetric_to_gravimetric_moisture",
 ]
+
+
+def volumetric_to_gravimetric_moisture(
+    soil_moisture: npt.NDArray[np.float64] | float,
+    dry_density: npt.NDArray[np.float64] | float,
+) -> npt.NDArray[np.float64] | float:
+    """Convert volumetric soil moisture theta_v (m3/m3) to gravimetric moisture w% using dry density rho_d:
+    w% = (theta_v * rho_water / rho_d) * 100%.
+    """
+    return soil_moisture * RHO_WATER_G_CM3 / dry_density * 100.0
 
 
 def vectorized_cone_index_kpa(
@@ -88,7 +100,7 @@ def vectorized_bekker_sinkage(
             - 0.008326 * w_percent
         )
         if soil_name == "clayloam":
-            k_c = -34.53 * w_percent + 1075.7
+            k_c = -34.53 * w_percent + 1475.7
             k_phi = -33.606 * w_percent + 2560.6
         else:
             k_c = -24.59 * w_percent + 1065.9
@@ -116,3 +128,6 @@ def vectorized_bekker_sinkage(
         resistance_n[sub_mask] = r
 
     return sinkage_m, resistance_n
+
+
+evaluate_soil_bekker_vectorized = vectorized_bekker_sinkage

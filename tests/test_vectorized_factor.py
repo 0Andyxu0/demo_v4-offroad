@@ -364,19 +364,20 @@ def test_scalar_speed_multiplier_clamps_tri_below_best() -> None:
 def test_vectorized_bekker_sinkage_high_moisture_boundary(
     vehicle: VehicleProfile,
 ) -> None:
-    """High moisture makes k_c <= 0 in Bekker model, returning NaN matching AssessmentError."""
+    """Extreme moisture (e.g. theta=0.65, w% > 42.7%) makes k_c <= 0 in Bekker model, returning NaN matching AssessmentError."""
     checker = BekkerChecker()
     cell = H3Cell(
-        "test_cell", 0, 0, 0, 0, 0, 1.0, is_passable=True, uscs="CL", soil_moisture=0.45
+        "test_cell", 0, 0, 0, 0, 0, 1.0, is_passable=True, uscs="CL", soil_moisture=0.65
     )
     with pytest.raises(AssessmentError):
         checker.compute_sinkage(cell, vehicle)
 
     s_m, r_n = vectorized_bekker_sinkage(
-        np.array(["clayloam"]), np.array([0.45]), vehicle
+        np.array(["clayloam"]), np.array([0.65]), vehicle
     )
     assert np.isnan(s_m[0])
     assert np.isnan(r_n[0])
+
 
 
 def test_vectorized_bekker_sinkage_invalid_inputs(vehicle: VehicleProfile) -> None:

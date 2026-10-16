@@ -42,6 +42,7 @@ __all__ = [
     "WeatherSnapshotReference",
     "load_static_scene",
     "prepare_static_scene",
+    "resolve_road_effective_width_m",
 ]
 
 
@@ -121,9 +122,41 @@ class RoadReference:
     sample_widths: list[float] = field(default_factory=list)
     road_type_field: str | None = None
     sample_road_types: list[str] = field(default_factory=list)
+    width_unit_or_scale: str = "0.1m"
+    effective_width_m_range: list[float] = field(default_factory=lambda: [3.0, 5.5])
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def resolve_road_effective_width_m(
+    raw_width: Any,
+    func_class: Any = None,
+    scale: float = 0.1,
+    default_m: float = 3.5,
+) -> float:
+    """Convert raw road Width (decimeters in GIS source e.g. '30', '55') to effective road width in meters.
+
+    In the QDX road dataset (`road_fina.shp`), `FuncClass = '5'` (rural track/path) records `Width`
+    in decimeters (0.1 m scale), where '30' represents 3.0 m (or single-lane rural road ~3.5 m)
+    and '55' represents 5.5 m (two-lane rural road).
+    This function ensures that raw width values in decimeters (e.g. >= 15.0) are properly scaled by 0.1 m,
+    preventing 30~55 m corridor explosions.
+    """
+    if raw_width is None:
+        return default_m
+    try:
+        val = float(raw_width)
+    except (ValueError, TypeError):
+        return default_m
+
+    if not np.isfinite(val) or val <= 0:
+        return default_m
+
+    if val >= 15.0:
+        val = val * scale
+
+    return float(np.clip(val, 2.0, 15.0))
 
 
 @dataclass(frozen=True)
@@ -334,6 +367,10 @@ class StaticScene:
             sample_widths=[float(v) for v in road_data.get("sample_widths", [])],
             road_type_field=road_data.get("road_type_field"),
             sample_road_types=[str(v) for v in road_data.get("sample_road_types", [])],
+            width_unit_or_scale=str(road_data.get("width_unit_or_scale", "0.1m")),
+            effective_width_m_range=[
+                float(v) for v in road_data.get("effective_width_m_range", [3.0, 5.5])
+            ],
         )
 
         ortho_data = data.get("orthophoto", {})
@@ -575,7 +612,7 @@ def prepare_static_scene(
     semantic_statuses = {
         "rowspacing": "raw source field retained; physical units and vehicle rule remain M1 work",
         "depth": "raw source field retained; physical units and crossing rule remain M1 work",
-        "Width": "raw source field retained; road-area construction remains M1 work",
+        "Width": "raw source field in decimeters (0.1m scale); converted to effective width 3.0~5.5m",
         "FuncClass": "raw source functional classification field audited; road category modeling",
     }
 
@@ -627,9 +664,13 @@ def prepare_static_scene(
         raise FileNotFoundError(f"Road shapefile does not exist: {road_path}")
     road_gdf = gpd.read_file(road_path)
     sample_widths: list[float] = []
+    effective_widths: list[float] = []
     if "Width" in road_gdf.columns:
         w_series = pd.to_numeric(road_gdf["Width"], errors="coerce").dropna()
         sample_widths = [float(v) for v in w_series.head(5).tolist()]
+        eff_series = w_series.apply(resolve_road_effective_width_m)
+        if not eff_series.empty:
+            effective_widths = [float(eff_series.min()), float(eff_series.max())]
     sample_types: list[str] = []
     road_type_col = (
         "FuncClass"
@@ -646,6 +687,8 @@ def prepare_static_scene(
         sample_widths=sample_widths,
         road_type_field=road_type_col,
         sample_road_types=sample_types,
+        width_unit_or_scale="0.1m",
+        effective_width_m_range=effective_widths if effective_widths else [3.0, 5.5],
     )
 
     # 5. Orthophoto Reference

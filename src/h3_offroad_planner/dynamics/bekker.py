@@ -161,6 +161,11 @@ def _ground_pressure_n_per_mm2(vehicle: VehicleProfile) -> float:
 
 
 def _water_percent(bekker_soil: str, soil_moisture: float) -> float:
+    """Convert volumetric moisture theta_v (m3/m3) to gravimetric moisture w% using dry density rho_d.
+
+    w% = (theta_v * rho_water / rho_d) * 100%
+    where rho_water = 1.0 g/cm3 and rho_d is soil dry bulk density in g/cm3.
+    """
     rho_d = BEKKER_DRY_DENSITY[bekker_soil]
     return soil_moisture * RHO_WATER_G_CM3 / rho_d * 100.0
 
@@ -176,8 +181,16 @@ def _bekker_exponent(bekker_soil: str, w_percent: float) -> float:
 
 
 def _bekker_stiffness(bekker_soil: str, w_percent: float) -> tuple[float, float]:
+    """Compute Bekker stiffness parameters (k_c, k_phi) from gravimetric moisture percentage.
+
+    Equations based on Shahgholi et al. (2024) for clay loam and loam:
+    - clay loam: k_c = -34.53 * w% + 1475.7, k_phi = -33.606 * w% + 2560.6
+      (in 10%~40% range: k_c in [1130.4, 94.5], k_phi in [2224.5, 1216.4])
+    - loam: k_c = -24.59 * w% + 1065.9, k_phi = -24.482 * w% + 2087.4
+      (in 10%~40% range: k_c in [820.0, 82.3], k_phi in [1842.6, 1108.1])
+    """
     if bekker_soil == "clayloam":
-        return -34.53 * w_percent + 1075.7, -33.606 * w_percent + 2560.6
+        return -34.53 * w_percent + 1475.7, -33.606 * w_percent + 2560.6
     if bekker_soil == "loam":
         return -24.59 * w_percent + 1065.9, -24.482 * w_percent + 2087.4
     raise AssessmentError(f"unsupported Bekker soil group: {bekker_soil!r}")

@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
-from math import inf, isfinite, log, radians, sin, sqrt
+from math import atan, degrees, inf, isfinite, log, radians, sin, sqrt, tan
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
@@ -47,6 +47,7 @@ __all__ = [
     "PHYSICAL_EVIDENCE_WARNING",
     "build_directed_edge_cache",
     "canonical_hash",
+    "compute_directed_roll_deg",
     "environment_multiplier",
     "evaluate_factor_model",
     "evaluate_path_metrics",
@@ -1540,6 +1541,18 @@ def _node_speed_interval(
     )
 
 
+def compute_directed_roll_deg(terrain_slope_deg: float, pitch_deg: float) -> float:
+    """Exact tangent decomposition of terrain slope into directed pitch and roll angles.
+
+    tan(theta_roll) = sqrt(max(0, tan^2(theta_terrain) - tan^2(theta_pitch)))
+    theta_roll = degrees(arctan(tan(theta_roll)))
+    """
+    t_terrain = tan(radians(max(0.0, terrain_slope_deg)))
+    t_pitch = tan(radians(abs(pitch_deg)))
+    t_roll_sq = max(0.0, t_terrain * t_terrain - t_pitch * t_pitch)
+    return float(degrees(atan(sqrt(t_roll_sq))))
+
+
 def _directed_edge_metrics(
     graph: H3Graph,
     edge: H3Edge,
@@ -1559,7 +1572,7 @@ def _directed_edge_metrics(
     source_cell = graph.cells[from_h3]
     target_cell = graph.cells[to_h3]
     terrain_slope = max(source_cell.slope, target_cell.slope)
-    roll_deg = sqrt(max(0.0, terrain_slope**2 - slope**2))
+    roll_deg = compute_directed_roll_deg(terrain_slope, slope)
     max_roll = getattr(vehicle, "effective_max_roll_angle_deg", 25.0)
     if abs(slope) > vehicle.max_climb_angle_deg or grade_force > vehicle.max_thrust_n or roll_deg > max_roll:
         return None
