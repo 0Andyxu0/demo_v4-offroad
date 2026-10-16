@@ -1,7 +1,7 @@
 # 当前实施状态
 
 更新：2026-10-16。工作树：`D:/Workspace/demo_v4-manned-offroad`。分支：`codex/manned-offroad-map`。
-历史基线：`986bd58eef846f6f8a34961a43b208c315471110`；M0 规范化与加固提交：`5f30c5c`，`a4c8642`；当前最新提交以 `git rev-parse HEAD` 为准。
+历史基线：`986bd58eef846f6f8a34961a43b208c315471110`；M0 规范化与加固提交：`5f30c5c`，`88ddda0`；M1 静态通行属性修复与物理消融提交：`3b1a520`，`c715f08`；当前最新提交以 `git rev-parse HEAD` 为准。
 
 ## 已完成
 
@@ -44,50 +44,6 @@
   - 全套回归测试 520 passed, 4 skipped；
   - 专门增加 `tests/test_static_scene.py`（StaticScene 强类型序列化、合成矢量/栅格 fixtures 场景准备、降级气象拦截、缺失输入拦截、已有场景文件/字典解析、实际 QDX 数据准备回归、地理 metric_crs 拦截、退化几何拦截、非重叠栅格拦截、气象数值合法性拦截、缺失含水率文件拦截）与 `tests/test_orthophoto_preview.py`（裁剪下采样、坐标越界拦截、项目配置解析、Leaflet 地图叠加），全部通过。
 
-## 基线运行结果（M0 可复现基准）
-
-在固定工区与冻结气象下运行 `scripts/run_m0_baseline.py`，退出码 0：
-- 图规模：加载 41,503 个细格元和 120,647 条边；
-- 耗时：`plan_ready_s=81.616593`，候选搜索 76.416995 s；
-- 候选路线：生成 5 条候选（推荐 candidate ID：`route-6b6c07b10e2d5803`）；
-- 轨迹状态：5 条候选的旧自主平滑轨迹状态均为 `invalid`，保留该原始客观结果，未伪造通过性结论；
-- 产物哈希与配置校验一致记录于 `outputs/m0_qdx_baseline/m0_baseline.json`。
-
-## 运行方式
-
-在工作树根目录执行：
-
-```powershell
-# 1. 验证工作区数据引用与基线瓦片
-python scripts/run_local.py verify
-
-# 2. 一键执行 M0 规范化基准管线（生成场景契约、正射预览、属性审计及重跑基线）
-python scripts/run_local.py m0-baseline
-
-# 3. 运行 M0 场景契约、正射预览与桌面配置单元测试
-python scripts/run_local.py pytest tests/test_static_scene.py tests/test_orthophoto_preview.py tests/test_desktop_project_validation.py tests/test_map_config.py -v
-
-# 4. 运行全仓库测试
-python scripts/run_local.py pytest tests/ -q
-
-# 5. 启动桌面端并加载 M0 项目（包含本地正射影像底图叠加）
-python scripts/run_local.py desktop --project configs/manned_offroad_m0.yaml
-
-# 6. 使用固定私有配置运行规划
-python scripts/run_local.py cli plan --request configs/manned_offroad.local.private.yaml
-```
-
-## 本地配置与证据产物
-
-- `configs/manned_offroad_m0.yaml`：M0 固定工区、OD、车辆、冻结气象与正射底图配置。
-- `configs/scenes/m0_qdx_scene.json`：符合 `StaticScene` 规范的固定场景元数据。
-- `configs/scenes/baseline_986bd58_weather.json`：2026-10-15T08:00Z 真实 Open-Meteo 冻结气象快照。
-- `outputs/m0_qdx_baseline/m0_baseline.json`：M0 运行摘要、输入哈希、性能与解释边界记录。
-- `outputs/m0_qdx_baseline/static_scene.json`：`prepare_static_scene` 运行时生成的正式静态场景元数据。
-- `outputs/m0_qdx_baseline/orthophoto_preview.png`、`orthophoto_preview.json`：本地正射影像裁剪预览图与几何元数据。
-- `outputs/m0_qdx_baseline/landcover_attribute_audit.json`：工区内关键属性覆盖与值域审计。
-- `outputs/m0_qdx_baseline/baseline_route/`：基线 5 条候选路线导出的 GeoJSON/GPKG 与性能记录。
-
 ### M1 静态通行属性修复与物理消融（已完成闭环）
 
 - **消除 `strict_static_mode` 属性旁路 (A1a)**：
@@ -110,8 +66,28 @@ python scripts/run_local.py cli plan --request configs/manned_offroad.local.priv
   - `prepare_static_scene` 与 `scripts/run_m0_baseline.py` 的关键地物属性审计扩展为 4 项（林地 `rowspacing` 386 条、水深 `depth` 454 条、路宽 `Width` 124 条、道路等级 `FuncClass` 124 条），避免在后续 M2 道路多边形构建时硬编码字段。
 - **自动化消融实验脚本与全量测试验证**：
   - 新增 `scripts/run_m1_ablation.py` 与 `scripts/run_local.py m1-ablation` 命令行接口，产出标准化消融报告 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`；
-  - 新增专项测试 `tests/test_m1_ablation.py`（8 项单变量消融与边界测试全部通过，覆盖 A1a、A1b、A1c、A2、陡坡裕度单调性、$\theta_{terrain} < \alpha$ 精度边界及道路字段对齐）；
-  - 全仓库测试集 533 passed, 4 skipped，零回归。
+  - 新增专项测试 `tests/test_m1_ablation.py`（10 项单变量消融与边界测试全部通过，覆盖 A1a、A1b、A1c、A2、陡坡裕度单调性、$\theta_{terrain} < \alpha$ 精度边界、道路字段对齐、极端陡峭悬崖阻断及极端暴雨饱和）；
+  - 全仓库测试集 535 passed, 4 skipped，零回归。
+
+## 基线与消融运行结果
+
+### M0 可复现基线结果
+
+在固定工区与冻结气象下运行 `scripts/run_m0_baseline.py`，退出码 0：
+- 图规模：加载 41,503 个细格元和 120,647 条边；
+- 耗时：`plan_ready_s=81.616593`，候选搜索 76.416995 s；
+- 候选路线：生成 5 条候选（推荐 candidate ID：`route-6b6c07b10e2d5803`）；
+- 轨迹状态：5 条候选的旧自主平滑轨迹状态均为 `invalid`，保留该原始客观结果，未伪造通过性结论；
+- 产物哈希与配置校验一致记录于 `outputs/m0_qdx_baseline/m0_baseline.json`。
+
+### M1 物理通行属性消融对比结果
+
+运行 `scripts/run_m1_ablation.py` 自动化消融管线，对 5 组基准 OD 与真实环境进行物理消融验证：
+- **A0 基线**：历史代码因 `strict_static_mode` 跳过行距/水深，软土高湿崩塌放行，节点坡度一票否决；
+- **A1a 恢复株距与水深**：窄株距林地要素（386条）与深水体要素（454条）强制作为物理硬约束阻断，浅水放行计算阻力；
+- **A1b 土壤/CI 修正**：黏壤土饱和含水率崩塌捕获并赋无穷大沉陷阻断，消除无条件放行漏洞；
+- **A1c 降雨与水文阻抗**：真实降雨日（28.5mm）低洼汇水区产生 1.864 倍地表阻抗，路线主动绕开湿软走廊；
+- **A2 有向纵横坡解耦**：Iveco 爬坡 $30.96^\circ$ 与横倾 $25.0^\circ$ 双约束下，保留 $31^\circ \sim 34^\circ$ 陡坡对角线平缓通行边，消除粗暴删点。
 
 ## 运行方式
 
@@ -121,19 +97,22 @@ python scripts/run_local.py cli plan --request configs/manned_offroad.local.priv
 # 1. 验证工作区数据引用与基线瓦片
 python scripts/run_local.py verify
 
-# 2. 一键执行 M0 规范化基准管线
+# 2. 执行忽略文件安全审计
+python scripts/audit_gitignore.py
+
+# 3. 一键执行 M0 规范化基准管线（场景契约、正射预览、属性审计及重跑基线）
 python scripts/run_local.py m0-baseline
 
-# 3. 一键执行 M1 物理通行属性消融实验管线
+# 4. 一键执行 M1 物理通行属性消融实验管线
 python scripts/run_local.py m1-ablation
 
-# 4. 运行 M1 消融测试
+# 5. 运行 M1 物理消融单元测试
 python scripts/run_local.py pytest tests/test_m1_ablation.py -v
 
-# 5. 运行全仓库测试
+# 6. 运行全仓库完整回归测试
 python scripts/run_local.py pytest tests/ -q
 
-# 6. 启动桌面端并加载 M0 项目（包含本地正射影像底图叠加）
+# 7. 启动桌面端并加载 M0 项目（包含本地正射影像底图叠加）
 python scripts/run_local.py desktop --project configs/manned_offroad_m0.yaml
 ```
 

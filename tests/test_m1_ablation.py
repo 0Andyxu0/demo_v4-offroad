@@ -627,3 +627,114 @@ def test_road_field_mapping_includes_funcclass_and_width() -> None:
     assert "rowspacing" in key_attribs
     assert "depth" in key_attribs
 
+
+def test_a2_extreme_cliff_directed_edge_blocking(
+    default_vehicle: VehicleProfile,
+    default_factor_config: FactorModelConfig,
+) -> None:
+    """Extreme cliff slope (>45 deg, e.g. 60 deg, 85 deg) directed edge stability and blocking.
+
+    Attacks the unverified edge case:
+    1. A steep cliff node (slope 60 deg) is passable in isolation with floor safety margin 0.05.
+    2. Directed straight climb (pitch 60 deg) is blocked by max_climb_angle_deg (30.96 deg).
+    3. Directed contour traversal (pitch 0 deg) decomposes into lateral roll = 60 deg,
+       which strictly exceeds max_roll_angle_deg (25.0 deg) and is blocked in both
+       scalar and vectorized engines without math errors (no imaginary numbers, no NaN).
+    """
+    cliff_node_u = H3Cell(
+        h3index="8f2830828000012",
+        lat=31.99,
+        lng=118.99,
+        elevation=100.0,
+        slope=60.0,
+        tri=0.0,
+        lc_factor=1.0,
+    )
+    cliff_node_v = H3Cell(
+        h3index="8f2830828000013",
+        lat=31.9902,
+        lng=118.9902,
+        elevation=100.0,
+        slope=60.0,
+        tri=0.0,
+        lc_factor=1.0,
+    )
+    # 1. Node evidence check
+    ev_cliff = _raw_node_evidence(cliff_node_u, default_vehicle, default_factor_config, strict_static_mode=False)
+    assert ev_cliff.passable is True
+    assert "STEEP_SLOPE" in ev_cliff.reasons
+    assert ev_cliff.safety_margin.nominal == 0.05
+
+    # 2. Directed contour traversal (slope along edge = 0.0 deg on 60 deg cliff)
+    # roll_deg = sqrt(60^2 - 0^2) = 60.0 deg > 25.0 deg max_roll
+    edge_contour = H3Edge(
+        cell_a=cliff_node_u.h3index,
+        cell_b=cliff_node_v.h3index,
+        geo_distance=25.0,
+        slope_a_to_b=0.0,
+        slope_b_to_a=0.0,
+    )
+    node_u = _node_metrics(cliff_node_u, ev_cliff, default_vehicle)
+    node_v = _node_metrics(cliff_node_v, ev_cliff, default_vehicle)
+    graph = H3Graph(
+        cells={cliff_node_u.h3index: cliff_node_u, cliff_node_v.h3index: cliff_node_v},
+        edges={(cliff_node_u.h3index, cliff_node_v.h3index): edge_contour},
+    )
+
+    scalar_metrics = _directed_edge_metrics(
+        graph,
+        edge_contour,
+        cliff_node_u.h3index,
+        cliff_node_v.h3index,
+        {cliff_node_u.h3index: node_u, cliff_node_v.h3index: node_v},
+        default_vehicle,
+        default_factor_config,
+        environment=None,
+    )
+    assert scalar_metrics is None
+
+    # 3. Vectorized check
+    vectorized_edges = evaluate_directed_edges_vectorized(
+        graph,
+        {cliff_node_u.h3index: node_u, cliff_node_v.h3index: node_v},
+        default_vehicle,
+        default_factor_config,
+    )
+    assert len(vectorized_edges) == 0
+
+
+def test_a1c_extreme_precipitation_saturation() -> None:
+    """Extreme rainfall (e.g. 150mm) and high moisture saturate safely at pressure = 1.0.
+
+    Attacks the unverified edge case:
+    1. Precipitation fallback clips to 1.0 without numeric divergence.
+    2. Surface/drainage impedance multiplier is bounded and finite.
+    """
+    from h3_offroad_planner.weather_fallback import precipitation_pressure
+
+    # 1. Fallback pressure saturation
+    p_extreme = precipitation_pressure(150.0, api_reference_mm=50.0)
+    assert p_extreme == 1.0
+
+    # 2. Impedance multiplier boundedness under saturated pressure (1.0)
+    gully_cell = H3Cell(
+        h3index="8f2830828000014",
+        lat=31.99,
+        lng=118.99,
+        elevation=20.0,
+        slope=1.0,
+        tri=0.0,
+        lc_factor=1.0,
+        surface_response=0.8,
+        drainage_valid=True,
+        drainage_sensitivity=0.33,
+        soil_code=1,
+    )
+    env_cfg = EnvironmentConfig(comparison_pressures=(0.0, 0.5, 1.0), request_pressures=(1.0,))
+    multiplier, unknown = environment_multiplier(gully_cell, 1.0, env_cfg)
+    assert unknown is False
+    assert math.isfinite(multiplier)
+    # M = 1.0 + 1.0 * 0.8 * 1.0 * (1.0 + 0.33) = 2.064
+    assert multiplier == pytest.approx(2.064)
+
+
