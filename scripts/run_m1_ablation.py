@@ -426,10 +426,78 @@ def run_m1_ablation(
             "ods": od_results,
         }
 
+    # Aggregate enrichment statistics across the entire de-duplicated corridor union
+    u_soil_hist: dict[int, int] = {}
+    u_uscs_hist: dict[str, int] = {}
+    u_missing_soil = 0
+    u_moisture_vals: list[float] = []
+    u_missing_moisture = 0
+    u_drainage_vals: list[float] = []
+    u_missing_drainage = 0
+    u_road_cells = 0
+    u_offroad_cells = 0
+
+    for c in union_cells.values():
+        if c.soil_code is not None:
+            u_soil_hist[c.soil_code] = u_soil_hist.get(c.soil_code, 0) + 1
+        if c.uscs is not None:
+            u_uscs_hist[c.uscs] = u_uscs_hist.get(c.uscs, 0) + 1
+        else:
+            u_missing_soil += 1
+            u_uscs_hist["MISSING_SOIL"] = u_uscs_hist.get("MISSING_SOIL", 0) + 1
+
+        if c.soil_moisture is not None:
+            u_moisture_vals.append(c.soil_moisture)
+        else:
+            u_missing_moisture += 1
+
+        if c.drainage_sensitivity is not None and c.drainage_valid:
+            u_drainage_vals.append(c.drainage_sensitivity)
+        else:
+            u_missing_drainage += 1
+
+        if c.has_road:
+            u_road_cells += 1
+        else:
+            u_offroad_cells += 1
+
+    union_enrichment: dict[str, Any] = {
+        "total_cells_enriched": len(union_cells),
+        "soil": {
+            "source_path": primary_summary.get("soil", {}).get("source_path", ""),
+            "catalog_path": primary_summary.get("soil", {}).get("catalog_path", ""),
+            "histogram": u_soil_hist,
+            "uscs_histogram": u_uscs_hist,
+            "missing_soil_count": u_missing_soil,
+        },
+        "moisture": {
+            "source_path": primary_summary.get("moisture", {}).get("source_path"),
+            "layer_index": primary_summary.get("moisture", {}).get("layer_index", 0),
+            "count": len(u_moisture_vals),
+            "missing_count": u_missing_moisture,
+            "min": float(min(u_moisture_vals)) if u_moisture_vals else None,
+            "max": float(max(u_moisture_vals)) if u_moisture_vals else None,
+            "mean": float(sum(u_moisture_vals) / len(u_moisture_vals)) if u_moisture_vals else None,
+        },
+        "drainage": {
+            "source_path": primary_summary.get("drainage", {}).get("source_path"),
+            "valid_count": len(u_drainage_vals),
+            "missing_count": u_missing_drainage,
+            "min": float(min(u_drainage_vals)) if u_drainage_vals else None,
+            "max": float(max(u_drainage_vals)) if u_drainage_vals else None,
+            "mean": float(sum(u_drainage_vals) / len(u_drainage_vals)) if u_drainage_vals else None,
+        },
+        "surface_response": {
+            "road_cells": u_road_cells,
+            "offroad_cells": u_offroad_cells,
+        },
+        "file_hashes": primary_summary["file_hashes"],
+    }
+
     # Generate comparative narrative dynamically
     summary_md = _generate_markdown_summary(
         input_hashes=input_hashes,
-        enrichment_meta=primary_summary,
+        enrichment_meta=union_enrichment,
         levels=levels_output,
         ods_data=ods_data,
     )
@@ -441,7 +509,9 @@ def run_m1_ablation(
             "timestamp_utc": timestamp_utc,
             "max_snap_distance_m": max_snap_m,
             "input_hashes": input_hashes,
-            "enrichment_summary": primary_summary,
+            "corridor_union_enrichment": union_enrichment,
+            "per_od_enrichment": enrichment_summaries,
+            "enrichment_summary": union_enrichment,
         },
         "levels": levels_output,
     }
@@ -566,6 +636,12 @@ def _generate_markdown_summary(
         if m1c and m2:
             margin_diffs_a2[oid] = m2["safety_margin_min"] - m1c["safety_margin_min"]
 
+    cldas_mean_str = (
+        f"{enrichment_meta.get('moisture', {}).get('mean', 0.0):.4f} m³/m³"
+        if enrichment_meta.get("moisture", {}).get("mean") is not None
+        else "未采样"
+    )
+
     lines.extend([
         "",
         "## 4. 单变量消融动态对比分析",
@@ -576,7 +652,7 @@ def _generate_markdown_summary(
         f"   - 可通行有向边由 {a0_u['passable_unique_directed_edges']:,} 条降至 {a1a_u['passable_unique_directed_edges']:,} 条（净减少 {a0_u['passable_unique_directed_edges'] - a1a_u['passable_unique_directed_edges']:,} 条阻断边）。",
         "",
         f"2. **A1b 相对 A1a（土壤力学与 Bekker/CI 物理评价）**：",
-        f"   - 全域接入 CLDAS 真实含水率栅格（均值 0.3080 m³/m³）与土壤 USCS 分类，消除了常量伪造（P0-2）。",
+        f"   - 全域接入 CLDAS 真实含水率栅格（均值 {cldas_mean_str}）与土壤 USCS 分类，消除了常量伪造（P0-2）。",
         f"   - 沉陷降速机制真实生效（P0-4）：非铺装土壤格元依据车辆载荷与沉陷比率产生连续速度衰减。",
         f"   - 在基准 OD 上产生确定性速度与耗时差异：如 `od_03_water_gully` 耗时增加 `{eta_diffs_1b.get('od_03_water_gully', 0.0):+.2f} s`，`od_05_slope_traverse` 耗时增加 `{eta_diffs_1b.get('od_05_slope_traverse', 0.0):+.2f} s`。A1b 彻底摆脱空转，物理判别力成立。",
         "",

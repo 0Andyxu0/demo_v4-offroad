@@ -41,7 +41,7 @@
   - 提供 `scripts/run_m0_baseline.py` 与 `python scripts/run_local.py m0-baseline`，自动执行：请求校验 → 正射预览生成 → 关键属性审计 → `prepare_static_scene` 契约生成与保存（正射预览路径贯通注入） → `cli plan` 基线运行 → 产物摘要与哈希归档。
   - 产物写入独立目录 `outputs/m0_qdx_baseline/`，包含 `m0_baseline.json`、`static_scene.json`、`orthophoto_preview.png`、`orthophoto_preview.json`、`landcover_attribute_audit.json` 及路线结果。
 - **自动化测试**：
-  - 全套回归测试 545 passed, 4 skipped；
+  - 全套回归测试 547 passed, 4 skipped；
   - 包含 `tests/test_m1_consolidated_regression.py`、`tests/test_m1_ablation.py`、`tests/test_static_scene.py`、`tests/test_orthophoto_preview.py`、`tests/test_vectorized_factor.py` 等全量通过。
 
 ### M1 静态通行属性修复与综合审核整改闭环（已完成闭环）
@@ -126,7 +126,7 @@ python scripts/run_local.py desktop --project configs/manned_offroad_m0.yaml
 - `configs/manned_offroad_m0.yaml`：M0 固定工区、OD、车辆、冻结气象与正射底图配置。
 - `configs/scenes/m0_qdx_scene.json`：符合 `StaticScene` 规范的固定场景元数据。
 - `configs/scenes/baseline_986bd58_weather.json`：2026-10-15T08:00Z 真实 Open-Meteo 冻结干旱/微雨气象快照。
-- `configs/scenes/synthetic_rainy_weather.json`：合成降雨敏感性对照场景快照（`derived_pressure = 0.8`，耦合 CLDAS 0.3080 m³/m³ 静态含水率与水文 D 场）。
+- `configs/scenes/synthetic_rainy_weather.json`：合成降雨敏感性对照场景快照（`derived_pressure = 0.8`，耦合 CLDAS 0.3301 m³/m³ 静态含水率与水文 D 场）。
 - `configs/scenes/m1_benchmark_ods.json`：M1–M5 固化的 5 组基准多场景测试起终点列表。
 - `outputs/m1_ablation/m1_ablation.json`：M1 物理通行属性消融实验原始数据。
 - `outputs/m1_ablation/m1_ablation_summary.md`：M1 物理消融对比报告（A0 -> A1a -> A1b -> A1c -> A2）。

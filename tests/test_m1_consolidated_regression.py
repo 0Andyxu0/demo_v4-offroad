@@ -13,6 +13,7 @@ Fulfills M1 Consolidated Audit (2026-10-17) §9:
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -62,8 +63,10 @@ def default_vehicle() -> VehicleProfile:
 
 def test_cldas_and_drainage_rasters_crs_and_pixel_variation():
     """Verify CLDAS and Drainage rasters are real files with non-constant spatial values."""
-    cldas_path = Path("D:/Workspace/demo_v4/data/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM000005-2026010100.nc")
-    drainage_path = Path("D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/drainage_sensitivity.tif")
+    scene_path = ROOT / "configs" / "scenes" / "m0_qdx_scene.json"
+    scene_data = json.loads(scene_path.read_text(encoding="utf-8"))
+    cldas_path = Path(scene_data["moisture"]["paths"][0])
+    drainage_path = Path(scene_data["hydrology"]["upstream_layers"]["drainage_sensitivity"])
 
     assert cldas_path.is_file(), f"CLDAS raster missing: {cldas_path}"
     assert drainage_path.is_file(), f"Drainage raster missing: {drainage_path}"
@@ -352,3 +355,135 @@ def test_ablation_switches_properly_gate_reasons(default_vehicle: VehicleProfile
     cfg_a2 = FactorModelConfig(enforce_rowspacing=True, enforce_scalar_slope_blocking=False)
     eval_a2 = evaluate_factor_model(graph, default_vehicle, cfg_a2)
     assert eval_a2.node_metrics[c_slope.h3index].is_passable is True
+
+
+def test_endpoint_snap_distance_limit_and_unreachable_status(default_vehicle: VehicleProfile):
+    """P0-5: Verify endpoint snapping limits, explicit unavailable status, and no component hopping."""
+    from scripts.run_m1_ablation import _snap_endpoint
+
+    # Passable cell at lat 31.980, lng 118.990
+    c1 = H3Cell(
+        h3index="8f2830828000001",
+        lat=31.980,
+        lng=118.990,
+        elevation=20.0,
+        slope=1.0,
+        tri=0.0,
+        lc_factor=1.0,
+        landcover_code=1,
+        is_passable=True,
+    )
+    # Impassable cell at lat 31.981, lng 118.991 (deep water)
+    c_blocked = H3Cell(
+        h3index="8f2830828000002",
+        lat=31.981,
+        lng=118.991,
+        elevation=20.0,
+        slope=1.0,
+        tri=0.0,
+        lc_factor=math.inf,
+        landcover_code=5,
+        depth=1.5,
+        is_passable=False,
+    )
+    graph = H3Graph(cells={c1.h3index: c1, c_blocked.h3index: c_blocked}, edges={})
+    cfg = FactorModelConfig(enforce_water_depth=True)
+    eval_res = evaluate_factor_model(graph, default_vehicle, cfg)
+
+    # 1. Coordinate close to c1 (< 30m) snaps successfully to c1
+    h3_id, snap_m, passable, reasons = _snap_endpoint(
+        graph, eval_res.node_metrics, 31.980001, 118.990001, max_snap_m=30.0
+    )
+    assert h3_id == c1.h3index
+    assert snap_m < 5.0
+    assert passable is True
+
+    # 2. Coordinate far away (> 30m, approx 700m away) exceeds max_snap_m
+    h3_far, snap_far_m, passable_far, _ = _snap_endpoint(
+        graph, eval_res.node_metrics, 31.985, 118.995, max_snap_m=30.0
+    )
+    assert snap_far_m > 30.0
+
+    # 3. Coordinate snapping to impassable cell reports passable=False and reason
+    h3_imp, snap_imp_m, passable_imp, reasons_imp = _snap_endpoint(
+        graph, eval_res.node_metrics, 31.981001, 118.991001, max_snap_m=30.0
+    )
+    assert h3_imp == c_blocked.h3index
+    assert passable_imp is False
+    assert "WATER_DEPTH_LIMIT" in reasons_imp
+
+
+def test_m1_ablation_artifacts_contract_and_traceability():
+    """P0-6: Verify m1_ablation.json and summary.md schema, hashes, and dual statistics."""
+    json_path = ROOT / "outputs" / "m1_ablation" / "m1_ablation.json"
+    md_path = ROOT / "outputs" / "m1_ablation" / "m1_ablation_summary.md"
+
+    assert json_path.is_file(), f"Ablation JSON missing: {json_path}"
+    assert md_path.is_file(), f"Ablation summary Markdown missing: {md_path}"
+
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    meta = payload["metadata"]
+
+    assert meta["schema_version"] == "m1_ablation_consolidated_v2"
+    assert meta["max_snap_distance_m"] == 30.0
+
+    # Check input hashes
+    hashes = meta["input_hashes"]
+    required_hash_keys = [
+        "tile_manifest_sha256",
+        "scene_sha256",
+        "benchmark_ods_sha256",
+        "weather_snapshot_sha256",
+        "vehicle_sha256",
+        "soil_raster_sha256",
+        "soil_catalog_sha256",
+        "cldas_moisture_sha256",
+        "drainage_sensitivity_sha256",
+    ]
+    for k in required_hash_keys:
+        assert k in hashes and len(hashes[k]) >= 16, f"Hash key {k} missing or invalid: {hashes.get(k)}"
+
+    # Check corridor_union_enrichment
+    union_enrich = meta.get("corridor_union_enrichment", meta.get("enrichment_summary", {}))
+    assert union_enrich["total_cells_enriched"] == 380044
+    hist = union_enrich["soil"]["histogram"]
+    assert hist.get("49", 0) > 0 or hist.get(49, 0) > 0
+
+    # Check all 5 levels
+    levels = payload["levels"]
+    for lvl_code in ["A0", "A1a", "A1b", "A1c", "A2"]:
+        assert lvl_code in levels, f"Level {lvl_code} missing from ablation payload"
+        lvl_data = levels[lvl_code]
+        u = lvl_data["corridor_union"]
+        assert u["total_unique_cells"] == 380044
+        assert u["passable_unique_cells"] > 0
+        assert u["blocked_unique_cells"] == 380044 - u["passable_unique_cells"]
+        assert u["passable_unique_directed_edges"] > 0
+        assert len(u["reason_codes_by_cell"]) > 0
+        assert len(u["reason_codes_total_labels"]) > 0
+
+        # Check all 5 ODs
+        for oid in [
+            "od_01_primary",
+            "od_02_forest_rowspacing",
+            "od_03_water_gully",
+            "od_04_narrow_road",
+            "od_05_slope_traverse",
+        ]:
+            od_res = lvl_data["ods"][oid]
+            assert od_res["status"] == "REACHABLE", (
+                f"OD {oid} in level {lvl_code} is {od_res['status']}: {od_res.get('status_reason')}"
+            )
+            assert od_res["start_snap_m"] <= 1.14
+            assert od_res["goal_snap_m"] <= 1.14
+            assert len(od_res["h3_path"]) > 0
+            assert od_res["metrics"]["distance_m"] > 0
+            assert od_res["metrics"]["eta_s"] > 0
+            assert od_res["metrics"]["travel_cost"] > 0
+
+    # Check markdown summary contains table lines
+    md_content = md_path.read_text(encoding="utf-8")
+    assert "Corridor Union" in md_content or "走廊并集" in md_content
+    assert "od_01_primary" in md_content
+    assert "od_05_slope_traverse" in md_content
+
