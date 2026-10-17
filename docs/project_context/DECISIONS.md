@@ -43,14 +43,20 @@
 22. 土壤 Bekker/CI 物理参数修正与干密度含水率换算 (R2)：依据 Shahgholi et al. (2024) 农艺土壤实测数据修正黏壤土与壤土的 $k_c, k_\phi, n$ 回归模型，按干密度 $\rho_d = 1.4\text{ g/cm}^3$ 严格换算体积含水率与质量含水率（$w_{\%} = (\theta_v \cdot \rho_{\text{water}} / \rho_d) \times 100\%$），保证实测含水率下 $k_c > 0$；超出文献适用土类或参数失效时规范回退至声明的土类与圆锥指数（CI）评价规则，不再将缺值直接赋为无穷大沉陷或零沉陷，极端饱和高湿（$\theta_v \ge 0.65$）时由圆锥指数不足（`CONE_INDEX_INSUFFICIENT`）严格阻断，标量与向量化计算保持完全一致。
 23. 接入 CLDAS 静态含水率与水文 D 场，规范气象快照 (R3)：打通工区格元与 CLDAS 静态含水率栅格（基底 $0.3080\text{ m}^3/\text{m}^3$）及上游水文域 D 场（`drainage_sensitivity.tif`）的真实栅格采样；将手工构造的降雨场景明确命名为 `synthetic_rainy_weather.json` 并标注为合成对照场景（`synthetic_rainy_weather_sensitivity_contrast`，`derived_pressure = 0.8`），与真实观测快照严格隔离。
 24. 零近似误差正切纵横坡解耦 (R4)：废除角度直接平方相减的近似公式，统一采用 $\tan\theta_{\text{roll}} = \sqrt{\max(0, \tan^2\theta_{\text{terrain}} - \tan^2\theta_{\text{pitch}})}, \theta_{\text{roll}} = \arctan(\tan\theta_{\text{roll}})$，标量与 NumPy 向量化逐元素误差 $< 10^{-12}$，在 Iveco 爬坡 $31.0^\circ$ 与横倾 $25.0^\circ$ 双约束下精确保留安全对角通行边。
-25. 真实 QDX 瓦片图与 5 组基准 OD 端到端消融验证 (R5)：彻底废除仅测试 7 个内存单元格的旧脚本，重写 `scripts/run_m1_ablation.py`，在真实 QDX 瓦片图（454,475 格元，2,133,478 有向边）和 5 组基准 OD 上运行 A0 至 A2 真实图搜索，准确记录可通行统计、阻断原因码分布及路径物理规避行为，输出至 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`。
+25. 真实 QDX 瓦片图与 5 组基准 OD 端到端消融验证 (R5)：彻底废除仅测试 7 个内存单元格的旧脚本，重写 `scripts/run_m1_ablation.py`，在真实 QDX 瓦片图（380,044 个去重走廊格元、1,738,210 条可通行有向边；5 个 OD 走廊合计 426,006 格元 / 2,017,998 边）和 5 组基准 OD 上运行 A0 至 A2 真实图搜索，准确记录可通行统计、阻断原因码分布及路径物理规避行为，输出至 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`。
 26. 状态记录与实施事实全面对齐 (R6)：消除 `STATE.md` 与实际代码、配置之间的矛盾，修正 OD 标识（`od_01_primary` ~ `od_05_slope_traverse`）、车辆涉水深配置（$0.225\text{ m}$ 与测试车 $0.308\text{ m}$）及气象衍生压力参数（`0.8`），以真实 QDX 消融统计数据更新消融对比记录。
 
 ## 2026-10-17：M1 综合审核整改闭环 (M1 Consolidated Audit)
 
 27. 统一 CI 阈值单一来源与沉陷速度衰减耦合（P0-4）：彻底消除 `CI_THRESHOLD_KPA` 硬编码与 `config.min_cone_index_kpa` 的双源冲突，将阈值单一收敛至 `config.min_cone_index_kpa: 185.73`；在 `_soil_speed_interval` 中建立基准 USCS 土类速度与沉陷退化因子 `sinkage_factor = max(config.speed_floor_ratio, 1.0 - sinkage / clearance_limit)` 的直接耦合，使沉陷真实降低节点速度与 ETA。
-28. 真实栅格动态采样适配器 (`enrich_graph_from_static_scene`) 杜绝伪造常量（P0-1, P0-2）：针对基准 Parquet 瓦片中土壤与水文列为空的历史事实，通过 `enrich_graph_from_static_scene` 动态采样 `soil_nanjing.tif` (+VAT)、CLDAS NetCDF (0-5cm 均值 0.3301 m³/m³) 与 `drainage_sensitivity.tif`；未映射区域保留 `None` 并不以 `CL` 兜底；记录全部输入文件 SHA-256 哈希。
+28. 真实栅格动态采样适配器 (`enrich_graph_from_static_scene`) 杜绝伪造常量（P0-1, P0-2）：针对基准 Parquet 瓦片中土壤与水文列为空的历史事实，通过 `enrich_graph_from_static_scene` 动态采样 `soil_nanjing.tif` (+VAT)、CLDAS NetCDF (0-5cm) 与 `drainage_sensitivity.tif`；未映射区域保留 `None` 并不以 `CL` 兜底；记录全部输入文件 SHA-256 哈希。采样像元索引按 `floor` 取包含像元（见 #33 修正后 0-5cm 含水率均值 0.3153 m³/m³、范围 [0.3080, 0.3301]、2 个不同取值）。
 29. 统一走正式评价链路并实现 FactorModelConfig 显式消融开关（P0-3）：废除消融脚本私有评价器，在 `FactorModelConfig` 中引入 `enforce_rowspacing`、`enforce_water_depth`、`enforce_soil_physics`、`enforce_scalar_slope_blocking` 与 `use_exact_tangent_roll` 显式开关，统一调用 `evaluate_factor_model` 与 `evaluate_path_metrics`，并在 A0~A2 各档形成确定性非零差异。
 30. 基准 OD 端点正射/矢量校正与吸附上限控制（P0-5）：依据正射影像与矢量边界修订 `od_03`、`od_04`、`od_05` 选点，升级为 `m1_benchmark_ods_v2`，将 5 组 OD 初始吸附距离全部压制在 1.14 米以内（远低于 `MAX_SNAP_DISTANCE_M = 30.0` 上限），杜绝跨连通分量静默跳点。
 31. 统计口径拆分与动态对比生成（P0-6, P1-5）：拆分 5 个 OD 走廊去重并集统计（380,044 独立格元）与各 OD 独立统计两套口径；删除硬编码文字模板，对比叙述由真实实测差值动态生成。
 32. 修正建筑水体原因码污染与删除冗余配置（P1-2, P1-6）：严格按 `landcover_code == 5` 判定水体，防止建筑（code 6）误打 `WATER` 标签；清理遗留文件 `configs/scenes/rainy_weather.json`。
+## 2026-10-17：第二轮审核整改（M1 Audit Round 2）
+
+33. 栅格采样按包含像元索引，修正半像元偏移（N-1）：原实现对 \`~transform * (x, y)\` 的角点基准浮点坐标使用 \`round()\` 取整，使落在像元后半格的样本整体偏移一个像元；CLDAS 0.0625°（≈6.9 km）网格上偏移达 3.45 km，导致 380,044 个格元中有 55% 读到邻像元值、并集含水率退化为单一常数 0.3301。现统一改为 \`floor()\` 取包含像元（\`scene.py::_pixel_index\`），并补充 CLDAS 的投影坐标系分支；采样元数据新增 \`distinct_pixels\` 与 \`distinct_values\`。修正后并集含水率为 [0.3080, 0.3301] 两个取值（均值 0.3153），证明工区确实跨 CLDAS 像元边界。
+34. 单变量档位可观测性判据与如实记录（N-2）：以「目标 OD 上 L/ETA/Cost 相对变化 ≥ 1%」作为单变量档位可观测的判据，结果写入 \`m1_ablation.json\` 的 \`comparison\` 段与摘要 §5。本工区实测：A1a→A1b、A1c→A2 在目标 OD 上均未达 1%（A1a→A1b 仅 4e-4，A1c→A2 为 0），A0→A1a 亦未改变任何基准 OD 的选线；只有 A1b→A1c 在 \`od_01_primary\` 产生 +210.05 m / +19.67 s / +74.38 的实质变化。该结论属**地貌与选点共同决定的可观测性局限**，不代表物理模型空转；后续不得再用"彻底摆脱空转""主动绕行"等措辞描述零变化档位，如需演示单变量选线效果，须按有证据的选点修订基准 OD（v3）而非事后解释。
+35. 文档与叙述去伪（N-3）：修正 \`DECISIONS.md\` 第 25 条的陈旧统计（454,475 / 2,133,478 → 380,044 / 1,738,210）；地表阻抗倍率改为由边级 \`environment_distance_m / distance_m\` 实测得出（当前 2.440×），不再硬编码"2.44×/1.864×"；清理 \`factor_model.py\` 中随 CI 阈值单源化而失效的 \`CI_THRESHOLD_KPA\` 导入。
+

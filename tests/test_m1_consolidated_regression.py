@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
+from rasterio.transform import from_origin
 
 from h3_offroad_planner.config import load_vehicle
 from h3_offroad_planner.dynamics.bekker import BekkerChecker
@@ -36,7 +37,7 @@ from h3_offroad_planner.models import (
     H3Graph,
     VehicleProfile,
 )
-from h3_offroad_planner.scene import enrich_graph_from_static_scene
+from h3_offroad_planner.scene import _pixel_index, enrich_graph_from_static_scene
 from h3_offroad_planner.vectorized_factor import compute_vectorized_edge_arrays
 from h3_offroad_planner.vectorized_soil import vectorized_bekker_sinkage
 
@@ -84,6 +85,90 @@ def test_cldas_and_drainage_rasters_crs_and_pixel_variation():
         valid = band[~np.isnan(band)] if nodata is None or np.isnan(nodata) else band[band != nodata]
         assert len(valid) > 100, "Drainage raster must contain valid pixels"
         assert valid.min() < valid.max(), "Drainage raster must exhibit non-zero spatial variance"
+
+
+def test_raster_sampling_uses_containing_pixel_not_rounded_neighbour(tmp_path: Path):
+    """Sampling must read the pixel that CONTAINS the point.
+
+    Regression for the half-pixel offset: `~transform * (x, y)` is corner
+    based, so `round(...)` pushes every sample in the second half of a pixel
+    into the neighbouring pixel. On the 0.0625 deg CLDAS grid that is a
+    ~3.45 km error and it collapsed the whole corridor onto one moisture value.
+    """
+    raster = tmp_path / "synthetic_moisture.tif"
+    transform = from_origin(118.0, 32.0, 0.01, 0.01)
+    data = np.array([[0.10, 0.20], [0.30, 0.40]], dtype="float32")
+    with rasterio.open(
+        raster,
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+    ) as ds:
+        ds.write(data, 1)
+
+    # px = 0.9 (second half of column 0), py = 0.4 -> must read row 0, col 0.
+    coords = [
+        ("8f2830828000001", 31.996, 118.009),
+        ("8f2830828000002", 31.996, 118.019),
+        ("8f2830828000003", 31.986, 118.009),
+    ]
+    cells = {
+        hid: H3Cell(
+            h3index=hid,
+            lat=lat,
+            lng=lng,
+            elevation=10.0,
+            slope=1.0,
+            tri=0.1,
+            lc_factor=1.0,
+            landcover_code=1,
+        )
+        for hid, lat, lng in coords
+    }
+    graph = H3Graph(cells=cells, edges={})
+    scene = {
+        "soil": {"raster_path": str(tmp_path / "none.tif"), "catalog_path": str(tmp_path / "none.dbf")},
+        "moisture": {"paths": [str(raster)]},
+        "hydrology": {"upstream_layers": {}},
+    }
+    meta = enrich_graph_from_static_scene(graph, scene)
+
+    assert cells["8f2830828000001"].soil_moisture == pytest.approx(0.10)
+    assert cells["8f2830828000002"].soil_moisture == pytest.approx(0.20)
+    assert cells["8f2830828000003"].soil_moisture == pytest.approx(0.30)
+    # Three distinct pixels were sampled: the field must not collapse to a constant.
+    assert meta["moisture"]["distinct_pixels"] == 3
+    assert meta["moisture"]["distinct_values"] == 3
+
+
+def test_pixel_index_matches_rasterio_index():
+    """`_pixel_index` must agree with rasterio's own `index()` for every point."""
+    from rasterio.transform import Affine
+
+    transform = Affine(0.0625, 0.0, 60.0, 0.0, -0.0625, 65.0)
+    inverse = ~transform
+    with rasterio.Env():
+        from rasterio.io import MemoryFile
+
+        profile = {
+            "driver": "GTiff",
+            "height": 40,
+            "width": 40,
+            "count": 1,
+            "dtype": "float32",
+            "crs": "EPSG:4326",
+            "transform": transform,
+        }
+        with MemoryFile() as mem, mem.open(**profile) as ds:
+            ds.write(np.zeros((1, 40, 40), dtype="float32"))
+            for lng in (118.99, 118.995, 119.0, 119.0076, 119.02):
+                for lat in (31.97, 31.989, 31.995, 32.0):
+                    assert _pixel_index(inverse, lng, lat) == ds.index(lng, lat), (lng, lat)
 
 
 def test_enrich_graph_leaves_unmapped_soil_as_none():

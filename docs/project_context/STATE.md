@@ -41,10 +41,10 @@
   - 提供 `scripts/run_m0_baseline.py` 与 `python scripts/run_local.py m0-baseline`，自动执行：请求校验 → 正射预览生成 → 关键属性审计 → `prepare_static_scene` 契约生成与保存（正射预览路径贯通注入） → `cli plan` 基线运行 → 产物摘要与哈希归档。
   - 产物写入独立目录 `outputs/m0_qdx_baseline/`，包含 `m0_baseline.json`、`static_scene.json`、`orthophoto_preview.png`、`orthophoto_preview.json`、`landcover_attribute_audit.json` 及路线结果。
 - **自动化测试**：
-  - 全套回归测试 547 passed, 4 skipped；
+  - 全套回归测试 549 passed, 4 skipped；
   - 包含 `tests/test_m1_consolidated_regression.py`、`tests/test_m1_ablation.py`、`tests/test_static_scene.py`、`tests/test_orthophoto_preview.py`、`tests/test_vectorized_factor.py` 等全量通过。
 
-### M1 静态通行属性修复与综合审核整改闭环（已完成闭环）
+### M1 静态通行属性修复与综合审核整改闭环（整改完成，待复核）
 
 - **R1 道路有效宽度米制换算 (`resolve_road_effective_width_m`)**：
   - 对照高分正射影像与图层编码，确认 `road_fina.shp` 的 `Width` 字段为分米（0.1m）编码（值域 30.0~55.0）；
@@ -54,8 +54,8 @@
   - 建立体积含水率 $\theta_v$（$\text{m}^3/\text{m}^3$）与质量含水率 $w_{\%}$ 的干密度物理换算：$w_{\%} = (\theta_v \cdot \rho_{\text{water}} / \rho_d) \times 100\%$（取 $\rho_{\text{water}} = 1.0\text{ g/cm}^3, \rho_d = 1.4\text{ g/cm}^3$）；
   - 彻底消除 CI 阈值双源矛盾，单一收敛至 `min_cone_index_kpa: 185.73`；在 `_soil_speed_interval` 中建立沉陷速度衰减耦合 `sinkage_factor = max(config.speed_floor_ratio, 1.0 - sinkage / clearance_limit)`，使沉陷真实降低节点速度与 ETA；标量 `BekkerChecker` 与向量化 `evaluate_soil_bekker_vectorized` 保持完全一致。
 - **R3 CLDAS 静态含水率与水文 D 场接入，规范降雨场景 (修复 A1c, P0-1, P0-2)**：
-  - 实现真实栅格动态采样适配器 `enrich_graph_from_static_scene`，打通工区格元与真实土壤（`soil_nanjing.tif` + `.vat.dbf`，识别黄褐土 49 与水稻土 44 等）、CLDAS 静态含水率 NetCDF 0-5cm 栅格（均值 $0.3301\text{ m}^3/\text{m}^3$）及上游水文域 D 场（`drainage_sensitivity.tif`，值域 $[0, 1]$）的真实坐标采样；
-  - 针对暴雨对照，使用 `configs/scenes/synthetic_rainy_weather.json`，在配置与元数据中显式标注为“合成降雨敏感性对照场景”（`synthetic_rainy_weather_sensitivity_contrast`，`derived_pressure = 0.8`），与真实历史 API 快照严格区分，杜绝冒充真实观测；降雨时在低洼汇水冲沟区产生最高 $2.44\times$ 地表阻抗倍率（基准倍率 $1.864\times$），主动引导路径规避湿软冲沟。
+  - 实现真实栅格动态采样适配器 `enrich_graph_from_static_scene`，打通工区格元与真实土壤（`soil_nanjing.tif` + `.vat.dbf`，识别黄褐土 49 与水稻土 44 等）、CLDAS 静态含水率 NetCDF 0-5cm 栅格（按包含像元采样：均值 $0.3153\text{ m}^3/\text{m}^3$，范围 $[0.3080, 0.3301]$，2 个不同取值）及上游水文域 D 场（`drainage_sensitivity.tif`，值域 $[0, 1]$）的真实坐标采样；
+  - 针对暴雨对照，使用 `configs/scenes/synthetic_rainy_weather.json`，在配置与元数据中显式标注为“合成降雨敏感性对照场景”（`synthetic_rainy_weather_sensitivity_contrast`，`derived_pressure = 0.8`），与真实历史 API 快照严格区分，杜绝冒充真实观测；降雨时由边级 `environment_distance_m / distance_m` 实测出最大地表阻抗倍率 $2.440\times$（数据驱动，非模板常量）。
 - **R4 零近似误差的正切纵横坡解耦 (完善 A2, P1-1)**：
   - 统一采用精确正切分解：$\tan\theta_{\text{roll}} = \sqrt{\max\left(0, \, \tan^2\theta_{\text{terrain}} - \tan^2\theta_{\text{pitch}}\right)}, \theta_{\text{roll}} = \arctan(\tan\theta_{\text{roll}})$，标量与 NumPy 向量化逐元素一致；明确记录输入坡度为离散格元坡度代理量 `max(source.slope, target.slope)`，连续全地形曲面梯度投影归属 M2；
   - 在 Iveco 爬坡 $31.0^\circ$ 与横倾 $25.0^\circ$ 双约束下，精确放行安全对角通行边。
@@ -83,16 +83,21 @@
 1. **去重走廊并集 (Corridor Union) 节点与边通行统计**：
    - **A0 基线**：去重总格元 380,044，可通行格元 300,755 (79.14%)，阻断格元 79,289；可通行边 1,756,868；主要原因：`STATIC_BLOCKED:78732, BUILDING:24169, MISSING_LANDCOVER:11510, STEEP_SLOPE:998`。
    - **A1a 恢复株距与水深**：可通行格元 297,706 (78.33%)，阻断格元 82,338；可通行边 1,738,210（净减少 18,658 条边）；新增阻断：`ROWSPACING_BLOCKED:3059, WATER_DEPTH_LIMIT:54563`，严格拦截密林与深水。
-   - **A1b 土壤力学与 Bekker/CI**：可通行格元 297,706，可通行边 1,738,210；CLDAS 含水率与 Bekker 沉陷衰减真实耦合，沉陷带来连续节点速度衰减与旅行耗时上升。
-   - **A1c 气象与水文域地表阻抗**：低洼汇水冲沟区施加地表阻抗倍率（最高 2.44 倍），路径主动撤离低洼湿软区。
-   - **A2 正切纵横坡解耦**：可通行格元恢复至 298,253 (+547 格元)，可通行边 1,738,452 (+242 边)；移除 `STEEP_SLOPE` 标量坡度删除，正切横坡分解精确保留对角通行边。
+   - **A1b 土壤力学与 Bekker/CI**：可通行格元 297,706，可通行边 1,738,210（与 A1a 完全相同，该档只影响速度/ETA/安全裕度，不影响连通性）；CLDAS 含水率与 Bekker 沉陷衰减真实耦合，`od_03` ETA +0.78 s、`od_05` ETA +0.23 s、`od_04` ETA +0.02 s。
+   - **A1c 气象与水文域地表阻抗**：边级实测最大地表阻抗倍率 2.440×；`od_01_primary` 里程 735.85 m → 945.90 m（+210.05 m），`od_02` 成本 +169.51，是唯一在目标 OD 上产生 ≥1% 选线变化的档位跃迁。
+   - **A2 正切纵横坡解耦**：可通行格元恢复至 298,253 (+547 格元)，可通行边 1,738,452 (+242 边)；移除 `STEEP_SLOPE` 标量坡度硬阻断，正切横坡分解精确保留对角通行边。**注意**：恢复的 547 个格元没有被任何基准 OD 使用，A2 在目标 OD 上未产生 ≥1% 的路线变化（仅最小裕度变化，如 `od_05` −0.0058）。
 
 2. **5 组基准 OD 真实规划结果**：
-   - `od_01_primary`（吸附: 0.00m / 0.00m）：A0~A1b 距离 735.85m (ETA 142.59s, 成本 1185.76) → A1c/A2 距离 945.90m (ETA 162.42s, 成本 1259.77)；暴雨下冲沟高阻抗引导路径主动绕行干燥路线。
-   - `od_02_forest_rowspacing`（吸附: 0.96m / 1.10m）：A0~A1b 距离 595.76m (ETA 166.46s, 成本 936.21) → A1c/A2 距离 786.12m (ETA 145.84s, 成本 1101.39)；A1a 拦截行距 < 2.056m 密林，A1c 避开低洼湿软林缘。
-   - `od_03_water_gully`（吸附: 1.14m / 0.05m）：距离 451.88m；A1a ETA 103.60s → A1b ETA 104.38s（+0.78s，反映土壤沉陷降速）；A1c 综合成本激增至 652.15。
-   - `od_04_narrow_road`（吸附: 0.01m / 0.05m）：距离 353.99m；A1a ETA 49.33s → A1b ETA 49.35s → A1c ETA 51.34s，准确反映路基与土路机动性差异。
-   - `od_05_slope_traverse`（吸附: 0.04m / 0.35m）：距离 921.49m；A1a ETA 169.02s → A1b ETA 169.11s → A1c ETA 173.03s；A2 启用精确正切横坡分解，最小安全裕度校正为 0.1157。
+   - `od_01_primary`（吸附: 0.00m / 0.00m）：A0~A1a 735.85m (ETA 142.59s, 成本 1185.76)，A1b 成本 1185.75 → A1c/A2 945.90m (ETA 162.26s, 成本 1260.13)；降雨阻抗使该 OD 产生 +210.05 m 的真实绕行（本工区唯一在目标 OD 上可观测的档位变化）。
+   - `od_02_forest_rowspacing`（吸附: 0.96m / 1.10m）：A0~A1b 595.76m (ETA 166.46s, 成本 936.21) → A1c/A2 786.12m (ETA 145.66s, 成本 1105.72)；A1a 在并集内阻断 3,059 个密林格元，但该 OD 最短路径不经过它们（A0=A1a），属可观测性局限；A1c 因降雨阻抗产生 +190.36 m 绕行。
+   - `od_03_water_gully`（吸附: 1.14m / 0.05m）：距离 451.88m；A1a ETA 103.60s → A1b 104.38s（+0.78s，沉陷降速）→ A1c 104.42s（成本 651.28，+0.29）。
+   - `od_04_narrow_road`（吸附: 0.01m / 0.05m）：距离 353.99m；A1a ETA 49.33s → A1b 49.35s（+0.02s，沉陷降速在该路线仅为噪声级）→ A1c 51.34s（+1.99s，降雨阻抗）。
+   - `od_05_slope_traverse`（吸附: 0.04m / 0.35m）：距离 921.49m；A1a ETA 169.02s → A1b 169.25s → A1c/A2 169.40s；A2 启用精确正切横坡分解后距离/ETA/成本均不变，仅最小安全裕度由 0.1215 校正为 0.1157。
+
+3. **本工区实测口径与可观测性边界（第二轮审核整改后）**：
+   - 走廊并集 380,044 格元中 USCS **全部为 `CL`**：土壤栅格仅出现代码 49 黄褐土 364,199 格与代码 44 水稻土 15,845 格，二者映射 USCS 均为 CL，Bekker 组分别为 loam / clayloam；**土壤差异只体现在 Bekker 组，不体现在 CI**。
+   - CLDAS 0-5cm 采样跨 119.0° 经线像元边界，实测 2 个取值（0.3080 / 0.3301），均值 0.3153（此前因半像元取整偏移曾退化为单一 0.3301，已修复）。
+   - 单变量档位可观测性（目标 OD 上 L/ETA/Cost 相对变化 ≥1%）：A0→A1a 否；A1a→A1b 否（最大 4e-4）；A1b→A1c 是（`od_01_primary` +210.05 m / +19.67 s / +74.38）；A1c→A2 否。该结论由 `m1_ablation.json` 的 `comparison` 段给出，属**地貌与选点共同决定的可观测性局限**，不等于物理模型空转；如需演示单变量选线效果，须先按正射/矢量证据修订基准 OD（v3），不得以事后解释代替。
 
 ## 运行方式
 

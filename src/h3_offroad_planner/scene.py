@@ -16,6 +16,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any, cast
@@ -1070,6 +1071,30 @@ def _file_sha256(path: Path | str) -> str:
     return h.hexdigest()
 
 
+def _pixel_index(
+    inverse_transform: Any, x: float, y: float
+) -> tuple[int, int]:
+    """Return the (row, col) of the raster pixel that contains (x, y).
+
+    `~dataset.transform * (x, y)` yields *corner-based* pixel coordinates:
+    integer values lie on pixel edges and `k + 0.5` is a pixel centre. The
+    pixel containing the point is therefore `floor(...)`. Using `round(...)`
+    instead shifts every sample in the second half of a pixel into the
+    neighbouring pixel, which for the 0.0625 deg CLDAS grid is a ~3.45 km error
+    and can collapse an entire corridor onto a single value.
+
+    Args:
+        inverse_transform: Affine inverse of the dataset transform.
+        x: World x coordinate (or longitude for a geographic raster).
+        y: World y coordinate (or latitude for a geographic raster).
+
+    Returns:
+        `(row, col)` pixel indices; callers must still bounds-check the shape.
+    """
+    col_float, row_float = inverse_transform * (x, y)
+    return int(math.floor(row_float)), int(math.floor(col_float))
+
+
 def enrich_graph_from_static_scene(
     graph: H3Graph,
     scene_source: StaticScene | dict[str, Any] | str | Path,
@@ -1138,6 +1163,7 @@ def enrich_graph_from_static_scene(
     soil_hist: dict[int, int] = {}
     uscs_hist: dict[str, int] = {}
     missing_soil_count = 0
+    soil_pixels: set[tuple[int, int]] = set()
 
     if soil_raster_path.is_file():
         with rasterio.open(soil_raster_path) as s_ds:
@@ -1153,10 +1179,10 @@ def enrich_graph_from_static_scene(
                 s_xs, s_ys = lngs, lats
 
             for i, c in enumerate(cells):
-                px, py = inv_s_gt * (s_xs[i], s_ys[i])
-                col, row = int(round(px)), int(round(py))
+                row, col = _pixel_index(inv_s_gt, s_xs[i], s_ys[i])
                 matched_profile = None
                 if 0 <= row < s_ny and 0 <= col < s_nx:
+                    soil_pixels.add((row, col))
                     raw_val = int(s_band[row, col])
                     if raw_val > 0 and (s_nodata is None or raw_val != s_nodata) and raw_val in catalog:
                         matched_profile = catalog[raw_val]
@@ -1185,20 +1211,26 @@ def enrich_graph_from_static_scene(
             c.soil_texture = None
             c.uscs = None
 
-    # 3. Sample CLDAS Moisture NetCDF
+    # 3. Sample CLDAS Moisture raster
     moisture_vals: list[float] = []
     missing_moisture_count = 0
+    moisture_pixels: set[tuple[int, int]] = set()
     if cldas_file and cldas_file.is_file():
         with rasterio.open(cldas_file) as c_ds:
             c_band = c_ds.read(1)
             c_nodata = c_ds.nodata
             c_ny, c_nx = c_band.shape
             inv_c_gt = ~c_ds.transform
+            if c_ds.crs is not None and not c_ds.crs.is_geographic:
+                c_trans = Transformer.from_crs("EPSG:4326", c_ds.crs, always_xy=True)
+                c_xs, c_ys = c_trans.transform(lngs, lats)
+            else:
+                c_xs, c_ys = lngs, lats
             for i, c in enumerate(cells):
-                px, py = inv_c_gt * (lngs[i], lats[i])
-                col, row = int(round(px)), int(round(py))
+                row, col = _pixel_index(inv_c_gt, c_xs[i], c_ys[i])
                 assigned = False
                 if 0 <= row < c_ny and 0 <= col < c_nx:
+                    moisture_pixels.add((row, col))
                     val = float(c_band[row, col])
                     if np.isfinite(val) and val > 0.0 and (c_nodata is None or abs(val - c_nodata) > 1e-3) and val <= 1.0:
                         c.soil_moisture = val
@@ -1216,6 +1248,7 @@ def enrich_graph_from_static_scene(
     drainage_vals: list[float] = []
     valid_drainage_count = 0
     missing_drainage_count = 0
+    drainage_pixels: set[tuple[int, int]] = set()
     if drainage_path and drainage_path.is_file():
         with rasterio.open(drainage_path) as d_ds:
             d_band = d_ds.read(1)
@@ -1229,10 +1262,10 @@ def enrich_graph_from_static_scene(
                 d_xs, d_ys = lngs, lats
 
             for i, c in enumerate(cells):
-                px, py = inv_d_gt * (d_xs[i], d_ys[i])
-                col, row = int(round(px)), int(round(py))
+                row, col = _pixel_index(inv_d_gt, d_xs[i], d_ys[i])
                 assigned = False
                 if 0 <= row < d_ny and 0 <= col < d_nx:
+                    drainage_pixels.add((row, col))
                     val = float(d_band[row, col])
                     is_nodata = (d_nodata is not None and (np.isnan(val) if np.isnan(d_nodata) else val == d_nodata))
                     if np.isfinite(val) and not is_nodata:
@@ -1271,6 +1304,7 @@ def enrich_graph_from_static_scene(
             "histogram": soil_hist,
             "uscs_histogram": uscs_hist,
             "missing_soil_count": missing_soil_count,
+            "distinct_pixels": len(soil_pixels),
         },
         "moisture": {
             "source_path": str(cldas_file) if cldas_file else None,
@@ -1280,6 +1314,8 @@ def enrich_graph_from_static_scene(
             "min": float(min(moisture_vals)) if moisture_vals else None,
             "max": float(max(moisture_vals)) if moisture_vals else None,
             "mean": float(sum(moisture_vals) / len(moisture_vals)) if moisture_vals else None,
+            "distinct_pixels": len(moisture_pixels),
+            "distinct_values": len({round(v, 6) for v in moisture_vals}),
         },
         "drainage": {
             "source_path": str(drainage_path) if drainage_path else None,
@@ -1288,6 +1324,7 @@ def enrich_graph_from_static_scene(
             "min": float(min(drainage_vals)) if drainage_vals else None,
             "max": float(max(drainage_vals)) if drainage_vals else None,
             "mean": float(sum(drainage_vals) / len(drainage_vals)) if drainage_vals else None,
+            "distinct_pixels": len(drainage_pixels),
         },
         "surface_response": {
             "road_cells": road_count,

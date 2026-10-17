@@ -16,7 +16,6 @@ import numpy as np
 import yaml  # type: ignore[import-untyped]
 
 from h3_offroad_planner.dynamics.bekker import (
-    CI_THRESHOLD_KPA,
     BekkerChecker,
     _cell_bekker_soil,
 )

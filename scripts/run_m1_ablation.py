@@ -282,6 +282,7 @@ def run_m1_ablation(
         print(f"\n[M1 ABLATION] Evaluating Level {lvl_code}: {lvl_info['name']}...")
         cfg = lvl_info["config"]
         env = lvl_info["env"]
+        env_multiplier_max = 1.0
 
         od_results: dict[str, Any] = {}
         # Track union de-duplicated cells and edges
@@ -295,6 +296,13 @@ def run_m1_ablation(
 
             # Authoritative evaluation
             eval_res = evaluate_factor_model(graph, vehicle, cfg, env)
+
+            if env is not None:
+                env_key_local = f"{rainy_pressure:g}"
+                for em in eval_res.directed_edges.values():
+                    env_dist = em.environment_distance_m.get(env_key_local)
+                    if env_dist is not None and em.distance_m > 0.0:
+                        env_multiplier_max = max(env_multiplier_max, env_dist / em.distance_m)
 
             # Accumulate union
             for cid, c in graph.cells.items():
@@ -422,8 +430,53 @@ def run_m1_ablation(
             "name": lvl_info["name"],
             "description": lvl_info["description"],
             "config": cfg.to_dict(),
+            "environment_multiplier_max": round(env_multiplier_max, 4),
             "corridor_union": union_stats,
             "ods": od_results,
+        }
+
+    # Single-variable observability: what each level actually changed per OD.
+    level_order = ["A0", "A1a", "A1b", "A1c", "A2"]
+    target_levels: dict[str, list[str]] = {lvl: [] for lvl in level_order}
+    for od in ods_data:
+        for tag in str(od.get("target_ablation", "")).split("_"):
+            if tag in target_levels:
+                target_levels[tag].append(od["id"])
+
+    comparison: dict[str, Any] = {}
+    for prev_lvl, cur_lvl in zip(level_order, level_order[1:]):
+        per_od: dict[str, Any] = {}
+        for od in ods_data:
+            oid = od["id"]
+            prev_metrics = levels_output[prev_lvl]["ods"][oid]["metrics"]
+            cur_metrics = levels_output[cur_lvl]["ods"][oid]["metrics"]
+            if not prev_metrics or not cur_metrics:
+                per_od[oid] = {"status": "NOT_REACHABLE"}
+                continue
+            delta_l = cur_metrics["distance_m"] - prev_metrics["distance_m"]
+            delta_eta = cur_metrics["eta_s"] - prev_metrics["eta_s"]
+            delta_cost = cur_metrics["travel_cost"] - prev_metrics["travel_cost"]
+            relative = max(
+                abs(delta_l) / max(abs(prev_metrics["distance_m"]), 1.0),
+                abs(delta_eta) / max(abs(prev_metrics["eta_s"]), 1.0),
+                abs(delta_cost) / max(abs(prev_metrics["travel_cost"]), 1.0),
+            )
+            per_od[oid] = {
+                "is_target_od": oid in target_levels[cur_lvl],
+                "delta_distance_m": round(delta_l, 2),
+                "delta_eta_s": round(delta_eta, 2),
+                "delta_travel_cost": round(delta_cost, 2),
+                "max_relative_change": round(relative, 6),
+                "material_change": bool(relative >= 0.01),
+            }
+        target_rows = [row for row in per_od.values() if row.get("is_target_od")]
+        comparison[f"{prev_lvl}->{cur_lvl}"] = {
+            "from_level": prev_lvl,
+            "to_level": cur_lvl,
+            "target_ods": list(target_levels[cur_lvl]),
+            "target_od_observed_change": any(r.get("material_change") for r in target_rows),
+            "any_od_observed_change": any(r.get("material_change") for r in per_od.values()),
+            "per_od": per_od,
         }
 
     # Aggregate enrichment statistics across the entire de-duplicated corridor union
@@ -478,6 +531,7 @@ def run_m1_ablation(
             "min": float(min(u_moisture_vals)) if u_moisture_vals else None,
             "max": float(max(u_moisture_vals)) if u_moisture_vals else None,
             "mean": float(sum(u_moisture_vals) / len(u_moisture_vals)) if u_moisture_vals else None,
+            "distinct_values": len({round(v, 6) for v in u_moisture_vals}),
         },
         "drainage": {
             "source_path": primary_summary.get("drainage", {}).get("source_path"),
@@ -500,6 +554,8 @@ def run_m1_ablation(
         enrichment_meta=union_enrichment,
         levels=levels_output,
         ods_data=ods_data,
+        comparison=comparison,
+        rainy_pressure=rainy_pressure,
     )
 
     full_payload = {
@@ -513,6 +569,7 @@ def run_m1_ablation(
             "per_od_enrichment": enrichment_summaries,
             "enrichment_summary": union_enrichment,
         },
+        "comparison": comparison,
         "levels": levels_output,
     }
 
@@ -531,6 +588,8 @@ def _generate_markdown_summary(
     enrichment_meta: dict[str, Any],
     levels: dict[str, Any],
     ods_data: list[dict[str, Any]],
+    comparison: dict[str, Any] | None = None,
+    rainy_pressure: float = 0.0,
 ) -> str:
     lines = [
         "# M1 物理属性消融实验综合分析报告",
@@ -558,7 +617,7 @@ def _generate_markdown_summary(
         "",
         f"- **采样格元总数**: {enrichment_meta.get('total_cells_enriched', 0):,} 格",
         f"- **土壤分类直方图 (USCS)**: `{json.dumps(enrichment_meta.get('soil', {}).get('uscs_histogram', {}), ensure_ascii=False)}`",
-        f"- **CLDAS 含水率统计 (0-5cm)**: 有效采样 {enrichment_meta.get('moisture', {}).get('count', 0):,} 格，均值 {enrichment_meta.get('moisture', {}).get('mean', 0.0):.4f} m³/m³ (范围 [{enrichment_meta.get('moisture', {}).get('min', 0.0):.4f}, {enrichment_meta.get('moisture', {}).get('max', 0.0):.4f}])",
+        f"- **CLDAS 含水率统计 (0-5cm)**: 有效采样 {enrichment_meta.get('moisture', {}).get('count', 0):,} 格，均值 {enrichment_meta.get('moisture', {}).get('mean', 0.0):.4f} m³/m³ (范围 [{enrichment_meta.get('moisture', {}).get('min', 0.0):.4f}, {enrichment_meta.get('moisture', {}).get('max', 0.0):.4f}]，不同取值 {enrichment_meta.get('moisture', {}).get('distinct_values', 0)} 个)",
         f"- **水文 D 场有效格元**: {enrichment_meta.get('drainage', {}).get('valid_count', 0):,} 格，均值 {enrichment_meta.get('drainage', {}).get('mean', 0.0):.4f}",
         f"- **地表响应分类**: 铺装道路 {enrichment_meta.get('surface_response', {}).get('road_cells', 0):,} 格 (S=0.0)，越野土壤 {enrichment_meta.get('surface_response', {}).get('offroad_cells', 0):,} 格 (S=0.9)",
         "",
@@ -609,24 +668,6 @@ def _generate_markdown_summary(
     water_depth_diff = a1a_u["reason_codes_by_cell"].get("WATER_DEPTH_LIMIT", 0)
     slope_unblock_diff = a2_u["passable_unique_cells"] - a1c_u["passable_unique_cells"]
 
-    # Compute A1b vs A1a ETA diffs across ODs
-    eta_diffs_1b = {}
-    for od in ods_data:
-        oid = od["id"]
-        m1a = levels["A1a"]["ods"][oid]["metrics"]
-        m1b = levels["A1b"]["ods"][oid]["metrics"]
-        if m1a and m1b:
-            eta_diffs_1b[oid] = m1b["eta_s"] - m1a["eta_s"]
-
-    # Compute A1c vs A1b distance/cost diffs
-    cost_diffs_1c = {}
-    for od in ods_data:
-        oid = od["id"]
-        m1b = levels["A1b"]["ods"][oid]["metrics"]
-        m1c = levels["A1c"]["ods"][oid]["metrics"]
-        if m1b and m1c:
-            cost_diffs_1c[oid] = m1c["travel_cost"] - m1b["travel_cost"]
-
     # Compute A2 vs A1c margin diffs
     margin_diffs_a2 = {}
     for od in ods_data:
@@ -642,32 +683,93 @@ def _generate_markdown_summary(
         else "未采样"
     )
 
+    def _fmt_row(row: dict[str, Any]) -> str:
+        return (
+            f"ΔL={row['delta_distance_m']:+.2f}m / "
+            f"ΔETA={row['delta_eta_s']:+.2f}s / "
+            f"ΔCost={row['delta_travel_cost']:+.2f}"
+        )
+
+    def _material_ods(prev: str, cur: str) -> list[tuple[str, dict[str, Any]]]:
+        entry = (comparison or {}).get(f"{prev}->{cur}")
+        if not entry:
+            return []
+        return [
+            (oid, row)
+            for oid, row in entry["per_od"].items()
+            if row.get("material_change")
+        ]
+
+    def _obs_sentence(prev: str, cur: str) -> str:
+        entry = (comparison or {}).get(f"{prev}->{cur}")
+        if not entry:
+            return "未计算可观测性。"
+        changed = _material_ods(prev, cur)
+        if changed:
+            detail = "；".join(f"{oid} {_fmt_row(row)}" for oid, row in changed)
+            return f"观测到 ≥1% 变化的 OD：{detail}。"
+        target = ", ".join(entry["target_ods"]) or "无"
+        return (
+            f"目标 OD（{target}）与其余 OD 均未出现 ≥1% 的 L/ETA/Cost 变化；"
+            "该变量在本工区只改变格元/边状态与局部指标，没有改变任何基准 OD 的选线。"
+        )
+
+    env_multiplier = levels["A1c"].get("environment_multiplier_max", 1.0)
+    moisture_meta = enrichment_meta.get("moisture", {})
+    uscs_hist = enrichment_meta.get("soil", {}).get("uscs_histogram", {})
+
     lines.extend([
         "",
         "## 4. 单变量消融动态对比分析",
         "",
-        f"1. **A1a 相对 A0（恢复行距与水深物理约束）**：",
-        f"   - 在去重走廊并集中识别出 `{rowspacing_diff:,}` 个格元因树木行距窄于车宽（2.056 m）被物理阻断（`ROWSPACING_BLOCKED`）。",
-        f"   - 识别出 `{water_depth_diff:,}` 个水体格元水深超过底盘间隙（0.225 m）被物理阻断（`WATER_DEPTH_LIMIT`），修正在历史建图中建筑被误标为水体的缺陷（P1-2）。",
-        f"   - 可通行有向边由 {a0_u['passable_unique_directed_edges']:,} 条降至 {a1a_u['passable_unique_directed_edges']:,} 条（净减少 {a0_u['passable_unique_directed_edges'] - a1a_u['passable_unique_directed_edges']:,} 条阻断边）。",
+        "1. **A1a 相对 A0（恢复行距与水深硬约束）**：",
+        f"   - 走廊并集中 `{rowspacing_diff:,}` 个格元因行距窄于车宽（2.056 m）被阻断（`ROWSPACING_BLOCKED`）。",
+        f"   - `{water_depth_diff:,}` 个水体格元因水深超过离地间隙（0.225 m）被阻断（`WATER_DEPTH_LIMIT`）；同一步骤修掉了历史上建筑被误标为水体的缺陷。",
+        f"   - 可通行有向边由 {a0_u['passable_unique_directed_edges']:,} 条降至 {a1a_u['passable_unique_directed_edges']:,} 条（净减 {a0_u['passable_unique_directed_edges'] - a1a_u['passable_unique_directed_edges']:,} 条）。",
+        f"   - 选线可观测性：{_obs_sentence('A0', 'A1a')}",
         "",
-        f"2. **A1b 相对 A1a（土壤力学与 Bekker/CI 物理评价）**：",
-        f"   - 全域接入 CLDAS 真实含水率栅格（均值 {cldas_mean_str}）与土壤 USCS 分类，消除了常量伪造（P0-2）。",
-        f"   - 沉陷降速机制真实生效（P0-4）：非铺装土壤格元依据车辆载荷与沉陷比率产生连续速度衰减。",
-        f"   - 在基准 OD 上产生确定性速度与耗时差异：如 `od_03_water_gully` 耗时增加 `{eta_diffs_1b.get('od_03_water_gully', 0.0):+.2f} s`，`od_05_slope_traverse` 耗时增加 `{eta_diffs_1b.get('od_05_slope_traverse', 0.0):+.2f} s`。A1b 彻底摆脱空转，物理判别力成立。",
+        "2. **A1b 相对 A1a（土壤力学与 Bekker/CI）**：",
+        f"   - 真实接入 CLDAS 含水率（均值 {cldas_mean_str}，采样到 {moisture_meta.get('distinct_values', 0)} 个不同取值）与土壤分类（USCS 分布 `{json.dumps(uscs_hist, ensure_ascii=False)}`）。",
+        f"   - 沉陷降速已进入节点速度（`sinkage_factor`）。可通行格元与可通行边数量与 A1a 完全相同，故该档只影响速度、ETA 与安全裕度，不影响连通性。",
+        f"   - 选线可观测性：{_obs_sentence('A1a', 'A1b')}",
         "",
-        f"3. **A1c 相对 A1b（静态天气快照与上游水文 D 场耦合）**：",
-        f"   - 引入降雨敏感对照场景（P=0.8）与上游水文域 D 场（`drainage_sensitivity.tif`），在低洼汇水区产生最高 2.44× 地表阻抗倍率。",
-        f"   - 引导路线主动规避湿软冲沟：`od_01_primary` 路线长度增加至 {levels['A1c']['ods']['od_01_primary']['metrics']['distance_m']:.1f} m（绕行低洼区），综合成本上升 `{cost_diffs_1c.get('od_01_primary', 0.0):+.2f}`；`od_02` 成本增加 `{cost_diffs_1c.get('od_02_forest_rowspacing', 0.0):+.2f}`。",
+        "3. **A1c 相对 A1b（降雨快照与上游 D 场）**：",
+        f"   - 使用合成降雨对照快照（P={rainy_pressure:g}）与 D 场，实测最大地表阻抗倍率 `{env_multiplier:.3f}×`，由边级 `environment_distance_m / distance_m` 统计得出，非模板常量。",
+        f"   - 选线可观测性：{_obs_sentence('A1b', 'A1c')}",
         "",
-        f"4. **A2 相对 A1c（纵横坡精确正切解耦）**：",
-        f"   - 取消节点级标量坡度硬过滤（`enforce_scalar_slope_blocking=False`），走廊内恢复 `{slope_unblock_diff:,}` 个局部大坡合格元的可通行资格。",
-        f"   - 启用精确正切分解公式（`use_exact_tangent_roll=True`），精确计算边方向航向角下的横倾角，横倾安全裕度产生确定性代数校正（如 `od_05` 最小裕度变化 `{margin_diffs_a2.get('od_05_slope_traverse', 0.0):+.4f}`）。",
+        "4. **A2 相对 A1c（纵横坡解耦）**：",
+        f"   - 关闭节点级标量坡度硬过滤（`enforce_scalar_slope_blocking=False`），并集内恢复 `{slope_unblock_diff:,}` 个格元的可通行资格，可通行边增加 `{a2_u['passable_unique_directed_edges'] - a1c_u['passable_unique_directed_edges']:,}` 条。",
+        f"   - 精确正切分解（`use_exact_tangent_roll=True`）只改变横倾角与安全裕度：如 `od_05` 最小裕度变化 `{margin_diffs_a2.get('od_05_slope_traverse', 0.0):+.4f}`。",
+        f"   - 选线可观测性：{_obs_sentence('A1c', 'A2')}",
         "",
-        "## 5. 结论与边界声明",
+        "## 5. 观测性判定与结论",
         "",
-        "- **结论**: 阻断项 P0-1 至 P0-6 及重要项 P1-1 至 P1-6 已完全闭环。A0 至 A2 每一档在走廊并集和目标 OD 上均产生了可由该档唯一物理变量自洽解释的非零差异。",
-        "- **边界声明**: 本报告证明静态地图物理评价与路线计算在全链条一致性上成立。这不代表格网几何已完全连续、不代表道路面已完成微观建模（归属 M2）、亦不代表实车通过性已由现场传感器验证。",
+        "| 档位跃迁 | 目标 OD | 目标 OD 出现 ≥1% 变化 | 任一 OD 出现 ≥1% 变化 |",
+        "|---|---|---|---|",
+    ])
+
+    for key in ("A0->A1a", "A1a->A1b", "A1b->A1c", "A1c->A2"):
+        entry = (comparison or {}).get(key)
+        if not entry:
+            continue
+        target_str = ", ".join(entry["target_ods"]) or "无"
+        lines.append(
+            f"| {key.replace('->', ' → ')} | {target_str} | "
+            f"{'是' if entry['target_od_observed_change'] else '**否**'} | "
+            f"{'是' if entry['any_od_observed_change'] else '**否**'} |"
+        )
+
+    unobserved = [
+        key.replace("->", " → ")
+        for key, value in (comparison or {}).items()
+        if not value["target_od_observed_change"]
+    ]
+    lines.extend([
+        "",
+        f"- **可观测性结论**: 共有 {len(unobserved)} 个档位跃迁未在其目标 OD 上产生 ≥1% 的路线变化"
+        + (f"（{'；'.join(unobserved)}）" if unobserved else "")
+        + "。这些变量改变了格元状态，但未改变任何基准 OD 的选线，属地貌与选点共同决定的**可观测性局限**，不等于物理模型空转。",
+        "- **边界声明**: 本报告只证明静态地图物理评价与路线计算在链条上一致。它不代表格网几何连续、不代表道路面已完成微观建模（归属 M2）、不代表车辆可通过，亦不代表实车有效。",
     ])
 
     return "\n".join(lines) + "\n"
