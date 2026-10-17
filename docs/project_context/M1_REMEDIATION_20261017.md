@@ -54,7 +54,7 @@ git status -s
 ## 5. 本轮仍未处理（需决策，不在整改范围内）
 
 1. **铺装路面仍套用土壤沉陷**：`_soil_speed_interval` 对所有格元生效，`has_road=True` 的格元同时拿到 `road_speed_factor=1.0` 与土壤沉陷降速；而 `surface_response=0.0` 已把道路视为不透水面。二者语义冲突，是否给道路豁免 Bekker 属**建模决策**，需在 DECISIONS 中定案后再改，本轮未动。
-2. **基准 OD 未按 v3 重选**：可观测性局限已如实记录，若要真正演示 A1a / A2 的选线效果，需按正射/矢量证据修订 OD 起点终点，属于下一轮输入变更。
+2. **基准 OD 不重选**：5 组端点均落在可通行 res14 格，按负责人判定保留 v2 坐标；A1b / A2 的零变化如实记录为可观测性局限。
 3. **寻路权重仍是自定义复合式**（`travel_cost + 2·eta + 0.1·risk + env_cost`），非正式候选规划入口的代价函数。评价对象是正式的，规划器不是。
 4. `MISSING_LANDCOVER: 11,510` 格元的地物证据缺失成因尚未追查。
 
@@ -62,10 +62,12 @@ git status -s
 
 | 要求 | 落地 | 证据 |
 |---|---|---|
-| **1a 端点不可通行即报错** | \`_resolve_endpoint\` 改为 \`h3.latlng_to_cell(lat, lng, 14)\` 求**含格元**，取消走廊图上的最近格元搜索；含格元缺失/不可通行分别返回 \`OD_ENDPOINT_OUTSIDE_CORRIDOR\` / \`OD_ENDPOINT_IMPASSABLE\` | \`run_m1_ablation.py::_resolve_endpoint\`；回归 \`test_endpoint_resolves_containing_cell_and_never_crosses_cells\` 断言"邻格不可通行时不会跳回可通行格" |
-| **1b 吸附限制在 res14 格内** | \`MAX_SNAP_DISTANCE_M\` 30.0 m → **2.0 m**（res14 边长 1.35 m），只吸收落在格边的坐标；实际 5 组 OD 吸附 0.00–1.14 m | 产物 \`metadata.max_snap_distance_m = 2.0\`；测试断言该常量 ≤2.0 |
-| **1c 重选一条有意义的 OD** | \`od_02_forest_rowspacing\` 改为跨 1,930 格密林斑块两侧的一对可通行格元，配置升 \`m1_benchmark_ods_v3\` | A0 139.54 m → A1a 382.91 m（+243.37 m / +175%），A0→A1a 首次出现目标 OD 可观测变化 |
-| **2 铺装路面豁免 Bekker** | \`_soil_speed_interval\` 对 \`has_road\` 格元直接返回土壤系数 1.0 且不计算 CI/沉陷 | 回归 \`test_road_cells_are_exempt_from_soil_sinkage\`；\`od_04\` ETA 49.33→26.66 s、\`od_05\` 169.02→116.84 s |
-| **3 文档清理** | 删除根目录 4 份历史残留；当前依据收敛到 \`IMPLEMENTATION_PLAN.md\` | DECISIONS #39；本轮另附文档清点审核表 |
+| **1a 端点不可通行即报错** | `_resolve_endpoint` 改为 `h3.latlng_to_cell(lat, lng, 14)` 求**含格元**，取消走廊图上的最近格元搜索；含格元缺失/不可通行分别返回 `OD_ENDPOINT_OUTSIDE_CORRIDOR` / `OD_ENDPOINT_IMPASSABLE` | 回归 `test_endpoint_resolves_containing_cell_and_never_crosses_cells`：邻格不可通行时断言不会跳回可通行格 |
+| **1b 吸附限制在 res14 格内** | `MAX_SNAP_DISTANCE_M` 30.0 m → **2.0 m**（res14 边长 1.35 m），只吸收落在格边的坐标 | 产物 `metadata.max_snap_distance_m = 2.0`；实测 5 组 OD 吸附 0.00–1.14 m |
+| **1c 只在端点不可通行时重选** | 复核 5 组 OD：端点所在 res14 格元全部可通行 ⇒ **不重选**，保留 `m1_benchmark_ods_v2`。曾一度升级的 v3（把 od_02 移到密林两侧）已按负责人判定撤回 | DECISIONS #38；`configs/scenes/m1_benchmark_ods.json` 与 8871d9b 版本一致 |
+| **2 铺装路面豁免 Bekker** | `_soil_speed_interval` 对 `has_road` 格元直接返回土壤系数 1.0，且不计算 CI/沉陷、不产生土壤原因码与土壤裕度 | 回归 `test_road_cells_are_exempt_from_soil_sinkage`；`od_04` ETA 49.33→26.66 s、`od_05` 169.02→116.84 s |
+| **3 文档清理** | 删除根目录 4 份残留、`modules/`（49 篇）、`SYMBOL_INDEX.md`、`MANIFEST.md`；`docs/code/`（58 篇）、`demo_v4` 性能方案、`PROJECT_HOLOGRAM.md` 移入 `docs/history/` | DECISIONS #39；详见 [DOC_INVENTORY_20261017.md](DOC_INVENTORY_20261017.md) |
 
-第三批后的并集口径：176,645 格元（od_02 走廊随选点变化），可通行 139,650 / 137,105 / 137,105 / 137,105 / 137,523（A0→A2）。
+**撤回 v3 之后的结果**：修复路面豁免后重新测得的 A0→A1a 变化并未消失——`od_02` 由 639.31 m / 85.78 s 变为 593.04 m / 136.90 s（相对变化 59.6%），说明此前观察到的"A1a 零变化"主要是 **A1b 之前的路面沉陷把两条路线压成同一条**造成的，不是基准点选得不对。这直接支持"先修物理模型、不移动基准点"的处理原则。
+
+第三批后的并集口径：380,044 格元，可通行 300,755 / 297,706 / 297,706 / 297,706 / 298,253（A0→A2），可通行有向边 1,756,868 / 1,738,210 / 1,738,210 / 1,738,210 / 1,738,452。

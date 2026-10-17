@@ -1,8 +1,8 @@
 {
-  "schema_version": "m1_benchmark_ods_v3",
+  "schema_version": "m1_benchmark_ods_v2",
   "scene_id": "qdx-dem-coverage-001",
   "metric_crs": "EPSG:4528",
-  "version_notes": "v3: od_02 endpoints moved onto the largest rowspacing-blocked forest patch (both endpoints verified passable at res14; A0 crosses the patch, A1a detours ~+248 m). v2 note: od_03/od_04/od_05 coordinates refined against orthophoto and vector boundaries to remove endpoint collisions with impassable water/buildings.",
+  "version_notes": "v2 coordinates refined based on orthophoto and vector boundaries (road_fina.shp, water.shp, building landcover) to eliminate endpoint collisions with impassable water pond (>0.5m depth) and building polygons, bringing all initial snap distances within <= 1.2 meters.",
   "ods": [
     {
       "id": "od_01_primary",
@@ -23,23 +23,23 @@
       "id": "od_02_forest_rowspacing",
       "name": "Forest Rowspacing Boundary OD",
       "start_wgs84": [
-        31.9866878,
-        118.9904908
+        31.9850,
+        118.9910
       ],
       "goal_wgs84": [
-        31.9877115,
-        118.9907237
+        31.9890,
+        118.9940
       ],
       "category": "forest_rowspacing",
       "target_ablation": "A1a",
-      "description": "Straddles the largest dense-forest patch (rowspacing 1.7 m < vehicle width 2.056 m) so the rowspacing hard constraint forces a real detour."
+      "description": "Crosses forest boundary with varying tree rowspacing to test vehicle safe width passability."
     },
     {
       "id": "od_03_water_gully",
       "name": "Water and Low-Lying Gully OD",
       "start_wgs84": [
-        31.986,
-        118.995
+        31.9860,
+        118.9950
       ],
       "goal_wgs84": [
         31.989242,
@@ -72,8 +72,8 @@
         118.992186
       ],
       "goal_wgs84": [
-        31.979,
-        118.997
+        31.9790,
+        118.9970
       ],
       "category": "slope_traverse",
       "target_ablation": "A2",
