@@ -36,6 +36,7 @@
 - 历史设计、Phase 报告与研究综述集中在 [`docs/history/`](../history/)，**不代表当前实现**。
 - `docs/history/PROJECT_HOLOGRAM_986bd58.md` 是 `986bd58` 基线的**冻结架构快照**，只用于理解目录结构，不反映 M0/M1 之后的实现；`PROJECT_HOLOGRAM_gpt.md` / `PROJECT_HOLOGRAM_gemini.md` 已删除。
 - **当前实施依据唯一收敛到 `IMPLEMENTATION_PLAN.md`**；与快照冲突时以方案与源码为准。
+- 阶段记录：[M2_READINESS_CHECKLIST_20261017.md](M2_READINESS_CHECKLIST_20261017.md)（M2 前后整改事项表）、[M1_REMEDIATION_20261017.md](M1_REMEDIATION_20261017.md)（整改执行记录）、[M1_CONSOLIDATED_AUDIT_20261017.md](M1_CONSOLIDATED_AUDIT_20261017.md) / [M1_AUDIT_ROUND2_20261017.md](M1_AUDIT_ROUND2_20261017.md)（审核报告）。
 
 ## 从理解到进一步探索
 
