@@ -383,6 +383,7 @@ class RouteRequest:
     penalty_factor: float = 0.25
     static_planning_path: str | None = None
     environment_snapshot_path: str | None = None
+    static_scene_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.input_mode not in ROUTE_INPUT_MODES:
@@ -415,6 +416,7 @@ class RouteRequest:
         _require_optional_path("factor_model_path", self.factor_model_path)
         _require_optional_path("static_planning_path", self.static_planning_path)
         _require_optional_path("environment_snapshot_path", self.environment_snapshot_path)
+        _require_optional_path("static_scene_path", self.static_scene_path)
         if self.mission_profile not in {
             "fastest",
             "shortest",

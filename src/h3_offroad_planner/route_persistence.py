@@ -212,6 +212,11 @@ def _route_manifest_payload(
         "active_parent_h3": _object_list(source_metadata, "active_parent_h3"),
         "evidence_status": source_metadata.get("evidence_status", "INCOMPLETE"),
         "missing_physical_inputs": _object_list(source_metadata, "missing_physical_inputs"),
+        "index_missing_physical_inputs": _object_list(
+            source_metadata, "index_missing_physical_inputs"
+        ),
+        "static_surface_status": source_metadata.get("static_surface_status"),
+        "static_coverage": _static_coverage_payload(source_metadata),
         "vehicle_hash": plan.vehicle_hash,
         "factor_model_hash": plan.factor_model_hash,
         "static_input_hash": plan.static_input_hash,
@@ -1045,6 +1050,34 @@ def _mapping(payload: Mapping[str, object], key: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise PlanningInputError(f"state field {key!r} must be an object.")
     return cast(dict[str, object], value)
+
+
+def _static_coverage_payload(
+    source_metadata: Mapping[str, object],
+) -> dict[str, object] | None:
+    """Return the compact static-surface coverage block for the route manifest."""
+    enrichment = source_metadata.get("static_enrichment")
+    if not isinstance(enrichment, Mapping):
+        return None
+    fields_raw = enrichment.get("coverage")
+    fields: dict[str, object] = {}
+    if isinstance(fields_raw, Mapping):
+        for name, field in fields_raw.items():
+            if not isinstance(field, Mapping):
+                continue
+            fields[str(name)] = {
+                "non_null_rate": field.get("non_null_rate"),
+                "valid_rate": field.get("valid_rate"),
+                "valid": field.get("valid"),
+                "total": field.get("total"),
+            }
+    return {
+        "evidence_status": enrichment.get("evidence_status"),
+        "threshold": enrichment.get("coverage_threshold"),
+        "gaps": list(enrichment.get("coverage_gaps") or []),
+        "soil_uscs_map_sha256": enrichment.get("soil_uscs_map_sha256"),
+        "fields": fields,
+    }
 
 
 def _object_list(payload: Mapping[str, object], key: str) -> list[object]:

@@ -1,6 +1,6 @@
 # 当前实施状态
 
-更新：2026-10-16。工作树：`D:/Workspace/demo_v4-manned-offroad`。分支：`codex/manned-offroad-map`。
+更新：2026-10-17。工作树：`D:/Workspace/demo_v4-manned-offroad`。分支：`codex/manned-offroad-map`。
 历史基线：`986bd58eef846f6f8a34961a43b208c315471110`；M0 规范化与加固提交：`5f30c5c`，`88ddda0`；M1 静态通行属性修复与物理消融提交：`3b1a520`，`c715f08`；当前最新提交以 `git rev-parse HEAD` 为准。
 
 ## 已完成
@@ -41,7 +41,7 @@
   - 提供 `scripts/run_m0_baseline.py` 与 `python scripts/run_local.py m0-baseline`，自动执行：请求校验 → 正射预览生成 → 关键属性审计 → `prepare_static_scene` 契约生成与保存（正射预览路径贯通注入） → `cli plan` 基线运行 → 产物摘要与哈希归档。
   - 产物写入独立目录 `outputs/m0_qdx_baseline/`，包含 `m0_baseline.json`、`static_scene.json`、`orthophoto_preview.png`、`orthophoto_preview.json`、`landcover_attribute_audit.json` 及路线结果。
 - **自动化测试**：
-  - 全套回归测试 550 passed, 4 skipped；
+  - 全套回归测试 554 passed, 4 skipped；
   - 包含 `tests/test_m1_consolidated_regression.py`、`tests/test_m1_ablation.py`、`tests/test_static_scene.py`、`tests/test_orthophoto_preview.py`、`tests/test_vectorized_factor.py` 等全量通过。
 
 ### M1 静态通行属性修复与综合审核整改闭环（整改完成，待复核）
@@ -99,6 +99,32 @@
    - CLDAS 0-5cm 采样实测 2 个取值（0.3080 / 0.3301，均值 0.3153），跨 119.0° 经线像元边界。
    - 单变量档位可观测性（目标 OD 上 L/ETA/Cost 相对变化 ≥1%）：A0→A1a **是**（`od_02` 59.6%）；A1a→A1b 否（最大 4e-4）；A1b→A1c **是**（`od_01` 20.4%）；A1c→A2 否。
    - **基准 OD 不因"零变化"而重选**：选点只按"端点落在可通行 res14 格 + 命中目标地物特征"确定；A1b 与 A2 的剩余零变化如实记录为可观测性局限。若将来要演示这两档的选线效果，应先补足对应地物样本（越野软土连续段、大坡斜切段），而不是移动现有基准点。
+
+### A 组：地表场接入生产链与数据覆盖率（已完成）
+
+- **接口变化**：
+  - 新增 `RouteRequest.static_scene_path`（可选），由 `configs/manned_offroad_m0.yaml` 的 `route.static_scene_path` 提供；
+  - `routing._load_route_graph(..., enrich_scene=...)` 成为统一加载入口：图构建后调用 `enrich_graph_from_static_scene`，把 `static_enrichment` / `static_evidence_status` 写入返回元数据；
+  - 新增 `scene.static_field_coverage` / `static_field_coverage_for_cells` / `coverage_evidence_status` / `coverage_gaps`，逐字段给出 `non_null_rate` 与 `valid_rate`（阈值 0.99）；
+  - `enrich_graph_from_static_scene` 返回值新增 `coverage` / `coverage_threshold` / `evidence_status` / `coverage_gaps` / `soil_uscs_map_sha256`；
+  - 生产路线 manifest 新增 `static_surface_status`、`static_coverage`、`index_missing_physical_inputs`；`_bind_loaded_index_identity` 在静态场完整时保留索引原始缺失项，但不再据此判 INCOMPLETE。
+- **数据映射外置**：土壤代码 → USCS / texture / Bekker 组改为 [configs/soil_uscs_map.yaml](../../configs/soil_uscs_map.yaml)（27 条，值与原先硬编码逐条一致）；`SOIL_USCS_MAP_SHA256` 进入 enrichment 元数据与消融产物 `data_coverage`。
+- **实测覆盖率**：
+  - 生产 plan（41,503 格元）：`soil_code / uscs / soil_moisture / drainage_sensitivity / surface_response` 五类 `valid_rate = 1.000`，`static_surface_status = complete`，`evidence_status = COMPLETE`；索引构建期的缺失项保留在 `index_missing_physical_inputs`（`static_sources.drainage / drainage_boundary / drainage_validity / twi`）。
+  - 消融并集（380,044 格元）：五类 `valid_rate = 1.000`，`data_coverage.evidence_status = complete`，`soil_uscs_map_sha256 = 60fe91f3…`。
+- **运行命令**：
+  - `python scripts/run_local.py cli plan --request configs/manned_offroad_m0.yaml`（生产链，含静态场接入）
+  - `python scripts/run_local.py m1-ablation`（消融，含覆盖率判定）
+  - `python scripts/run_local.py pytest tests/ -q`
+- **产物路径**：
+  - `outputs/m0_qdx_baseline/baseline_route/route_manifest.json`（`static_coverage` 与 `static_surface_status`）
+  - `outputs/m1_ablation/m1_ablation.json`（`metadata.data_coverage`）与 `m1_ablation_summary.md`
+- **未改变物理结果**：本次只改数据接入与证据口径，M1 各档 OD 指标与上一轮一致。
+- **尚存问题**：
+  1. `static_scene_path` 目前指向 `configs/scenes/m0_qdx_scene.json`；若要以 M0 产物 `outputs/m0_qdx_baseline/static_scene.json` 为准，只需改这一处配置；
+  2. `twi` 仍然为空，索引缺失项中只有 drainage 系在运行时被补齐；
+  3. 覆盖率只对**已加载走廊子图**成立（生产 plan 41,503 格元、消融并集 380,044 格元），不代表全库 2,251,004 格元；
+  4. `soil_uscs_map_sha256` 只进产物与 enrichment 元数据，未进入 tile/index 身份哈希 `static_input_hash`（改哈希会与既有瓦片清单失配，留待重建瓦片时一并处理）。
 
 ## 运行方式
 

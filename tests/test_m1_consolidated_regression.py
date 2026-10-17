@@ -36,9 +36,22 @@ from h3_offroad_planner.models import (
     H3Cell,
     H3Edge,
     H3Graph,
+    RouteRequest,
     VehicleProfile,
 )
-from h3_offroad_planner.scene import _pixel_index, enrich_graph_from_static_scene
+from h3_offroad_planner.preprocessing.gis_preprocessor import (
+    SOIL_USCS_MAP_PATH,
+    SOIL_USCS_MAP_SHA256,
+    SOIL_USCS_OVERRIDES,
+)
+from h3_offroad_planner.scene import (
+    _pixel_index,
+    coverage_evidence_status,
+    coverage_gaps,
+    enrich_graph_from_static_scene,
+    static_field_coverage,
+    static_field_coverage_for_cells,
+)
 from h3_offroad_planner.vectorized_factor import compute_vectorized_edge_arrays
 from h3_offroad_planner.vectorized_soil import vectorized_bekker_sinkage
 
@@ -170,6 +183,108 @@ def test_pixel_index_matches_rasterio_index():
             for lng in (118.99, 118.995, 119.0, 119.0076, 119.02):
                 for lat in (31.97, 31.989, 31.995, 32.0):
                     assert _pixel_index(inverse, lng, lat) == ds.index(lng, lat), (lng, lat)
+
+
+def _surface_cell(h3index: str, **kwargs: object) -> H3Cell:
+    base = dict(
+        h3index=h3index,
+        lat=31.98,
+        lng=118.99,
+        elevation=20.0,
+        slope=1.0,
+        tri=0.0,
+        lc_factor=1.0,
+        landcover_code=1,
+    )
+    base.update(kwargs)
+    return H3Cell(**base)  # type: ignore[arg-type]
+
+
+def test_static_field_coverage_separates_non_null_from_valid():
+    """A field can be populated and still unusable; both rates must be reported."""
+    populated = _surface_cell(
+        str(h3.latlng_to_cell(31.980, 118.990, 14)),
+        soil_code=49,
+        uscs=None,  # catalogue hit but no USCS class
+        soil_moisture=0.31,
+        drainage_sensitivity=0.4,
+        drainage_valid=True,
+        surface_response=0.9,
+    )
+    empty = _surface_cell(str(h3.latlng_to_cell(31.981, 118.991, 14)))
+
+    coverage = static_field_coverage_for_cells([populated, empty])
+    assert coverage["soil_code"]["non_null_rate"] == pytest.approx(0.5)
+    assert coverage["soil_code"]["valid_rate"] == pytest.approx(0.5)
+    assert coverage["uscs"]["non_null_rate"] == pytest.approx(0.0)
+    assert coverage["soil_moisture"]["valid_rate"] == pytest.approx(0.5)
+    assert coverage["drainage_sensitivity"]["valid_rate"] == pytest.approx(0.5)
+    assert coverage["surface_response"]["valid_rate"] == pytest.approx(0.5)
+
+    assert coverage_evidence_status(coverage) == "incomplete"
+    assert "uscs" in coverage_gaps(coverage)
+
+    graph = H3Graph(cells={populated.h3index: populated, empty.h3index: empty}, edges={})
+    assert static_field_coverage(graph) == coverage
+
+
+def test_static_coverage_is_complete_when_every_field_is_usable():
+    cell = _surface_cell(
+        str(h3.latlng_to_cell(31.980, 118.990, 14)),
+        soil_code=49,
+        uscs="CL",
+        soil_moisture=0.31,
+        drainage_sensitivity=0.4,
+        drainage_valid=True,
+        surface_response=0.9,
+    )
+    coverage = static_field_coverage_for_cells([cell])
+    assert coverage_evidence_status(coverage) == "complete"
+    assert coverage_gaps(coverage) == []
+
+
+def test_soil_uscs_map_is_external_and_hashed():
+    """The mapping must live in configs/ and be content-addressed."""
+    assert SOIL_USCS_MAP_PATH.is_file(), SOIL_USCS_MAP_PATH
+    assert SOIL_USCS_MAP_PATH.parent.name == "configs"
+    assert len(SOIL_USCS_OVERRIDES) == 27
+    assert SOIL_USCS_OVERRIDES[49] == ("Lo", "CL", "loam", True)
+    assert SOIL_USCS_OVERRIDES[44] == ("ClLo", "CL", "clayloam", True)
+    assert SOIL_USCS_OVERRIDES[18] == (None, None, None, False)
+    import hashlib
+
+    digest = hashlib.sha256(SOIL_USCS_MAP_PATH.read_bytes()).hexdigest()
+    assert SOIL_USCS_MAP_SHA256 == digest
+    assert len(SOIL_USCS_MAP_SHA256) == 64
+
+
+def test_route_request_accepts_optional_static_scene_path():
+    request = RouteRequest(
+        input_mode="coordinates",
+        parquet_path="outputs/baseline_986bd58/qdx_tiles/tile_manifest.json",
+        planner_config_path="configs/planner_config.json",
+        vehicle_path="configs/vehicle.yaml",
+        output_dir="outputs/m1_ablation",
+        start_lat=31.99,
+        start_lng=118.99,
+        goal_lat=31.995,
+        goal_lng=118.995,
+        static_scene_path="configs/scenes/m0_qdx_scene.json",
+    )
+    assert request.static_scene_path == "configs/scenes/m0_qdx_scene.json"
+    with pytest.raises(ValueError):
+        RouteRequest(
+            input_mode="coordinates",
+            parquet_path="outputs/baseline_986bd58/qdx_tiles/tile_manifest.json",
+            planner_config_path="configs/planner_config.json",
+            vehicle_path="configs/vehicle.yaml",
+            output_dir="outputs/m1_ablation",
+            start_lat=31.99,
+            start_lng=118.99,
+            goal_lat=31.995,
+            goal_lng=118.995,
+            static_scene_path="",
+        )
 
 
 def test_enrich_graph_leaves_unmapped_soil_as_none():
@@ -598,11 +713,20 @@ def test_m1_ablation_artifacts_contract_and_traceability():
         "soil_catalog_sha256",
         "cldas_moisture_sha256",
         "drainage_sensitivity_sha256",
+        "soil_uscs_map_sha256",
     ]
     for k in required_hash_keys:
         assert k in hashes and len(hashes[k]) >= 16, f"Hash key {k} missing or invalid: {hashes.get(k)}"
 
     # Check corridor_union_enrichment
+    coverage = meta.get("data_coverage")
+    assert coverage is not None, "artifact must report static surface coverage"
+    assert coverage["evidence_status"] in {"complete", "incomplete"}
+    assert coverage["fields"]["soil_moisture"]["valid_rate"] >= 0.99
+    assert coverage["fields"]["drainage_sensitivity"]["valid_rate"] >= 0.99
+    assert coverage["evidence_status"] == "complete", coverage.get("gaps")
+    assert len(coverage["soil_uscs_map_sha256"]) == 64
+
     union_enrich = meta.get("corridor_union_enrichment", meta.get("enrichment_summary", {}))
     union_cells_total = union_enrich["total_cells_enriched"]
     assert union_cells_total > 100_000, "corridor union must cover the whole benchmark area"

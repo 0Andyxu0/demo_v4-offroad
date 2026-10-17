@@ -13,6 +13,8 @@
 | **A3** | USCS 映射外置可审计 | [gis_preprocessor.py:38](../src/h3_offroad_planner/preprocessing/gis_preprocessor.py#L38) 的 `SOIL_USCS_OVERRIDES` 为 27 条硬编码 provisional 映射，未进入 `static_input_hash` | 移到 `configs/soil_uscs_map.yaml`（含来源、日期、依据），加载后并入哈希 | 改任一映射值必然改变 `static_input_hash`；配置内注明出处 |
 | **A4** | 基准 OD 集登记 | [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) 全文无 OD 定义，只有"M0 选若干 OD，覆盖窄道/路土邻接/湿软/坡度，并在比较前固定"；实际 5 组在 [m1_benchmark_ods.json](../../configs/scenes/m1_benchmark_ods.json)，ID 写死在测试 | 在 STATE / DECISIONS 登记：v2 五组、覆盖类别、冻结提交、文件 SHA-256，并引用计划选点要求 | 文档可独立回答"为什么是这 5 组、依据什么、何时冻结" |
 
+
+> **状态（2026-10-17 晚）：A1–A4 已完成。** 地表场已接入 `_load_route_graph`（`RouteRequest.static_scene_path`），生产 plan 与消融产物均输出 `data_coverage`（五类字段 `valid_rate = 1.000`）；USCS 映射外置为 `configs/soil_uscs_map.yaml` 并记录哈希；OD 集登记见 DECISIONS #42 与 STATE。详见 [STATE.md](STATE.md) 的「A 组」小节。
 ## B. M2 第一个提交内完成（输入前置）
 
 | 编号 | 事项 | 现状与证据 | 目标动作 | 验收标准 |

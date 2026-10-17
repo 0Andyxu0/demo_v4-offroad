@@ -19,7 +19,7 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import Any, cast
+from typing import Any, Iterable, Mapping, cast
 
 import hashlib
 import geopandas as gpd
@@ -33,7 +33,10 @@ from rasterio.warp import transform_bounds
 import yaml
 
 from h3_offroad_planner.models import H3Graph
-from h3_offroad_planner.preprocessing.gis_preprocessor import GISPreprocessor
+from h3_offroad_planner.preprocessing.gis_preprocessor import (
+    GISPreprocessor,
+    SOIL_USCS_MAP_SHA256,
+)
 
 __all__ = [
     "DemReference",
@@ -47,8 +50,12 @@ __all__ = [
     "StaticScene",
     "StudyArea",
     "WeatherSnapshotReference",
+    "coverage_evidence_status",
+    "coverage_gaps",
     "enrich_graph_from_static_scene",
     "load_static_scene",
+    "static_field_coverage",
+    "static_field_coverage_for_cells",
     "prepare_static_scene",
     "resolve_road_effective_width_m",
 ]
@@ -1071,6 +1078,90 @@ def _file_sha256(path: Path | str) -> str:
     return h.hexdigest()
 
 
+STATIC_SURFACE_FIELDS: tuple[str, ...] = (
+    "soil_code",
+    "uscs",
+    "soil_moisture",
+    "drainage_sensitivity",
+    "surface_response",
+)
+
+# Every surface field must be populated for the factor model to use measured
+# physics instead of its missing-data fallbacks.
+STATIC_COVERAGE_THRESHOLD: float = 0.99
+
+
+def static_field_coverage(graph: H3Graph) -> dict[str, dict[str, float | int]]:
+    """Return non-null and valid coverage rates for one graph's surface fields."""
+    return static_field_coverage_for_cells(graph.cells.values())
+
+
+def static_field_coverage_for_cells(
+    cells: Iterable[Any],
+) -> dict[str, dict[str, float | int]]:
+    """Return non-null and valid coverage rates for the static surface fields.
+
+    Args:
+        cells: H3 cells carrying the static surface attributes.
+
+    Returns:
+        field -> {total, non_null, valid, non_null_rate, valid_rate}.
+
+    Note:
+        A field can be 100% non-null and 0% valid (for example
+        `drainage_sensitivity` populated while `drainage_valid` is False).
+        Reporting both rates is what turns a silent fallback into a number.
+    """
+    cell_list = list(cells)
+    total = len(cell_list)
+    coverage: dict[str, dict[str, float | int]] = {}
+    for name in STATIC_SURFACE_FIELDS:
+        non_null = 0
+        valid = 0
+        for cell in cell_list:
+            value = getattr(cell, name, None)
+            if value is None:
+                continue
+            non_null += 1
+            if name == "drainage_sensitivity" and not getattr(
+                cell, "drainage_valid", False
+            ):
+                continue
+            valid += 1
+        coverage[name] = {
+            "total": total,
+            "non_null": non_null,
+            "valid": valid,
+            "non_null_rate": round(non_null / total, 6) if total else 0.0,
+            "valid_rate": round(valid / total, 6) if total else 0.0,
+        }
+    return coverage
+
+
+def coverage_evidence_status(
+    coverage: Mapping[str, Mapping[str, float | int]],
+    threshold: float = STATIC_COVERAGE_THRESHOLD,
+) -> str:
+    """Return `complete` when every field's valid rate reaches the threshold."""
+    if not coverage:
+        return "incomplete"
+    if all(float(field["valid_rate"]) >= threshold for field in coverage.values()):
+        return "complete"
+    return "incomplete"
+
+
+def coverage_gaps(
+    coverage: Mapping[str, Mapping[str, float | int]],
+    threshold: float = STATIC_COVERAGE_THRESHOLD,
+) -> list[str]:
+    """Return the field names whose valid rate is below the threshold."""
+    return sorted(
+        name
+        for name, field in coverage.items()
+        if float(field["valid_rate"]) < threshold
+    )
+
+
 def _pixel_index(
     inverse_transform: Any, x: float, y: float
 ) -> tuple[int, int]:
@@ -1154,7 +1245,14 @@ def enrich_graph_from_static_scene(
 
     cells = list(graph.cells.values())
     if not cells:
-        return {"total_cells_enriched": 0, "file_hashes": file_hashes}
+        return {
+            "total_cells_enriched": 0,
+            "evidence_status": "incomplete",
+            "coverage": {},
+            "coverage_gaps": list(STATIC_SURFACE_FIELDS),
+            "soil_uscs_map_sha256": SOIL_USCS_MAP_SHA256,
+            "file_hashes": file_hashes,
+        }
 
     lats = [c.lat for c in cells]
     lngs = [c.lng for c in cells]
@@ -1296,8 +1394,15 @@ def enrich_graph_from_static_scene(
             c.surface_response = 0.9
             offroad_count += 1
 
+    coverage = static_field_coverage(graph)
+
     return {
         "total_cells_enriched": len(cells),
+        "evidence_status": coverage_evidence_status(coverage),
+        "coverage": coverage,
+        "coverage_threshold": STATIC_COVERAGE_THRESHOLD,
+        "coverage_gaps": coverage_gaps(coverage),
+        "soil_uscs_map_sha256": SOIL_USCS_MAP_SHA256,
         "soil": {
             "source_path": str(soil_raster_path),
             "catalog_path": str(soil_catalog_path),

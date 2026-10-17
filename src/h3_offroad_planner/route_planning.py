@@ -267,6 +267,7 @@ def _run_route_plan_once(
             if fast_five and static_planning is not None
             else None
         ),
+        enrich_scene=request.static_scene_path,
     )
     source_timings = source_metadata.get("performance", {})
     if isinstance(source_timings, dict):
@@ -427,6 +428,7 @@ def _run_route_plan_once(
                         else None
                     ),
                     extra_parents=set(added_repair_parents),
+                    enrich_scene=request.static_scene_path,
                 )
                 source_timings = source_metadata.get("performance", {})
                 if isinstance(source_timings, dict):
@@ -787,6 +789,18 @@ def _bind_loaded_index_identity(
     for field in ("width_m", "wheelbase_m", "front_overhang_m", "rear_overhang_m"):
         if getattr(vehicle, field) is None:
             missing.add(f"vehicle.{field}")
+    static_status = source_metadata.get("static_evidence_status")
+    if isinstance(static_status, str):
+        source_metadata["static_surface_status"] = static_status
+        if static_status == "complete":
+            # Runtime scene sampling supersedes the build-time gaps for the
+            # surface fields; keep the original list for traceability.
+            source_metadata["index_missing_physical_inputs"] = sorted(missing)
+            missing = {
+                item for item in missing if not item.startswith("static_sources.")
+            }
+        else:
+            missing.add("static_sources.surface_fields")
     source_metadata["missing_physical_inputs"] = sorted(missing)
     source_metadata["evidence_status"] = "COMPLETE" if not missing else "INCOMPLETE"
 

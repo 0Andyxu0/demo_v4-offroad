@@ -1,0 +1,48 @@
+# Soil-code to USCS / texture / Bekker-group engineering mapping.
+#
+# These are PROVISIONAL geotechnical inferences derived from Chinese soil type
+# names recorded in the Nanjing soil catalogue (soil_nanjing.tif.vat.dbf).
+# They are not a substitute for laboratory or field classification, and they are
+# deliberately kept outside the code so every change is reviewable and hashed.
+#
+# source: Nanjing soil catalogue (soil_nanjing.tif.vat.dbf), soil type names
+#         (VALUE -> 亚类名); inference follows the Phase-2 soil mapping note in
+#         docs/history/code/20260917-0126-Phase 2-土壤USCS推定表与pilot索引重建.md
+# issued: 2026-09-17
+# updated: 2026-10-17 (moved out of gis_preprocessor.py without value changes)
+#
+# Field semantics:
+#   texture     soil texture class used by the Bekker lookup ("Lo", "ClLo", ...)
+#   uscs        USCS class used by the cone-index model; null = not applicable
+#   bekker_soil Bekker empirical group ("loam" | "clayloam"); null = not applicable
+#   passable    false for water / urban surfaces that must not carry vehicles
+
+version: soil_uscs_map_v1
+entries:
+  14:  {name_zh: 暗棕壤,   texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  17:  {name_zh: 沼泽土,   texture: null, uscs: null, bekker_soil: null,   passable: false}
+  18:  {name_zh: 湖泊及水, texture: null, uscs: null, bekker_soil: null,   passable: false}
+  22:  {name_zh: 暗黄棕壤, texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  26:  {name_zh: 冲积土,   texture: SiLo, uscs: ML, bekker_soil: loam,     passable: true}
+  27:  {name_zh: 潮土,     texture: SiLo, uscs: ML, bekker_soil: loam,     passable: true}
+  38:  {name_zh: 棕色石灰, texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  44:  {name_zh: 水稻土,   texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  47:  {name_zh: 石灰岩土, texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  48:  {name_zh: 黄棕壤性, texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  49:  {name_zh: 黄褐土,   texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  50:  {name_zh: 黄红壤,   texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  53:  {name_zh: 中性紫色, texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  55:  {name_zh: 淹育水稻, texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  58:  {name_zh: 黄棕壤,   texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  64:  {name_zh: 渗育水稻, texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  72:  {name_zh: 灰潮土,   texture: SiLo, uscs: ML, bekker_soil: loam,     passable: true}
+  73:  {name_zh: 红壤性土, texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  74:  {name_zh: 棕红壤,   texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  80:  {name_zh: 潜育水稻, texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  82:  {name_zh: 脱潜水稻, texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  84:  {name_zh: 城区,     texture: null, uscs: null, bekker_soil: null,   passable: false}
+  85:  {name_zh: 江及河,   texture: null, uscs: null, bekker_soil: null,   passable: false}
+  90:  {name_zh: 漂洗水稻, texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  92:  {name_zh: 粘盘黄褐, texture: ClLo, uscs: CL, bekker_soil: clayloam, passable: true}
+  96:  {name_zh: 基性岩火, texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}
+  184: {name_zh: 暗棕壤性, texture: Lo,   uscs: CL, bekker_soil: loam,     passable: true}

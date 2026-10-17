@@ -192,6 +192,50 @@ def _load_route_graph(
     corridor_ring: int = 1,
     max_widest_detour_ratio: float | None = None,
     extra_parents: set[str] | None = None,
+    enrich_scene: object | None = None,
+) -> tuple[H3Graph, dict[str, object]]:
+    """Load one route graph and optionally attach the static surface fields.
+
+    Args:
+        enrich_scene: Optional StaticScene (path, dict, or object). When given,
+            soil / moisture / drainage / surface-response are sampled from the
+            scene's registered rasters onto every loaded cell, and the coverage
+            summary is attached to the returned metadata as
+            `static_enrichment`. Without it the graph keeps whatever the source
+            cache carries (today: null surface fields).
+
+    Returns:
+        (graph, metadata).
+    """
+    graph, metadata = _load_route_graph_core(
+        request,
+        roi_geometry,
+        source_metadata,
+        progress=progress,
+        progress_range=progress_range,
+        corridor_ring=corridor_ring,
+        max_widest_detour_ratio=max_widest_detour_ratio,
+        extra_parents=extra_parents,
+    )
+    if enrich_scene is not None:
+        from h3_offroad_planner.scene import enrich_graph_from_static_scene
+
+        summary = enrich_graph_from_static_scene(graph, enrich_scene)
+        metadata = dict(metadata)
+        metadata["static_enrichment"] = summary
+        metadata["static_evidence_status"] = summary.get("evidence_status")
+    return graph, metadata
+
+
+def _load_route_graph_core(
+    request: RouteRequest,
+    roi_geometry: BaseGeometry,
+    source_metadata: dict[str, object],
+    progress: Callable[[str, int, str], None] | None = None,
+    progress_range: tuple[int, int] = (75, 84),
+    corridor_ring: int = 1,
+    max_widest_detour_ratio: float | None = None,
+    extra_parents: set[str] | None = None,
 ) -> tuple[H3Graph, dict[str, object]]:
     if _is_routing_index_metadata(source_metadata):
         return _load_index_route_graph(

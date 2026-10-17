@@ -51,7 +51,12 @@ from h3_offroad_planner.models import (
     VehicleProfile,
 )
 from h3_offroad_planner.routing import _haversine_m, _load_route_graph, _source_metadata
-from h3_offroad_planner.scene import enrich_graph_from_static_scene
+from h3_offroad_planner.scene import (
+    STATIC_COVERAGE_THRESHOLD,
+    coverage_evidence_status,
+    coverage_gaps,
+    static_field_coverage_for_cells,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ODS_PATH = ROOT / "configs" / "scenes" / "m1_benchmark_ods.json"
@@ -179,13 +184,15 @@ def run_m1_ablation(
             vehicle_path=str(vehicle_path),
             output_dir=str(output_dir),
         )
-        graph, _ = _load_route_graph(
+        # Single code path: the production loader enriches from the StaticScene.
+        graph, graph_meta = _load_route_graph(
             req,
             Point(req.start_lng, req.start_lat).buffer(0.01),
             source_meta,
             corridor_ring=2,
+            enrich_scene=scene_path,
         )
-        enrich_summary = enrich_graph_from_static_scene(graph, scene_path)
+        enrich_summary = graph_meta["static_enrichment"]
         od_graphs[oid] = graph
         enrichment_summaries[oid] = enrich_summary
         print(f"  - {oid}: loaded {len(graph.cells):,} cells, {len(graph.edges):,} undirected edges")
@@ -205,6 +212,7 @@ def run_m1_ablation(
         "soil_catalog_sha256": primary_summary["file_hashes"].get("soil_catalog", ""),
         "cldas_moisture_sha256": primary_summary["file_hashes"].get("cldas_moisture", ""),
         "drainage_sensitivity_sha256": primary_summary["file_hashes"].get("drainage_sensitivity", ""),
+        "soil_uscs_map_sha256": primary_summary.get("soil_uscs_map_sha256", ""),
     }
 
     # Define the 5 ablation levels strictly via FactorModelConfig and EnvironmentConfig
@@ -540,6 +548,19 @@ def run_m1_ablation(
         else:
             u_offroad_cells += 1
 
+    union_coverage = static_field_coverage_for_cells(union_cells.values())
+    data_coverage: dict[str, Any] = {
+        "threshold": STATIC_COVERAGE_THRESHOLD,
+        "evidence_status": coverage_evidence_status(union_coverage),
+        "gaps": coverage_gaps(union_coverage),
+        "fields": union_coverage,
+        "per_od_evidence_status": {
+            oid: summary.get("evidence_status")
+            for oid, summary in enrichment_summaries.items()
+        },
+        "soil_uscs_map_sha256": primary_summary.get("soil_uscs_map_sha256", ""),
+    }
+
     union_enrichment: dict[str, Any] = {
         "total_cells_enriched": len(union_cells),
         "soil": {
@@ -582,6 +603,7 @@ def run_m1_ablation(
         ods_data=ods_data,
         comparison=comparison,
         rainy_pressure=rainy_pressure,
+        data_coverage=data_coverage,
     )
 
     full_payload = {
@@ -592,6 +614,7 @@ def run_m1_ablation(
             "max_snap_distance_m": max_snap_m,
             "input_hashes": input_hashes,
             "corridor_union_enrichment": union_enrichment,
+            "data_coverage": data_coverage,
             "per_od_enrichment": enrichment_summaries,
             "enrichment_summary": union_enrichment,
         },
@@ -616,6 +639,7 @@ def _generate_markdown_summary(
     ods_data: list[dict[str, Any]],
     comparison: dict[str, Any] | None = None,
     rainy_pressure: float = 0.0,
+    data_coverage: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         "# M1 物理属性消融实验综合分析报告",
@@ -638,10 +662,22 @@ def _generate_markdown_summary(
         f"| CLDAS 含水率 | `Z_NAFP_C_BABJ_...DAY-SM000005...nc` | `{input_hashes['cldas_moisture_sha256'][:16]}...` |",
         f"| 上游水文 D 场 | `drainage_sensitivity.tif` | `{input_hashes['drainage_sensitivity_sha256'][:16]}...` |",
         f"| 合成降雨场景 | `synthetic_rainy_weather.json` (P=0.8) | `{input_hashes['weather_snapshot_sha256'][:16]}...` |",
+        f"| 土壤 USCS 映射表 | `configs/soil_uscs_map.yaml` | `{(input_hashes.get('soil_uscs_map_sha256') or '')[:16]}...` |",
         "",
         "### 真实栅格采样分布统计",
         "",
         f"- **采样格元总数**: {enrichment_meta.get('total_cells_enriched', 0):,} 格",
+        f"- **静态场覆盖率判定**: {(data_coverage or {}).get('evidence_status', 'unknown')}"
+        + (
+            f"（阈值 {(data_coverage or {}).get('threshold', STATIC_COVERAGE_THRESHOLD):.2f}；未达标字段：{', '.join((data_coverage or {}).get('gaps') or [])}）"
+            if (data_coverage or {}).get("gaps")
+            else "（五类字段均达标）"
+        ),
+        f"- **逐字段有效率**: "
+        + ", ".join(
+            f"{name}={float(field['valid_rate']) * 100:.1f}%"
+            for name, field in ((data_coverage or {}).get("fields") or {}).items()
+        ),
         f"- **土壤分类直方图 (USCS)**: `{json.dumps(enrichment_meta.get('soil', {}).get('uscs_histogram', {}), ensure_ascii=False)}`",
         f"- **CLDAS 含水率统计 (0-5cm)**: 有效采样 {enrichment_meta.get('moisture', {}).get('count', 0):,} 格，均值 {enrichment_meta.get('moisture', {}).get('mean', 0.0):.4f} m³/m³ (范围 [{enrichment_meta.get('moisture', {}).get('min', 0.0):.4f}, {enrichment_meta.get('moisture', {}).get('max', 0.0):.4f}]，不同取值 {enrichment_meta.get('moisture', {}).get('distinct_values', 0)} 个)",
         f"- **水文 D 场有效格元**: {enrichment_meta.get('drainage', {}).get('valid_count', 0):,} 格，均值 {enrichment_meta.get('drainage', {}).get('mean', 0.0):.4f}",

@@ -26,6 +26,8 @@ route:
   start_lat: 31.9905769003
   start_lng: 118.9960502257
   static_planning_path: configs/static_gis_planning.yaml
+  # StaticScene that supplies soil / moisture / drainage surface fields.
+  static_scene_path: configs/scenes/m0_qdx_scene.json
   theme_attributes:
     - elevation
     - tri

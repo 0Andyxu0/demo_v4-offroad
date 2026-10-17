@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from dataclasses import dataclass
 from math import cos, radians
 from pathlib import Path
@@ -13,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import rasterio
+import yaml
 from affine import Affine
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
@@ -32,40 +34,65 @@ BROWN_RED_SOIL_CODES: frozenset[int] = frozenset({14, 22, 48, 49, 50, 58, 73, 74
 LITHIC_SOIL_CODES: frozenset[int] = frozenset({38, 47, 53, 96})
 MARSH_SOIL_CODES: frozenset[int] = frozenset({17})
 
-# Provisional Nanjing soil-code to USCS/texture engineering mapping.
-# Values are geotechnical approximations from Chinese soil type names and are
-# intended as a conservative fallback, not a substitute for lab/field data.
-SOIL_USCS_OVERRIDES: dict[int, tuple[str | None, str | None, str | None, bool]] = {
-    14: ("Lo", "CL", "loam", True),      # 暗棕壤
-    17: (None, None, None, False),       # 沼泽土
-    18: (None, None, None, False),       # 湖泊及水
-    22: ("Lo", "CL", "loam", True),      # 暗黄棕壤
-    26: ("SiLo", "ML", "loam", True),    # 冲积土
-    27: ("SiLo", "ML", "loam", True),    # 潮土
-    38: ("Lo", "CL", "loam", True),      # 棕色石灰
-    44: ("ClLo", "CL", "clayloam", True),  # 水稻土
-    47: ("Lo", "CL", "loam", True),      # 石灰(岩)土
-    48: ("Lo", "CL", "loam", True),      # 黄棕壤性
-    49: ("Lo", "CL", "loam", True),      # 黄褐土
-    50: ("ClLo", "CL", "clayloam", True),  # 黄红壤
-    53: ("Lo", "CL", "loam", True),      # 中性紫色
-    55: ("ClLo", "CL", "clayloam", True),  # 淹育水稻
-    58: ("Lo", "CL", "loam", True),      # 黄棕壤
-    64: ("ClLo", "CL", "clayloam", True),  # 渗育水稻
-    72: ("SiLo", "ML", "loam", True),    # 灰潮土
-    73: ("ClLo", "CL", "clayloam", True),  # 红壤性土
-    74: ("ClLo", "CL", "clayloam", True),  # 棕红壤
-    80: ("ClLo", "CL", "clayloam", True),  # 潜育水稻
-    82: ("ClLo", "CL", "clayloam", True),  # 脱潜水稻
-    84: (None, None, None, False),       # 城区
-    85: (None, None, None, False),       # 江及河
-    90: ("ClLo", "CL", "clayloam", True),  # 漂洗水稻
-    92: ("ClLo", "CL", "clayloam", True),  # 粘盘黄褐
-    96: ("Lo", "CL", "loam", True),      # 基性岩火
-    184: ("Lo", "CL", "loam", True),     # 暗棕壤性
-}
+# Provisional soil-code to USCS / texture / Bekker engineering mapping.
+# The table lives in configs/soil_uscs_map.yaml so every change is reviewable
+# and hashed; see that file for source, date and field semantics.
+SOIL_USCS_MAP_PATH: Path = Path(__file__).resolve().parents[3] / "configs" / "soil_uscs_map.yaml"
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_soil_uscs_map(
+    path: Path | str = SOIL_USCS_MAP_PATH,
+) -> dict[int, tuple[str | None, str | None, str | None, bool]]:
+    """Load the provisional soil-code to USCS/texture/Bekker mapping.
+
+    Args:
+        path: YAML file with an `entries` mapping of code -> profile fields.
+
+    Returns:
+        code -> (soil_texture, uscs, bekker_soil, passable).
+
+    Raises:
+        GISInputError: If the file is missing, malformed, or empty.
+    """
+    map_path = Path(path)
+    if not map_path.is_file():
+        raise GISInputError(f"soil USCS map does not exist: {map_path}")
+    payload = yaml.safe_load(map_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("entries"), dict):
+        raise GISInputError(f"soil USCS map must contain an 'entries' mapping: {map_path}")
+    mapping: dict[int, tuple[str | None, str | None, str | None, bool]] = {}
+    for code_text, entry in payload["entries"].items():
+        try:
+            code = int(code_text)
+        except (TypeError, ValueError) as exc:
+            raise GISInputError(
+                f"soil USCS map code is not an integer: {code_text!r}"
+            ) from exc
+        if not isinstance(entry, dict):
+            raise GISInputError(f"soil USCS map entry {code} must be a mapping.")
+        mapping[code] = (
+            None if entry.get("texture") is None else str(entry["texture"]),
+            None if entry.get("uscs") is None else str(entry["uscs"]),
+            None if entry.get("bekker_soil") is None else str(entry["bekker_soil"]),
+            bool(entry.get("passable", True)),
+        )
+    if not mapping:
+        raise GISInputError(f"soil USCS map is empty: {map_path}")
+    return mapping
+
+
+SOIL_USCS_OVERRIDES: dict[int, tuple[str | None, str | None, str | None, bool]] = (
+    load_soil_uscs_map()
+)
+SOIL_USCS_MAP_SHA256: str = _file_sha256(SOIL_USCS_MAP_PATH)
 @dataclass(frozen=True)
 class RasterLayer:
     """Lazy raster descriptor used for large GIS layers.
