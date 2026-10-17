@@ -37,19 +37,28 @@ LEGACY_SOIL_PARAMS: dict[str, dict[str, float]] = {
 class BekkerChecker:
     """Check soil mobility using CI and Bekker sinkage formulas."""
 
-    def __init__(self, speed_score_floor: float = 0.2) -> None:
+    def __init__(
+        self,
+        speed_score_floor: float = 0.2,
+        ci_threshold_kpa: float = CI_THRESHOLD_KPA,
+    ) -> None:
         """Initialize configurable Bekker helper controls.
 
         Args:
             speed_score_floor: Minimum score multiplier used by `compute_max_speed`.
                 Unit: ratio. Valid range: [0, 1].
+            ci_threshold_kpa: Minimum cone index threshold in kPa below which soil mobility is zero.
+                Unit: kPa. Positive float.
 
         Raises:
-            ValueError: If `speed_score_floor` is outside [0, 1].
+            ValueError: If `speed_score_floor` is outside [0, 1] or `ci_threshold_kpa` <= 0.
         """
         if not isfinite(speed_score_floor) or not 0.0 <= speed_score_floor <= 1.0:
             raise ValueError("speed_score_floor must be finite and in [0, 1].")
+        if not isfinite(ci_threshold_kpa) or ci_threshold_kpa <= 0.0:
+            raise ValueError("ci_threshold_kpa must be finite and positive.")
         self.speed_score_floor = speed_score_floor
+        self.ci_threshold_kpa = ci_threshold_kpa
 
     def check(self, cell: H3Cell, vehicle: VehicleProfile) -> bool:
         """Return whether a vehicle passes the cell sinkage constraint."""
@@ -106,7 +115,7 @@ class BekkerChecker:
             return
         if cell.cone_index_kpa is None:
             cell.cone_index_kpa = self.compute_cone_index_kpa(cell.uscs, cell.soil_moisture)
-        if cell.cone_index_kpa < CI_THRESHOLD_KPA:
+        if cell.cone_index_kpa < self.ci_threshold_kpa:
             cell.soil_mobility = 0.0
             return
         if _cell_bekker_soil(cell) is None:

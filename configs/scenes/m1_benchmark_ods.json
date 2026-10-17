@@ -1,7 +1,8 @@
 {
-  "schema_version": "m1_benchmark_ods_v1",
+  "schema_version": "m1_benchmark_ods_v2",
   "scene_id": "qdx-dem-coverage-001",
   "metric_crs": "EPSG:4528",
+  "version_notes": "v2 coordinates refined based on orthophoto and vector boundaries (road_fina.shp, water.shp, building landcover) to eliminate endpoint collisions with impassable water pond (>0.5m depth) and building polygons, bringing all initial snap distances within <= 1.2 meters.",
   "ods": [
     {
       "id": "od_01_primary",
@@ -41,34 +42,34 @@
         118.9950
       ],
       "goal_wgs84": [
-        31.9890,
-        118.9970
+        31.989242,
+        118.996677
       ],
       "category": "water_gully",
       "target_ablation": "A1a_A1c",
-      "description": "Crosses water bodies and low-lying drainage gullies to test water depth clearance and rain weather impedance."
+      "description": "Crosses water bodies and low-lying drainage gullies to test water depth clearance and rain weather impedance. Goal positioned on passable gully margin."
     },
     {
       "id": "od_04_narrow_road",
       "name": "Road and Offroad Soil Interface OD",
       "start_wgs84": [
-        31.9890,
-        119.0050
+        31.990358,
+        119.007632
       ],
       "goal_wgs84": [
-        31.9915,
-        119.0105
+        31.991494,
+        119.010139
       ],
       "category": "road_interface",
       "target_ablation": "A1b",
-      "description": "Transitions between paved road network and offroad soil corridors to test road width and soil properties."
+      "description": "Transitions between 3.0m/5.5m paved road network and offroad soil corridors to test road width and soil properties."
     },
     {
       "id": "od_05_slope_traverse",
       "name": "Steep Slope Traverse OD",
       "start_wgs84": [
-        31.9750,
-        118.9920
+        31.975167,
+        118.992186
       ],
       "goal_wgs84": [
         31.9790,
@@ -76,7 +77,7 @@
       ],
       "category": "slope_traverse",
       "target_ablation": "A2",
-      "description": "Traverses steep terrain (approx 30 deg slope) to test pitch and roll angle decoupling."
+      "description": "Traverses steep terrain (approx 30 deg slope) to test pitch and roll angle decoupling on slope approach."
     }
   ]
 }

@@ -20,13 +20,19 @@ from pathlib import Path
 import re
 from typing import Any, cast
 
+import hashlib
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pyproj
+from pyproj import Transformer
 import rasterio
+import rasterio.transform
 from rasterio.warp import transform_bounds
 import yaml
+
+from h3_offroad_planner.models import H3Graph
+from h3_offroad_planner.preprocessing.gis_preprocessor import GISPreprocessor
 
 __all__ = [
     "DemReference",
@@ -40,6 +46,7 @@ __all__ = [
     "StaticScene",
     "StudyArea",
     "WeatherSnapshotReference",
+    "enrich_graph_from_static_scene",
     "load_static_scene",
     "prepare_static_scene",
     "resolve_road_effective_width_m",
@@ -1050,3 +1057,241 @@ def _resolve_weather_reference(
             )
         ),
     )
+
+
+def _file_sha256(path: Path | str) -> str:
+    p = Path(path)
+    if not p.is_file():
+        return ""
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def enrich_graph_from_static_scene(
+    graph: H3Graph,
+    scene_source: StaticScene | dict[str, Any] | str | Path,
+    cldas_layer_index: int = 0,
+) -> dict[str, Any]:
+    """Enrich an in-memory H3Graph with real raster inputs registered in StaticScene.
+
+    Samples:
+      - Soil raster (soil_nanjing.tif) + VAT DBF catalog -> soil_code, soil_type, soil_texture, uscs.
+        (Nodata/unmapped cells retain None; no hardcoded 'CL' default).
+      - CLDAS soil moisture NetCDF layer -> soil_moisture (0-5cm layer by default).
+      - Drainage sensitivity raster (EPSG:32650) -> drainage_sensitivity, drainage_valid.
+      - Road vs offroad surface response -> surface_response (0.0 for road, 0.9 for offroad).
+
+    Returns:
+      Comprehensive metadata dictionary including file paths, SHA-256 hashes,
+      enrichment histograms, and statistics.
+    """
+    if isinstance(scene_source, (str, Path)):
+        scene_path = Path(scene_source)
+        if not scene_path.is_file():
+            raise FileNotFoundError(f"Scene file does not exist: {scene_path}")
+        scene_data = json.loads(scene_path.read_text(encoding="utf-8"))
+    elif isinstance(scene_source, StaticScene):
+        scene_data = scene_source.to_dict()
+    elif isinstance(scene_source, dict):
+        scene_data = scene_source
+    else:
+        raise TypeError(f"Unsupported scene_source type: {type(scene_source)}")
+
+    soil_cfg = scene_data.get("soil", {})
+    soil_raster_path = Path(str(soil_cfg.get("raster_path", "")))
+    soil_catalog_path = Path(str(soil_cfg.get("catalog_path", "")))
+
+    moisture_cfg = scene_data.get("moisture", {})
+    moisture_paths = [Path(p) for p in moisture_cfg.get("paths", [])]
+
+    hydro_cfg = scene_data.get("hydrology", {})
+    hydro_layers = hydro_cfg.get("upstream_layers", {})
+    drainage_path_str = hydro_layers.get("drainage_sensitivity")
+    drainage_path = Path(drainage_path_str) if drainage_path_str else None
+
+    # Compute input hashes
+    file_hashes: dict[str, str] = {
+        "soil_raster": _file_sha256(soil_raster_path) if soil_raster_path.is_file() else "",
+        "soil_catalog": _file_sha256(soil_catalog_path) if soil_catalog_path.is_file() else "",
+        "drainage_sensitivity": _file_sha256(drainage_path) if (drainage_path and drainage_path.is_file()) else "",
+    }
+    cldas_file = moisture_paths[cldas_layer_index] if (0 <= cldas_layer_index < len(moisture_paths)) else None
+    if cldas_file and cldas_file.is_file():
+        file_hashes["cldas_moisture"] = _file_sha256(cldas_file)
+
+    # 1. Load Soil Catalog
+    catalog = {}
+    if soil_catalog_path.is_file():
+        catalog = GISPreprocessor().load_soil_catalog(str(soil_catalog_path))
+
+    cells = list(graph.cells.values())
+    if not cells:
+        return {"total_cells_enriched": 0, "file_hashes": file_hashes}
+
+    lats = [c.lat for c in cells]
+    lngs = [c.lng for c in cells]
+
+    # 2. Sample Soil Raster
+    soil_hist: dict[int, int] = {}
+    uscs_hist: dict[str, int] = {}
+    missing_soil_count = 0
+
+    if soil_raster_path.is_file():
+        with rasterio.open(soil_raster_path) as s_ds:
+            s_band = s_ds.read(1)
+            s_nodata = s_ds.nodata
+            s_ny, s_nx = s_band.shape
+            inv_s_gt = ~s_ds.transform
+            
+            if s_ds.crs and not s_ds.crs.is_geographic:
+                s_trans = Transformer.from_crs("EPSG:4326", s_ds.crs, always_xy=True)
+                s_xs, s_ys = s_trans.transform(lngs, lats)
+            else:
+                s_xs, s_ys = lngs, lats
+
+            for i, c in enumerate(cells):
+                px, py = inv_s_gt * (s_xs[i], s_ys[i])
+                col, row = int(round(px)), int(round(py))
+                matched_profile = None
+                if 0 <= row < s_ny and 0 <= col < s_nx:
+                    raw_val = int(s_band[row, col])
+                    if raw_val > 0 and (s_nodata is None or raw_val != s_nodata) and raw_val in catalog:
+                        matched_profile = catalog[raw_val]
+                        soil_hist[raw_val] = soil_hist.get(raw_val, 0) + 1
+
+                if matched_profile is not None:
+                    c.soil_code = matched_profile.code
+                    c.soil_type = matched_profile.name_zh
+                    c.soil_texture = matched_profile.soil_texture
+                    c.uscs = matched_profile.uscs
+                    u_key = matched_profile.uscs or "UNKNOWN"
+                    uscs_hist[u_key] = uscs_hist.get(u_key, 0) + 1
+                else:
+                    c.soil_code = None
+                    c.soil_type = None
+                    c.soil_texture = None
+                    c.uscs = None
+                    missing_soil_count += 1
+                    uscs_hist["MISSING_SOIL"] = uscs_hist.get("MISSING_SOIL", 0) + 1
+    else:
+        missing_soil_count = len(cells)
+        uscs_hist["MISSING_SOIL"] = len(cells)
+        for c in cells:
+            c.soil_code = None
+            c.soil_type = None
+            c.soil_texture = None
+            c.uscs = None
+
+    # 3. Sample CLDAS Moisture NetCDF
+    moisture_vals: list[float] = []
+    missing_moisture_count = 0
+    if cldas_file and cldas_file.is_file():
+        with rasterio.open(cldas_file) as c_ds:
+            c_band = c_ds.read(1)
+            c_nodata = c_ds.nodata
+            c_ny, c_nx = c_band.shape
+            inv_c_gt = ~c_ds.transform
+            for i, c in enumerate(cells):
+                px, py = inv_c_gt * (lngs[i], lats[i])
+                col, row = int(round(px)), int(round(py))
+                assigned = False
+                if 0 <= row < c_ny and 0 <= col < c_nx:
+                    val = float(c_band[row, col])
+                    if np.isfinite(val) and val > 0.0 and (c_nodata is None or abs(val - c_nodata) > 1e-3) and val <= 1.0:
+                        c.soil_moisture = val
+                        moisture_vals.append(val)
+                        assigned = True
+                if not assigned:
+                    c.soil_moisture = None
+                    missing_moisture_count += 1
+    else:
+        missing_moisture_count = len(cells)
+        for c in cells:
+            c.soil_moisture = None
+
+    # 4. Sample Drainage Sensitivity Raster
+    drainage_vals: list[float] = []
+    valid_drainage_count = 0
+    missing_drainage_count = 0
+    if drainage_path and drainage_path.is_file():
+        with rasterio.open(drainage_path) as d_ds:
+            d_band = d_ds.read(1)
+            d_nodata = d_ds.nodata
+            d_ny, d_nx = d_band.shape
+            inv_d_gt = ~d_ds.transform
+            if d_ds.crs and not d_ds.crs.is_geographic:
+                d_trans = Transformer.from_crs("EPSG:4326", d_ds.crs, always_xy=True)
+                d_xs, d_ys = d_trans.transform(lngs, lats)
+            else:
+                d_xs, d_ys = lngs, lats
+
+            for i, c in enumerate(cells):
+                px, py = inv_d_gt * (d_xs[i], d_ys[i])
+                col, row = int(round(px)), int(round(py))
+                assigned = False
+                if 0 <= row < d_ny and 0 <= col < d_nx:
+                    val = float(d_band[row, col])
+                    is_nodata = (d_nodata is not None and (np.isnan(val) if np.isnan(d_nodata) else val == d_nodata))
+                    if np.isfinite(val) and not is_nodata:
+                        clamped = float(np.clip(val, 0.0, 1.0))
+                        c.drainage_sensitivity = clamped
+                        c.drainage_valid = True
+                        drainage_vals.append(clamped)
+                        valid_drainage_count += 1
+                        assigned = True
+                if not assigned:
+                    c.drainage_sensitivity = None
+                    c.drainage_valid = False
+                    missing_drainage_count += 1
+    else:
+        missing_drainage_count = len(cells)
+        for c in cells:
+            c.drainage_sensitivity = None
+            c.drainage_valid = False
+
+    # 5. Set Surface Response
+    road_count = 0
+    offroad_count = 0
+    for c in cells:
+        if c.has_road:
+            c.surface_response = 0.0
+            road_count += 1
+        else:
+            c.surface_response = 0.9
+            offroad_count += 1
+
+    return {
+        "total_cells_enriched": len(cells),
+        "soil": {
+            "source_path": str(soil_raster_path),
+            "catalog_path": str(soil_catalog_path),
+            "histogram": soil_hist,
+            "uscs_histogram": uscs_hist,
+            "missing_soil_count": missing_soil_count,
+        },
+        "moisture": {
+            "source_path": str(cldas_file) if cldas_file else None,
+            "layer_index": cldas_layer_index,
+            "count": len(moisture_vals),
+            "missing_count": missing_moisture_count,
+            "min": float(min(moisture_vals)) if moisture_vals else None,
+            "max": float(max(moisture_vals)) if moisture_vals else None,
+            "mean": float(sum(moisture_vals) / len(moisture_vals)) if moisture_vals else None,
+        },
+        "drainage": {
+            "source_path": str(drainage_path) if drainage_path else None,
+            "valid_count": valid_drainage_count,
+            "missing_count": missing_drainage_count,
+            "min": float(min(drainage_vals)) if drainage_vals else None,
+            "max": float(max(drainage_vals)) if drainage_vals else None,
+            "mean": float(sum(drainage_vals) / len(drainage_vals)) if drainage_vals else None,
+        },
+        "surface_response": {
+            "road_cells": road_count,
+            "offroad_cells": offroad_count,
+        },
+        "file_hashes": file_hashes,
+    }

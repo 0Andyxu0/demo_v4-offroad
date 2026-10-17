@@ -46,5 +46,11 @@
 25. 真实 QDX 瓦片图与 5 组基准 OD 端到端消融验证 (R5)：彻底废除仅测试 7 个内存单元格的旧脚本，重写 `scripts/run_m1_ablation.py`，在真实 QDX 瓦片图（454,475 格元，2,133,478 有向边）和 5 组基准 OD 上运行 A0 至 A2 真实图搜索，准确记录可通行统计、阻断原因码分布及路径物理规避行为，输出至 `outputs/m1_ablation/m1_ablation.json` 与 `m1_ablation_summary.md`。
 26. 状态记录与实施事实全面对齐 (R6)：消除 `STATE.md` 与实际代码、配置之间的矛盾，修正 OD 标识（`od_01_primary` ~ `od_05_slope_traverse`）、车辆涉水深配置（$0.225\text{ m}$ 与测试车 $0.308\text{ m}$）及气象衍生压力参数（`0.8`），以真实 QDX 消融统计数据更新消融对比记录。
 
+## 2026-10-17：M1 综合审核整改闭环 (M1 Consolidated Audit)
 
-
+27. 统一 CI 阈值单一来源与沉陷速度衰减耦合（P0-4）：彻底消除 `CI_THRESHOLD_KPA` 硬编码与 `config.min_cone_index_kpa` 的双源冲突，将阈值单一收敛至 `config.min_cone_index_kpa: 185.73`；在 `_soil_speed_interval` 中建立基准 USCS 土类速度与沉陷退化因子 `sinkage_factor = max(config.speed_floor_ratio, 1.0 - sinkage / clearance_limit)` 的直接耦合，使沉陷真实降低节点速度与 ETA。
+28. 真实栅格动态采样适配器 (`enrich_graph_from_static_scene`) 杜绝伪造常量（P0-1, P0-2）：针对基准 Parquet 瓦片中土壤与水文列为空的历史事实，通过 `enrich_graph_from_static_scene` 动态采样 `soil_nanjing.tif` (+VAT)、CLDAS NetCDF (0-5cm 均值 0.3301 m³/m³) 与 `drainage_sensitivity.tif`；未映射区域保留 `None` 并不以 `CL` 兜底；记录全部输入文件 SHA-256 哈希。
+29. 统一走正式评价链路并实现 FactorModelConfig 显式消融开关（P0-3）：废除消融脚本私有评价器，在 `FactorModelConfig` 中引入 `enforce_rowspacing`、`enforce_water_depth`、`enforce_soil_physics`、`enforce_scalar_slope_blocking` 与 `use_exact_tangent_roll` 显式开关，统一调用 `evaluate_factor_model` 与 `evaluate_path_metrics`，并在 A0~A2 各档形成确定性非零差异。
+30. 基准 OD 端点正射/矢量校正与吸附上限控制（P0-5）：依据正射影像与矢量边界修订 `od_03`、`od_04`、`od_05` 选点，升级为 `m1_benchmark_ods_v2`，将 5 组 OD 初始吸附距离全部压制在 1.14 米以内（远低于 `MAX_SNAP_DISTANCE_M = 30.0` 上限），杜绝跨连通分量静默跳点。
+31. 统计口径拆分与动态对比生成（P0-6, P1-5）：拆分 5 个 OD 走廊去重并集统计（380,044 独立格元）与各 OD 独立统计两套口径；删除硬编码文字模板，对比叙述由真实实测差值动态生成。
+32. 修正建筑水体原因码污染与删除冗余配置（P1-2, P1-6）：严格按 `landcover_code == 5` 判定水体，防止建筑（code 6）误打 `WATER` 标签；清理遗留文件 `configs/scenes/rainy_weather.json`。

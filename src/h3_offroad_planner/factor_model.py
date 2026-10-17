@@ -92,7 +92,17 @@ SCHEMA_V2_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType(
                 "directed_slope_min_factor",
             }
         ),
-        "hard_constraints": frozenset({"min_cone_index_kpa", "max_sinkage_clearance_ratio"}),
+        "hard_constraints": frozenset(
+            {
+                "min_cone_index_kpa",
+                "max_sinkage_clearance_ratio",
+                "enforce_rowspacing",
+                "enforce_water_depth",
+                "enforce_soil_physics",
+                "enforce_scalar_slope_blocking",
+                "use_exact_tangent_roll",
+            }
+        ),
         "risk": frozenset({"epsilon"}),
         "cost": frozenset({"tri_coefficient", "gravity_coefficient"}),
         "portsmap": frozenset({"max_ports", "max_port_pairs"}),
@@ -617,6 +627,11 @@ class FactorModelConfig:
     gravity_coefficient: float = 5.0
     max_ports: int = 20_000
     max_port_pairs: int = 200_000
+    enforce_rowspacing: bool = True
+    enforce_water_depth: bool = True
+    enforce_soil_physics: bool = True
+    enforce_scalar_slope_blocking: bool = False
+    use_exact_tangent_roll: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -688,6 +703,11 @@ class FactorModelConfig:
             "hard_constraints": {
                 "min_cone_index_kpa": self.min_cone_index_kpa,
                 "max_sinkage_clearance_ratio": self.max_sinkage_clearance_ratio,
+                "enforce_rowspacing": self.enforce_rowspacing,
+                "enforce_water_depth": self.enforce_water_depth,
+                "enforce_soil_physics": self.enforce_soil_physics,
+                "enforce_scalar_slope_blocking": self.enforce_scalar_slope_blocking,
+                "use_exact_tangent_roll": self.use_exact_tangent_roll,
             },
             "risk": {"epsilon": self.epsilon},
             "cost": {
@@ -1342,6 +1362,16 @@ def _soil_speed_interval(
     soil_cone_cache: Mapping[str, float] | None = None,
     soil_sinkage_cache: Mapping[str, tuple[float, float]] | None = None,
 ) -> tuple[FactorInterval, float | None, float | None]:
+    if not config.enforce_soil_physics:
+        configured = config.soil_speed_by_uscs.get(cell.uscs or "")
+        return (
+            _known_interval(configured)
+            if configured is not None
+            else _floor_interval(missing, config.speed_floor_ratio),
+            None,
+            None,
+        )
+
     if cell.uscs is None or cell.soil_moisture is None:
         reasons.append("MISSING_SOIL")
         configured = config.soil_speed_by_uscs.get(cell.uscs or "")
@@ -1364,7 +1394,7 @@ def _soil_speed_interval(
         and cell.h3index in soil_cone_cache
     ):
         cone_index = soil_cone_cache[cell.h3index]
-        if cone_index < CI_THRESHOLD_KPA:
+        if cone_index < config.min_cone_index_kpa:
             soil_mobility = 0.0
             sinkage = None
             fast_path = True
@@ -1385,11 +1415,11 @@ def _soil_speed_interval(
         if (
             soil_sinkage_cache is not None
             and cell.h3index in soil_sinkage_cache
-            and (clone.cone_index_kpa is None or clone.cone_index_kpa >= CI_THRESHOLD_KPA)
+            and (clone.cone_index_kpa is None or clone.cone_index_kpa >= config.min_cone_index_kpa)
         ):
             clone.sinkage_m, clone.sinkage_resistance = soil_sinkage_cache[cell.h3index]
         try:
-            BekkerChecker().enrich_cell(clone, vehicle)
+            BekkerChecker(ci_threshold_kpa=config.min_cone_index_kpa).enrich_cell(clone, vehicle)
         except AssessmentError:
             pass
         cone_index = clone.cone_index_kpa
@@ -1397,20 +1427,29 @@ def _soil_speed_interval(
         soil_mobility = clone.soil_mobility
 
     configured = config.soil_speed_by_uscs.get(cell.uscs)
+    clearance_limit = vehicle.ground_clearance_m * config.max_sinkage_clearance_ratio
+    sinkage_factor: float | None = None
+    if sinkage is not None and isfinite(sinkage):
+        sinkage_factor = max(config.speed_floor_ratio, 1.0 - sinkage / clearance_limit)
+    elif sinkage is not None and not isfinite(sinkage):
+        sinkage_factor = config.speed_floor_ratio
+
     if configured is not None:
-        value = configured
+        if sinkage_factor is not None:
+            value = configured * sinkage_factor
+        elif soil_mobility is not None:
+            value = configured * max(config.speed_floor_ratio, min(1.0, soil_mobility))
+        else:
+            value = configured
     elif soil_mobility is not None:
         value = max(0.0, min(1.0, soil_mobility))
-    elif sinkage is not None and isfinite(sinkage):
-        value = max(0.0, 1.0 - sinkage / vehicle.ground_clearance_m)
-    elif sinkage is not None and not isfinite(sinkage):
-        value = config.speed_floor_ratio
+    elif sinkage_factor is not None:
+        value = sinkage_factor
     else:
         reasons.extend(("MISSING_SOIL_EVIDENCE", "SOIL_MODEL_PARTIAL"))
         return _floor_interval(missing, config.speed_floor_ratio), cone_index, sinkage
     interval = _known_interval(value)
-    if configured is None:
-        interval = _floor_interval(interval, config.speed_floor_ratio)
+    interval = _floor_interval(interval, config.speed_floor_ratio)
     return interval, cone_index, sinkage
 
 
@@ -1425,17 +1464,14 @@ def _hard_constraints(
 ) -> bool:
     if not cell.is_passable:
         reasons.append("STATIC_BLOCKED")
-    is_water = (
-        cell.lc_factor == inf
-        or (cell.landcover_type or "").lower() == "water"
-        or cell.landcover_code == 5
-    )
+    is_water = cell.landcover_code == 5 or (cell.landcover_type or "").lower() == "water"
     if is_water:
-        if cell.depth is None:
-            reasons.append("WATER")
-        elif cell.depth > vehicle.ground_clearance_m:
-            reasons.append("WATER_DEPTH_LIMIT")
-    if cell.rowspacing is not None:
+        if config.enforce_water_depth:
+            if cell.depth is None:
+                reasons.append("WATER")
+            elif cell.depth > vehicle.ground_clearance_m:
+                reasons.append("WATER_DEPTH_LIMIT")
+    if config.enforce_rowspacing and cell.rowspacing is not None:
         safe_width = vehicle.width_m or 2.2
         if cell.rowspacing < safe_width:
             reasons.append("ROWSPACING_BLOCKED")
@@ -1443,11 +1479,12 @@ def _hard_constraints(
         reasons.append("BUILDING")
     if abs(cell.slope) > vehicle.max_climb_angle_deg:
         reasons.append("STEEP_SLOPE")
-    if cone_index is not None and cone_index < config.min_cone_index_kpa:
-        reasons.append("CONE_INDEX_INSUFFICIENT")
-    clearance_limit = vehicle.ground_clearance_m * config.max_sinkage_clearance_ratio
-    if sinkage is not None and (sinkage >= clearance_limit or not isfinite(sinkage)):
-        reasons.append("SINKAGE_CLEARANCE_EXCEEDED")
+    if config.enforce_soil_physics:
+        if cone_index is not None and cone_index < config.min_cone_index_kpa:
+            reasons.append("CONE_INDEX_INSUFFICIENT")
+        clearance_limit = vehicle.ground_clearance_m * config.max_sinkage_clearance_ratio
+        if sinkage is not None and (sinkage >= clearance_limit or not isfinite(sinkage)):
+            reasons.append("SINKAGE_CLEARANCE_EXCEEDED")
     hard_codes = {
         "STATIC_BLOCKED",
         "WATER",
@@ -1457,6 +1494,8 @@ def _hard_constraints(
         "CONE_INDEX_INSUFFICIENT",
         "SINKAGE_CLEARANCE_EXCEEDED",
     }
+    if config.enforce_scalar_slope_blocking:
+        hard_codes.add("STEEP_SLOPE")
     return not hard_codes.intersection(reasons)
 
 
@@ -1539,6 +1578,10 @@ def compute_directed_roll_deg(terrain_slope_deg: float, pitch_deg: float) -> flo
 
     tan(theta_roll) = sqrt(max(0, tan^2(theta_terrain) - tan^2(theta_pitch)))
     theta_roll = degrees(arctan(tan(theta_roll)))
+
+    Note on discrete terrain slope: at the discrete cell level, terrain_slope uses a cell-level
+    proxy max(slope_u, slope_v); true continuous DEM gradient projection along
+    polyline micro-segments belongs to M2.
     """
     t_terrain = tan(radians(max(0.0, terrain_slope_deg)))
     t_pitch = tan(radians(abs(pitch_deg)))
@@ -1565,7 +1608,10 @@ def _directed_edge_metrics(
     source_cell = graph.cells[from_h3]
     target_cell = graph.cells[to_h3]
     terrain_slope = max(source_cell.slope, target_cell.slope)
-    roll_deg = compute_directed_roll_deg(terrain_slope, slope)
+    if config.use_exact_tangent_roll:
+        roll_deg = compute_directed_roll_deg(terrain_slope, slope)
+    else:
+        roll_deg = float(sqrt(max(0.0, terrain_slope * terrain_slope - slope * slope)))
     max_roll = getattr(vehicle, "effective_max_roll_angle_deg", 25.0)
     if abs(slope) > vehicle.max_climb_angle_deg or grade_force > vehicle.max_thrust_n or roll_deg > max_roll:
         return None
@@ -1734,6 +1780,11 @@ def _factor_model_from_mapping(data: dict[str, object]) -> FactorModelConfig:
         gravity_coefficient=_float(cost, "gravity_coefficient", 5.0),
         max_ports=_int(portsmap, "max_ports", 20_000),
         max_port_pairs=_int(portsmap, "max_port_pairs", 200_000),
+        enforce_rowspacing=_bool(hard, "enforce_rowspacing", True),
+        enforce_water_depth=_bool(hard, "enforce_water_depth", True),
+        enforce_soil_physics=_bool(hard, "enforce_soil_physics", True),
+        enforce_scalar_slope_blocking=_bool(hard, "enforce_scalar_slope_blocking", False),
+        use_exact_tangent_roll=_bool(hard, "use_exact_tangent_roll", True),
     )
 
 
@@ -1822,6 +1873,18 @@ def _int(data: Mapping[str, object], key: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ConfigError(f"factor model field {key!r} must be an integer.") from exc
+
+
+def _bool(data: Mapping[str, object], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if value.lower() in {"true", "1", "yes"}:
+            return True
+        if value.lower() in {"false", "0", "no"}:
+            return False
+    raise ConfigError(f"factor model field {key!r} must be a boolean.")
 
 
 def _int_float_mapping(data: Mapping[str, object], key: str) -> dict[int, float]:
