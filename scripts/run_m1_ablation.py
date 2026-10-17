@@ -60,8 +60,11 @@ DEFAULT_TILES_MANIFEST = ROOT / "outputs" / "baseline_986bd58" / "qdx_tiles" / "
 DEFAULT_WEATHER_PATH = ROOT / "configs" / "scenes" / "synthetic_rainy_weather.json"
 DEFAULT_VEHICLE_PATH = ROOT / "configs" / "vehicle.yaml"
 DEFAULT_OUTPUT_DIR = ROOT / "outputs" / "m1_ablation"
-# One H3 res14 edge is ~1.35 m, so this tolerance can never reassign a point to
-# a neighbouring cell: it only absorbs a coordinate sitting exactly on a boundary.
+# An H3 res14 cell has edge 1.55 m and area 6.27 m2, so any point inside a cell is
+# at most 1.55 m from that cell's centre. Endpoints are resolved to the CONTAINING
+# cell (never a nearest-cell search), so this tolerance is only a sanity check; it
+# must stay below the neighbour-centre distance of 2.68 m so that a point sitting
+# exactly on a boundary cannot be attributed to the wrong cell.
 MAX_SNAP_DISTANCE_M: float = 2.0
 
 
