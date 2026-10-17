@@ -1361,6 +1361,12 @@ def _soil_speed_interval(
     soil_cone_cache: Mapping[str, float] | None = None,
     soil_sinkage_cache: Mapping[str, tuple[float, float]] | None = None,
 ) -> tuple[FactorInterval, float | None, float | None]:
+    if cell.has_road:
+        # Paved / road surface: Bekker sinkage, cone index and soil mobility do
+        # not apply, so the soil speed factor is neutral (1.0) and no soil
+        # reason codes or soil safety margins are emitted for road cells.
+        return _known_interval(1.0), None, None
+
     if not config.enforce_soil_physics:
         configured = config.soil_speed_by_uscs.get(cell.uscs or "")
         return (

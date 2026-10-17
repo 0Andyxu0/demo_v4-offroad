@@ -32,6 +32,7 @@ import subprocess
 import sys
 from typing import Any
 
+import h3
 import networkx as nx
 from shapely.geometry import Point
 
@@ -59,7 +60,9 @@ DEFAULT_TILES_MANIFEST = ROOT / "outputs" / "baseline_986bd58" / "qdx_tiles" / "
 DEFAULT_WEATHER_PATH = ROOT / "configs" / "scenes" / "synthetic_rainy_weather.json"
 DEFAULT_VEHICLE_PATH = ROOT / "configs" / "vehicle.yaml"
 DEFAULT_OUTPUT_DIR = ROOT / "outputs" / "m1_ablation"
-MAX_SNAP_DISTANCE_M: float = 30.0
+# One H3 res14 edge is ~1.35 m, so this tolerance can never reassign a point to
+# a neighbouring cell: it only absorbs a coordinate sitting exactly on a boundary.
+MAX_SNAP_DISTANCE_M: float = 2.0
 
 
 def _git_head() -> str:
@@ -87,26 +90,46 @@ def _file_sha256(path: Path | str) -> str:
     return h.hexdigest()
 
 
-def _snap_endpoint(
+def _resolve_endpoint(
     graph: H3Graph,
     nodes: dict[str, NodeFactorMetrics],
     target_lat: float,
     target_lng: float,
     max_snap_m: float = MAX_SNAP_DISTANCE_M,
 ) -> tuple[str | None, float, bool, list[str]]:
-    """Snap coordinate to nearest graph cell and verify passability and distance."""
+    """Resolve an OD endpoint to the res14 cell that CONTAINS the coordinate.
+
+    There is deliberately no neighbourhood search: the coordinate must fall in a
+    cell that exists in the corridor graph, and that cell must be passable under
+    the level being evaluated. Otherwise the OD fails with an explicit reason
+    instead of being silently reassigned to a neighbouring cell.
+
+    Args:
+        graph: Corridor graph for one OD.
+        nodes: Evaluated node metrics for the current ablation level.
+        target_lat: Requested latitude in WGS84.
+        target_lng: Requested longitude in WGS84.
+        max_snap_m: Tolerance for a coordinate sitting on a cell boundary. Must
+            stay below one res14 edge (~1.35 m) so it cannot cross cells.
+
+    Returns:
+        (h3_id or None, distance_m, is_passable, reason_codes)
+    """
     if not graph.cells:
         return None, float("inf"), False, ["EMPTY_GRAPH"]
-    best_cell = min(
-        graph.cells.values(),
-        key=lambda c: _haversine_m(target_lat, target_lng, c.lat, c.lng),
-    )
-    dist_m = _haversine_m(target_lat, target_lng, best_cell.lat, best_cell.lng)
-    node_m = nodes.get(best_cell.h3index)
+    resolution = h3.get_resolution(next(iter(graph.cells)))
+    h3_id = str(h3.latlng_to_cell(target_lat, target_lng, resolution))
+    if h3_id not in graph.cells:
+        return None, float("inf"), False, ["CELL_NOT_IN_CORRIDOR"]
+    cell = graph.cells[h3_id]
+    dist_m = _haversine_m(target_lat, target_lng, cell.lat, cell.lng)
+    node_m = nodes.get(h3_id)
     if node_m is None:
-        return best_cell.h3index, dist_m, False, ["ABSENT_FROM_EVALUATION"]
+        return h3_id, dist_m, False, ["ABSENT_FROM_EVALUATION"]
     reasons = list(node_m.reason_codes)
-    return best_cell.h3index, dist_m, bool(node_m.is_passable), reasons
+    if dist_m > max_snap_m:
+        return h3_id, dist_m, False, reasons + ["SNAP_DISTANCE_EXCEEDED"]
+    return h3_id, dist_m, bool(node_m.is_passable), reasons
 
 
 def run_m1_ablation(
@@ -316,10 +339,10 @@ def run_m1_ablation(
             # Endpoint snapping
             s_lat, s_lng = od["start_wgs84"]
             g_lat, g_lng = od["goal_wgs84"]
-            s_h3, s_snap_m, s_passable, s_reasons = _snap_endpoint(
+            s_h3, s_snap_m, s_passable, s_reasons = _resolve_endpoint(
                 graph, eval_res.node_metrics, s_lat, s_lng, max_snap_m
             )
-            g_h3, g_snap_m, g_passable, g_reasons = _snap_endpoint(
+            g_h3, g_snap_m, g_passable, g_reasons = _resolve_endpoint(
                 graph, eval_res.node_metrics, g_lat, g_lng, max_snap_m
             )
 
@@ -329,14 +352,14 @@ def run_m1_ablation(
             pm_dict: dict[str, Any] = {}
 
             if s_h3 is None or g_h3 is None:
-                status = "OD_ENDPOINT_UNAVAILABLE"
-                status_reason = "CORRIDOR_GRAPH_EMPTY"
-            elif s_snap_m > max_snap_m or g_snap_m > max_snap_m:
-                status = "OD_ENDPOINT_UNAVAILABLE"
-                status_reason = f"SNAP_DISTANCE_EXCEEDED (s={s_snap_m:.2f}m, g={g_snap_m:.2f}m, max={max_snap_m:.1f}m)"
+                status = "OD_ENDPOINT_OUTSIDE_CORRIDOR"
+                status_reason = f"s_reasons={s_reasons}, g_reasons={g_reasons}"
             elif not s_passable or not g_passable:
-                status = "OD_ENDPOINT_UNAVAILABLE"
-                status_reason = f"ENDPOINT_IMPASSABLE (s_reasons={s_reasons}, g_reasons={g_reasons})"
+                status = "OD_ENDPOINT_IMPASSABLE"
+                status_reason = (
+                    f"s={s_h3}/{s_snap_m:.2f}m reasons={s_reasons}, "
+                    f"g={g_h3}/{g_snap_m:.2f}m reasons={g_reasons}"
+                )
             else:
                 # Build DiGraph for shortest path search
                 G = nx.DiGraph()

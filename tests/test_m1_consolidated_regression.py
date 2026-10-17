@@ -6,7 +6,7 @@ Fulfills M1 Consolidated Audit (2026-10-17) §9:
 - uscs=None remains unknown and reports MISSING_SOIL, not forged to 'CL'.
 - Moisture increase -> sinkage increase -> speed degradation/blocking (scalar vs vectorized consistency).
 - CI threshold single-source enforcement from config.min_cone_index_kpa.
-- Endpoint snapping distance limit (30.0m) with explicit failure and no component hopping.
+- Endpoint resolution to the containing res14 cell (<=2.0m), explicit failure, no cell hopping.
 - is_water only active for landcover_code == 5; buildings (code 6) must not be tagged WATER.
 - Ablation switches (enforce_rowspacing, enforce_water_depth, enforce_soil_physics, enforce_scalar_slope_blocking) gate reason codes.
 """
@@ -17,6 +17,7 @@ import json
 import math
 from pathlib import Path
 
+import h3
 import numpy as np
 import pytest
 import rasterio
@@ -442,15 +443,29 @@ def test_ablation_switches_properly_gate_reasons(default_vehicle: VehicleProfile
     assert eval_a2.node_metrics[c_slope.h3index].is_passable is True
 
 
-def test_endpoint_snap_distance_limit_and_unreachable_status(default_vehicle: VehicleProfile):
-    """P0-5: Verify endpoint snapping limits, explicit unavailable status, and no component hopping."""
-    from scripts.run_m1_ablation import _snap_endpoint
+def test_endpoint_resolves_containing_cell_and_never_crosses_cells(default_vehicle: VehicleProfile):
+    """Endpoints must resolve to the CONTAINING res14 cell, never a neighbour.
 
-    # Passable cell at lat 31.980, lng 118.990
-    c1 = H3Cell(
-        h3index="8f2830828000001",
-        lat=31.980,
-        lng=118.990,
+    A coordinate whose containing cell is impassable must fail explicitly; the
+    resolver may not hop to a nearby passable cell.
+    """
+    import h3 as _h3
+
+    from scripts.run_m1_ablation import MAX_SNAP_DISTANCE_M, _resolve_endpoint
+
+    assert MAX_SNAP_DISTANCE_M <= 2.0, "snap tolerance must stay inside one res14 cell"
+
+    lat0, lng0 = 31.980, 118.990
+    passable_id = str(_h3.latlng_to_cell(lat0, lng0, 14))
+    passable_lat, passable_lng = _h3.cell_to_latlng(passable_id)
+    neighbours = [str(x) for x in _h3.grid_ring(passable_id, 1) if str(x) != passable_id]
+    blocked_id = neighbours[0]
+    blocked_lat, blocked_lng = _h3.cell_to_latlng(blocked_id)
+
+    c_passable = H3Cell(
+        h3index=passable_id,
+        lat=passable_lat,
+        lng=passable_lng,
         elevation=20.0,
         slope=1.0,
         tri=0.0,
@@ -458,11 +473,10 @@ def test_endpoint_snap_distance_limit_and_unreachable_status(default_vehicle: Ve
         landcover_code=1,
         is_passable=True,
     )
-    # Impassable cell at lat 31.981, lng 118.991 (deep water)
     c_blocked = H3Cell(
-        h3index="8f2830828000002",
-        lat=31.981,
-        lng=118.991,
+        h3index=blocked_id,
+        lat=blocked_lat,
+        lng=blocked_lng,
         elevation=20.0,
         slope=1.0,
         tri=0.0,
@@ -471,31 +485,91 @@ def test_endpoint_snap_distance_limit_and_unreachable_status(default_vehicle: Ve
         depth=1.5,
         is_passable=False,
     )
-    graph = H3Graph(cells={c1.h3index: c1, c_blocked.h3index: c_blocked}, edges={})
-    cfg = FactorModelConfig(enforce_water_depth=True)
-    eval_res = evaluate_factor_model(graph, default_vehicle, cfg)
+    graph = H3Graph(cells={c_passable.h3index: c_passable, c_blocked.h3index: c_blocked}, edges={})
+    eval_res = evaluate_factor_model(graph, default_vehicle, FactorModelConfig(enforce_water_depth=True))
 
-    # 1. Coordinate close to c1 (< 30m) snaps successfully to c1
-    h3_id, snap_m, passable, reasons = _snap_endpoint(
-        graph, eval_res.node_metrics, 31.980001, 118.990001, max_snap_m=30.0
+    # 1. A point inside the passable cell resolves to that cell. Any interior
+    #    point is at most one res14 edge (~1.35 m) from the centre.
+    h3_id, snap_m, passable, reasons = _resolve_endpoint(
+        graph, eval_res.node_metrics, lat0, lng0
     )
-    assert h3_id == c1.h3index
-    assert snap_m < 5.0
+    assert h3_id == passable_id
+    assert snap_m <= 1.5
     assert passable is True
+    assert "STATIC_BLOCKED" not in reasons
 
-    # 2. Coordinate far away (> 30m, approx 700m away) exceeds max_snap_m
-    h3_far, snap_far_m, passable_far, _ = _snap_endpoint(
-        graph, eval_res.node_metrics, 31.985, 118.995, max_snap_m=30.0
+    # 1b. The centre itself resolves with an essentially zero offset.
+    h3_ctr, snap_ctr, passable_ctr, _ = _resolve_endpoint(
+        graph, eval_res.node_metrics, passable_lat, passable_lng
     )
-    assert snap_far_m > 30.0
+    assert h3_ctr == passable_id
+    assert snap_ctr < 0.05
+    assert passable_ctr is True
 
-    # 3. Coordinate snapping to impassable cell reports passable=False and reason
-    h3_imp, snap_imp_m, passable_imp, reasons_imp = _snap_endpoint(
-        graph, eval_res.node_metrics, 31.981001, 118.991001, max_snap_m=30.0
+    # 2. A point inside the impassable neighbour resolves to THAT cell and fails;
+    #    it must not hop back to the adjacent passable cell.
+    h3_imp, _, passable_imp, reasons_imp = _resolve_endpoint(
+        graph, eval_res.node_metrics, blocked_lat, blocked_lng
     )
-    assert h3_imp == c_blocked.h3index
+    assert h3_imp == blocked_id
     assert passable_imp is False
     assert "WATER_DEPTH_LIMIT" in reasons_imp
+
+    # 3. A point whose containing cell is not in the corridor fails outright.
+    far_lat, far_lng = _h3.cell_to_latlng(str(_h3.latlng_to_cell(31.95, 118.96, 14)))
+    h3_out, _, passable_out, reasons_out = _resolve_endpoint(
+        graph, eval_res.node_metrics, far_lat, far_lng
+    )
+    assert h3_out is None
+    assert passable_out is False
+    assert reasons_out == ["CELL_NOT_IN_CORRIDOR"]
+
+
+def test_road_cells_are_exempt_from_soil_sinkage(default_vehicle: VehicleProfile):
+    """Paved road cells must not take part in Bekker sinkage or cone-index physics."""
+    road = H3Cell(
+        h3index=str(h3.latlng_to_cell(31.980, 118.990, 14)),
+        lat=31.980,
+        lng=118.990,
+        elevation=20.0,
+        slope=1.0,
+        tri=0.0,
+        lc_factor=0.85,
+        landcover_code=8,
+        has_road=True,
+        uscs="CL",
+        soil_moisture=0.45,
+        is_passable=True,
+    )
+    offroad = H3Cell(
+        h3index=str(h3.latlng_to_cell(31.9802, 118.9902, 14)),
+        lat=31.9802,
+        lng=118.9902,
+        elevation=20.0,
+        slope=1.0,
+        tri=0.0,
+        lc_factor=1.2,
+        landcover_code=1,
+        has_road=False,
+        uscs="CL",
+        soil_moisture=0.45,
+        is_passable=True,
+    )
+    graph = H3Graph(
+        cells={road.h3index: road, offroad.h3index: offroad},
+        edges={},
+    )
+    cfg = FactorModelConfig(soil_speed_by_uscs={"CL": 0.5}, enforce_soil_physics=True)
+    evaluation = evaluate_factor_model(graph, default_vehicle, cfg)
+
+    road_metrics = evaluation.node_metrics[road.h3index]
+    soil_metrics = evaluation.node_metrics[offroad.h3index]
+    assert road_metrics.cone_index_kpa is None
+    assert road_metrics.sinkage_m is None
+    assert road_metrics.soil.nominal == pytest.approx(1.0)
+    assert soil_metrics.soil.nominal < 1.0
+    assert road_metrics.speed_nominal_mps > soil_metrics.speed_nominal_mps
+    assert road_metrics.safety_margin.nominal > soil_metrics.safety_margin.nominal
 
 
 def test_m1_ablation_artifacts_contract_and_traceability():
@@ -510,7 +584,7 @@ def test_m1_ablation_artifacts_contract_and_traceability():
     meta = payload["metadata"]
 
     assert meta["schema_version"] == "m1_ablation_consolidated_v2"
-    assert meta["max_snap_distance_m"] == 30.0
+    assert meta["max_snap_distance_m"] == 2.0
 
     # Check input hashes
     hashes = meta["input_hashes"]
@@ -530,7 +604,8 @@ def test_m1_ablation_artifacts_contract_and_traceability():
 
     # Check corridor_union_enrichment
     union_enrich = meta.get("corridor_union_enrichment", meta.get("enrichment_summary", {}))
-    assert union_enrich["total_cells_enriched"] == 380044
+    union_cells_total = union_enrich["total_cells_enriched"]
+    assert union_cells_total > 100_000, "corridor union must cover the whole benchmark area"
     hist = union_enrich["soil"]["histogram"]
     assert hist.get("49", 0) > 0 or hist.get(49, 0) > 0
 
@@ -540,9 +615,11 @@ def test_m1_ablation_artifacts_contract_and_traceability():
         assert lvl_code in levels, f"Level {lvl_code} missing from ablation payload"
         lvl_data = levels[lvl_code]
         u = lvl_data["corridor_union"]
-        assert u["total_unique_cells"] == 380044
+        assert u["total_unique_cells"] == union_cells_total
         assert u["passable_unique_cells"] > 0
-        assert u["blocked_unique_cells"] == 380044 - u["passable_unique_cells"]
+        assert u["blocked_unique_cells"] == u["total_unique_cells"] - u["passable_unique_cells"]
+        per_od_sum = sum(od["total_corridor_cells"] for od in lvl_data["ods"].values())
+        assert u["total_unique_cells"] <= per_od_sum, "union must be de-duplicated across ODs"
         assert u["passable_unique_directed_edges"] > 0
         assert len(u["reason_codes_by_cell"]) > 0
         assert len(u["reason_codes_total_labels"]) > 0
@@ -559,8 +636,10 @@ def test_m1_ablation_artifacts_contract_and_traceability():
             assert od_res["status"] == "REACHABLE", (
                 f"OD {oid} in level {lvl_code} is {od_res['status']}: {od_res.get('status_reason')}"
             )
-            assert od_res["start_snap_m"] <= 1.14
-            assert od_res["goal_snap_m"] <= 1.14
+            # Endpoints resolve to the CONTAINING res14 cell, so the offset can
+            # never exceed one cell radius (~1.35 m).
+            assert od_res["start_snap_m"] <= 1.5
+            assert od_res["goal_snap_m"] <= 1.5
             assert len(od_res["h3_path"]) > 0
             assert od_res["metrics"]["distance_m"] > 0
             assert od_res["metrics"]["eta_s"] > 0

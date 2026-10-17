@@ -57,3 +57,15 @@ git status -s
 2. **基准 OD 未按 v3 重选**：可观测性局限已如实记录，若要真正演示 A1a / A2 的选线效果，需按正射/矢量证据修订 OD 起点终点，属于下一轮输入变更。
 3. **寻路权重仍是自定义复合式**（`travel_cost + 2·eta + 0.1·risk + env_cost`），非正式候选规划入口的代价函数。评价对象是正式的，规划器不是。
 4. `MISSING_LANDCOVER: 11,510` 格元的地物证据缺失成因尚未追查。
+
+## 6. 第三批整改（审核要求 1–3）
+
+| 要求 | 落地 | 证据 |
+|---|---|---|
+| **1a 端点不可通行即报错** | \`_resolve_endpoint\` 改为 \`h3.latlng_to_cell(lat, lng, 14)\` 求**含格元**，取消走廊图上的最近格元搜索；含格元缺失/不可通行分别返回 \`OD_ENDPOINT_OUTSIDE_CORRIDOR\` / \`OD_ENDPOINT_IMPASSABLE\` | \`run_m1_ablation.py::_resolve_endpoint\`；回归 \`test_endpoint_resolves_containing_cell_and_never_crosses_cells\` 断言"邻格不可通行时不会跳回可通行格" |
+| **1b 吸附限制在 res14 格内** | \`MAX_SNAP_DISTANCE_M\` 30.0 m → **2.0 m**（res14 边长 1.35 m），只吸收落在格边的坐标；实际 5 组 OD 吸附 0.00–1.14 m | 产物 \`metadata.max_snap_distance_m = 2.0\`；测试断言该常量 ≤2.0 |
+| **1c 重选一条有意义的 OD** | \`od_02_forest_rowspacing\` 改为跨 1,930 格密林斑块两侧的一对可通行格元，配置升 \`m1_benchmark_ods_v3\` | A0 139.54 m → A1a 382.91 m（+243.37 m / +175%），A0→A1a 首次出现目标 OD 可观测变化 |
+| **2 铺装路面豁免 Bekker** | \`_soil_speed_interval\` 对 \`has_road\` 格元直接返回土壤系数 1.0 且不计算 CI/沉陷 | 回归 \`test_road_cells_are_exempt_from_soil_sinkage\`；\`od_04\` ETA 49.33→26.66 s、\`od_05\` 169.02→116.84 s |
+| **3 文档清理** | 删除根目录 4 份历史残留；当前依据收敛到 \`IMPLEMENTATION_PLAN.md\` | DECISIONS #39；本轮另附文档清点审核表 |
+
+第三批后的并集口径：176,645 格元（od_02 走廊随选点变化），可通行 139,650 / 137,105 / 137,105 / 137,105 / 137,523（A0→A2）。

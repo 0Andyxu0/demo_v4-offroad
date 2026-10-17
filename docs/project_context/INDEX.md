@@ -6,9 +6,9 @@
 
 **当前实施入口：[有人驾驶越野固定实施方案](IMPLEMENTATION_PLAN.md)，版本 1.0（2026-10-15），基于 Git `986bd58`。** 已整合 ARGON 1345 与本轮审核修正，明确 M0–M5 模块顺序、局部图/评分/预算/缓存接口及真实工区实验。新任务先读该方案，再按下表读取相关源码资料；历史 Gemini/ARGON 文稿只用于追溯。
 
-若使用网页模型评审或接续实现，配合 [研究任务提示词](GEMINI_RESEARCH_PROMPT.md)，首轮上传 `PROJECT_HOLOGRAM.md` 与 `docs/project_context/IMPLEMENTATION_PLAN.md`：前者是基线架构快照，后者是当前实施依据。以下“只上传总览”适用于单纯了解工程的场景。
+若使用网页模型评审或接续实现，首轮上传 `docs/project_context/IMPLEMENTATION_PLAN.md`（当前实施依据）与 `STATE.md`（当前状态）。`PROJECT_HOLOGRAM.md` 仅是 `986bd58` 基线架构快照，**与方案冲突时以方案为准**，不要据它推断当前代码行为。
 
-1. 首轮只上传仓库根目录 `PROJECT_HOLOGRAM.md`。它包含四部分概览及八个主题入口。
+1. 首轮上传 `IMPLEMENTATION_PLAN.md` + `STATE.md`；需要目录概览时再补 `PROJECT_HOLOGRAM.md`，并明确它是历史快照。
 2. 确定本轮问题，再提供下面“第一批”1–3 个模块附件。预算紧张时先传排名第一的模块。
 3. 有明确缺口再补第二批。它们是文件导航，不是已启用的自动 RAG；网页模型不能凭本地链接读取未上传文件。不要一次把整个目录或两份长版都作为附件。
 4. 若需要算法推导/正确性审查，AST 不够：按 `SYMBOL_INDEX.md` 定位所需函数，并另外提供实现。若需要性能/实地有效性结论，提供匹配配置与产物/实验，不从接口猜测。
@@ -35,7 +35,8 @@
 - 字典映射没有统一强类型 schema，生成文档也不会替源码创造必填性；静态分析不能穷尽动态 setattr、鸭子类型和回调调用关系。
 - `SYMBOL_INDEX.md`：类/函数/方法的模块、词法名称、源码行号。无需首轮上传。
 - `MANIFEST.md`：源文件与参考文档 SHA-256、覆盖统计和版本信息；用于检查是否过期，无需首轮上传。
-- `PROJECT_HOLOGRAM_gpt.md` / `PROJECT_HOLOGRAM_gemini.md`：原稿原样保留。新的总览以源码为依据，不继承未经本次验证的测试/性能数字或算法保证。
+- `PROJECT_HOLOGRAM.md` 是 `986bd58` 基线的**冻结架构快照**，只用于理解目录结构，不反映 M0/M1 之后的实现（见 DECISIONS、STATE）。`PROJECT_HOLOGRAM_gpt.md` / `PROJECT_HOLOGRAM_gemini.md` 已按项目负责人确认删除，不再保留。
+- **当前实施依据唯一收敛到 `IMPLEMENTATION_PLAN.md`**；与快照冲突时以方案与源码为准。
 
 ## 单模块文件目录
 

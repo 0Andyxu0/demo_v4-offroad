@@ -60,3 +60,9 @@
 34. 单变量档位可观测性判据与如实记录（N-2）：以「目标 OD 上 L/ETA/Cost 相对变化 ≥ 1%」作为单变量档位可观测的判据，结果写入 \`m1_ablation.json\` 的 \`comparison\` 段与摘要 §5。本工区实测：A1a→A1b、A1c→A2 在目标 OD 上均未达 1%（A1a→A1b 仅 4e-4，A1c→A2 为 0），A0→A1a 亦未改变任何基准 OD 的选线；只有 A1b→A1c 在 \`od_01_primary\` 产生 +210.05 m / +19.67 s / +74.38 的实质变化。该结论属**地貌与选点共同决定的可观测性局限**，不代表物理模型空转；后续不得再用"彻底摆脱空转""主动绕行"等措辞描述零变化档位，如需演示单变量选线效果，须按有证据的选点修订基准 OD（v3）而非事后解释。
 35. 文档与叙述去伪（N-3）：修正 \`DECISIONS.md\` 第 25 条的陈旧统计（454,475 / 2,133,478 → 380,044 / 1,738,210）；地表阻抗倍率改为由边级 \`environment_distance_m / distance_m\` 实测得出（当前 2.440×），不再硬编码"2.44×/1.864×"；清理 \`factor_model.py\` 中随 CI 阈值单源化而失效的 \`CI_THRESHOLD_KPA\` 导入。
 
+## 2026-10-17：第三批整改（端点判定、路面豁免、基准 OD）
+
+36. OD 端点按 res14 含格元解析，禁止跨格吸附（审核要求 1）：`_resolve_endpoint` 改用 `h3.latlng_to_cell(lat, lng, 14)` 求**含格元**，不再在走廊图上做最近格元搜索；含格元不在走廊内 → `OD_ENDPOINT_OUTSIDE_CORRIDOR`，含格元不可通行 → `OD_ENDPOINT_IMPASSABLE`，均显式失败并记录原因码。`MAX_SNAP_DISTANCE_M` 由 30.0 m 收紧到 **2.0 m**（res14 边长约 1.35 m），仅用于吸收恰好落在格边的坐标，物理上不可能把点分配到邻格。此前 30 m 允许跨约 13 个 res14 格吸附，是把"可达"结论建立在换点之上。
+37. 铺装路面豁免 Bekker 沉陷与土壤动力学（审核要求 2）：`_soil_speed_interval` 对 `cell.has_road` 的格元直接返回土壤系数 1.0、`cone_index_kpa=None`、`sinkage_m=None`，不再计算或用 CI/Bekker，也不再产生 `MISSING_SOIL` / `CONE_INDEX_INSUFFICIENT` / `SINKAGE_CLEARANCE_EXCEEDED` 与土壤安全裕度。理由是路面对应已硬化表面，`surface_response=0.0` 已按不透水面处理，二者语义必须一致。影响：`od_04` ETA 从 49.33 s 降到 26.66 s、`od_05` 从 169.02 s 降到 116.84 s，选线随之改变。
+38. 基准 OD v3：`od_02_forest_rowspacing` 端点在 v2 版本位于密林斑块之外，最短路径本就不穿过 `ROWSPACING_BLOCKED` 格元，导致 A1a 零变化。现按数据选出跨 1,930 格密林斑块两侧的一对**可通行** res14 格元（`31.9866878,118.9904908` → `31.9877115,118.9907237`，端点吸附 ≤0.01 m），A0 直穿 139.54 m，A1a 必须绕行 382.91 m（+243.37 m / +175%）。升级为 `m1_benchmark_ods_v3` 并在 `version_notes` 记录依据。选点仍以"所选 OD 命中目标特征"为准，不以"制造预期差异"为准。
+39. 文档清理：根目录 4 份历史残留（`PROJECT_HOLOGRAM_gemini.md`、`PROJECT_HOLOGRAM_gpt.md`、`demo_v4解决实际环境问题.md`、`gpt_plan_vs_requirement.md`）由项目负责人确认为与当前任务无关，予以删除；当前实施依据唯一收敛到 `docs/project_context/IMPLEMENTATION_PLAN.md`。

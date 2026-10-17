@@ -1,5 +1,7 @@
 # 项目全息上下文快照：首读总览
 
+> **状态：冻结快照（Git `986bd58`，2026-10-14 生成）。** 本文件描述的是 M0 开工前的架构，**不反映** M0/M1 之后的实现变更（道路宽度换算、Bekker/CI 修正、CLDAS 采样、消融档位、端点判定等）。当前实施依据唯一以 [docs/project_context/IMPLEMENTATION_PLAN.md](docs/project_context/IMPLEMENTATION_PLAN.md) + [STATE.md](docs/project_context/STATE.md) + [DECISIONS.md](docs/project_context/DECISIONS.md) 为准；与源码冲突时以源码为准。
+
 ## 1. 【项目现状与已达成目标】
 
 ### 阅读约定
