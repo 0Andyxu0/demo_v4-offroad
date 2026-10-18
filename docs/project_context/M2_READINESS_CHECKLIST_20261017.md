@@ -15,6 +15,8 @@
 
 
 > **状态（2026-10-17 晚）：A1–A4 已完成。** 地表场已接入 `_load_route_graph`（`RouteRequest.static_scene_path`），生产 plan 与消融产物均输出 `data_coverage`（五类字段 `valid_rate = 1.000`）；USCS 映射外置为 `configs/soil_uscs_map.yaml` 并记录哈希；OD 集登记见 DECISIONS #42 与 STATE。详见 [STATE.md](STATE.md) 的「A 组」小节。
+> **状态（2026-10-18）：湿度基准与 TWI 已定版。** theta 锚改为本地气候分位（0.159 / 0.424，`scripts/calibrate_moisture.py` + `configs/scenes/qdx_moisture_calibration.json`），静态含水率改用制图期冻结快照，生产 plan 的 `derived_pressure` 由 0 变为 0.343；TWI 已从场景去注册（C6 中的"区域标量"表述已落实、C7 关闭），`H3Cell.twi` 物理列删除留到下一次索引重建。详见 DECISIONS #43–#45。
+
 ## B. M2 第一个提交内完成（输入前置）
 
 | 编号 | 事项 | 现状与证据 | 目标动作 | 验收标准 |

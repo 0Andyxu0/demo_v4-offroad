@@ -353,7 +353,9 @@ def test_prepare_static_scene_qdx_live_if_present() -> None:
     assert scene.orthophoto.acquisition_time is not None
     assert scene.moisture.observation_time == "2026-01-01"
     assert len(scene.moisture.paths) == 3
-    assert len(scene.hydrology.upstream_layers) == 7
+    assert scene.moisture.source == "weather_snapshot"
+    assert len(scene.hydrology.upstream_layers) == 6
+    assert "twi" not in scene.hydrology.upstream_layers
 
 
 def test_prepare_static_scene_rejects_geographic_metric_crs(tmp_path: Path) -> None:
@@ -491,7 +493,8 @@ def test_prepare_static_scene_from_existing_scene_dict() -> None:
     assert reprepared.scene_id == loaded.scene_id
     assert reprepared.metric_crs == loaded.metric_crs
     assert len(reprepared.moisture.paths) == 3
-    assert len(reprepared.hydrology.upstream_layers) == 7
+    assert len(reprepared.hydrology.upstream_layers) == 6
+    assert "twi" not in reprepared.hydrology.upstream_layers
 
 
 def test_prepare_static_scene_auto_resolves_private_assets_fallback() -> None:
@@ -506,7 +509,7 @@ def test_prepare_static_scene_auto_resolves_private_assets_fallback() -> None:
         weather_snapshot=weather_path,
     )
     assert len(scene.moisture.paths) == 3
-    assert len(scene.hydrology.upstream_layers) == 7
+    assert len(scene.hydrology.upstream_layers) == 6
     assert scene.road.road_type_field == "FuncClass"
 
 

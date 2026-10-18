@@ -36,11 +36,14 @@ weather:
   ttl_s: 1800.0
   failure_ttl_s: 60.0
   max_age_s: 10800.0
-  # Provisional 0-5 cm operational anchors from CLDAS 2026-01-01 Nanjing 50 km
-  # spatial q05/q95 (0.255/0.332), padded outward. Not seasonal or field calibration.
-  theta_dry: 0.25
-  theta_wet: 0.35
-  calibration_status: provisional_cldas_spatial_20260101
+  # Local 0-7 cm soil-moisture q05/q95 from the Open-Meteo archive at the study
+  # site (2025-10-18..2026-10-17, grid 32.021/118.987). Single source of truth:
+  # configs/scenes/qdx_moisture_calibration.json; the regression suite fails if
+  # these two numbers drift from that file. Re-run scripts/calibrate_moisture.py
+  # when the site or the mapping season changes.
+  theta_dry: 0.159
+  theta_wet: 0.424
+  calibration_status: provisional_local_archive_q05_q95_20251018_20261017
   # Provisional reference for precipitation-based pressure fallback.
   api_reference_mm: 20.0
 

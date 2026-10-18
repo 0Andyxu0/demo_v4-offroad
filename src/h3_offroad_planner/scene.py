@@ -221,6 +221,9 @@ class MoistureReference:
     depth_layers: list[str] = field(default_factory=list)
     observation_time: str | None = None
     tags: dict[str, str] = field(default_factory=dict)
+    # "cldas" samples the registered raster; "weather_snapshot" uses the frozen
+    # mapping-period surface moisture carried by the weather snapshot.
+    source: str = "cldas"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -424,6 +427,7 @@ class StaticScene:
             depth_layers=list(moisture_data.get("depth_layers", [])),
             observation_time=moisture_data.get("observation_time"),
             tags=dict(moisture_data.get("tags", {})),
+            source=str(moisture_data.get("source", "cldas")),
         )
 
         hydro_data = data.get("hydrology", {})
@@ -822,6 +826,7 @@ def prepare_static_scene(
         unit="m3/m3",
         depth_layers=["0-5cm", "5-10cm", "10-40cm"],
         observation_time=observation_time,
+        source=str(inputs_dict.get("moisture_source", "cldas")),
     )
 
     # 8. Hydrology Reference
@@ -962,6 +967,11 @@ def _resolve_inputs_dict(
         or payload.get("static_moisture")
         or payload.get("static_moisture_paths")
     )
+    moisture_source = (
+        (moisture_val.get("source") if isinstance(moisture_val, dict) else None)
+        or payload.get("moisture_source")
+        or "cldas"
+    )
     hydrology = (
         (hydro_val.get("upstream_layers") if isinstance(hydro_val, dict) else None)
         or payload.get("hydrology")
@@ -984,6 +994,8 @@ def _resolve_inputs_dict(
                     static_moisture = assets.get("static_moisture", [])
                 if not hydrology:
                     hydrology = assets.get("hydrology", {})
+                if moisture_source == "cldas" and assets.get("moisture_source"):
+                    moisture_source = str(assets["moisture_source"])
 
     if not dem or not ortho or not landcover or not road or not roi or not soil or not soil_cat:
         missing = [
@@ -1011,6 +1023,7 @@ def _resolve_inputs_dict(
         "soil_path": soil,
         "soil_catalog_path": soil_cat,
         "static_moisture_paths": list(static_moisture or []),
+        "moisture_source": str(moisture_source),
         "hydrology_layers": dict(hydrology or {}),
     }
 
@@ -1309,11 +1322,29 @@ def enrich_graph_from_static_scene(
             c.soil_texture = None
             c.uscs = None
 
-    # 3. Sample CLDAS Moisture raster
+    # 3. Static moisture: either sampled from the registered CLDAS raster or
+    #    taken from the frozen mapping-period weather snapshot. The snapshot mode
+    #    exists because the CLDAS files in this project are from a different
+    #    season than the map; see DECISIONS.
     moisture_vals: list[float] = []
     missing_moisture_count = 0
     moisture_pixels: set[tuple[int, int]] = set()
-    if cldas_file and cldas_file.is_file():
+    moisture_source = str(moisture_cfg.get("source", "cldas")).strip().lower()
+    if moisture_source == "weather_snapshot":
+        weather_cfg = scene_data.get("weather") or {}
+        snapshot_value = weather_cfg.get("soil_moisture_surface_m3_m3")
+        if snapshot_value is None:
+            raise ValueError(
+                "moisture.source='weather_snapshot' requires "
+                "weather.soil_moisture_surface_m3_m3 in the scene."
+            )
+        theta = float(snapshot_value)
+        if not 0.0 < theta <= 1.0:
+            raise ValueError(f"frozen weather soil moisture is out of range: {theta}")
+        for c in cells:
+            c.soil_moisture = theta
+            moisture_vals.append(theta)
+    elif cldas_file and cldas_file.is_file():
         with rasterio.open(cldas_file) as c_ds:
             c_band = c_ds.read(1)
             c_nodata = c_ds.nodata
@@ -1412,8 +1443,13 @@ def enrich_graph_from_static_scene(
             "distinct_pixels": len(soil_pixels),
         },
         "moisture": {
-            "source_path": str(cldas_file) if cldas_file else None,
-            "layer_index": cldas_layer_index,
+            "source": moisture_source,
+            "source_path": (
+                (scene_data.get("weather") or {}).get("snapshot_path")
+                if moisture_source == "weather_snapshot"
+                else (str(cldas_file) if cldas_file else None)
+            ),
+            "layer_index": cldas_layer_index if moisture_source == "cldas" else None,
             "count": len(moisture_vals),
             "missing_count": missing_moisture_count,
             "min": float(min(moisture_vals)) if moisture_vals else None,

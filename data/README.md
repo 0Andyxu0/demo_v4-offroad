@@ -12,8 +12,8 @@
 | `road/` | `road_fina.shp`（Width / FuncClass 字段源） | `D:/Workspace/qdx数据/road/` | 0.1 MB |
 | `orthophoto/` | `T.tif` + `.ovr` / `.tfw` / `.aux.xml` | `D:/Workspace/qdx数据/正射影像/` | 1378.1 MB |
 | `soil/` | `soil_nanjing.tif` + `soil_nanjing.tif.vat.dbf` | `D:/Workspace/demo_v1/data/` | 14.9 MB |
-| `cldas/` | CLDAS 0-5 / 5-10 / 10-40 cm 三层静态含水率 `.nc`（**2026-01-01**） | `D:/Workspace/demo_v4/data/` | 7.6 MB |
-| `hydrology/` | 上游水文 7 层 + `hydrology_manifest.json` + `twi_threshold_analysis.json` | `D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/` | 23.2 MB |
+| `cldas/` | CLDAS 三层静态含水率 `.nc`（**2026-01-01**，现仅作敏感度输入） | `D:/Workspace/demo_v4/data/` | 7.6 MB |
+| `hydrology/` | 上游水文 6 层（`twi` 已从场景去注册，文件保留）+ `hydrology_manifest.json` + `twi_threshold_analysis.json` | `D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/` | 23.2 MB |
 
 合计约 **1.46 GB**，2026-10-18 复制。复制为字节级拷贝，源文件哈希不变。
 
@@ -28,7 +28,7 @@
 
 ## 需要记录的事实
 
-1. **CLDAS 是 2026-01-01 的冬季数据**，而制图期是 2026-10；用它作静态含水率属季节性错配（见 DECISIONS 待决项）。
+1. **CLDAS 是 2026-01-01 的冬季数据**，而制图期是 2026-10；静态含水率已改用冻结的制图期快照（DECISIONS 44），CLDAS 仅保留作敏感度输入。
 2. **水文层是既有产物**，本次只搬迁不重算；重算会改变 D 场数值并作废既有证据。
 3. **正射影像 1.38 GB** 是目录里最大的单项；它只用于预览与边界核对，不参与通行评价。
 4. 原始 QDX 数据目录保持只读，未被修改。

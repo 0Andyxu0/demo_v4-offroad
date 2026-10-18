@@ -1,5 +1,10 @@
 # Fixed M0 request for the first QDX real-data study area.  `map_display` is
 # display-only metadata; the `plan` command consumes the nested `route` mapping.
+#
+# moisture_source picks the static-moisture record: "weather_snapshot" uses the
+# frozen mapping-period value (see DECISIONS 43); "cldas" samples the registered
+# CLDAS raster (kept for sensitivity runs only).
+moisture_source: weather_snapshot
 map_display:
   orthophoto_source_path: data/inputs/orthophoto/T.tif
   orthophoto_preview_metadata_path: outputs/m0_qdx_baseline/orthophoto_preview.json

@@ -1,0 +1,35 @@
+{
+  "schema_version": "moisture_calibration_v1",
+  "purpose": "theta_dry/theta_wet anchors for surface_drainage_multiplier_v1",
+  "site": {
+    "requested_lat": 31.9918777858,
+    "requested_lng": 118.9927309985,
+    "grid_lat": 32.021088,
+    "grid_lng": 118.986725,
+    "grid_elevation_m": 74.0
+  },
+  "period": {
+    "start": "2025-10-18",
+    "end": "2026-10-17",
+    "timezone": "UTC",
+    "sample_count": 8760
+  },
+  "variable": "soil_moisture_0_to_7cm",
+  "unit": "m3/m3",
+  "depth": "0-7cm",
+  "percentiles": {
+    "q05": 0.159,
+    "q50": 0.294,
+    "q95": 0.424
+  },
+  "source": {
+    "provider": "open-meteo",
+    "endpoint": "https://archive-api.open-meteo.com/v1/archive",
+    "retrieved_at": "2026-10-18T10:47:53.883379+00:00"
+  },
+  "caveats": [
+    "Reanalysis product (ERA5-Land derived), not a field measurement.",
+    "Grid resolution is far coarser than the 30 m work area; this is a regional anchor.",
+    "Re-run this script if the site or the mapping season changes."
+  ]
+}

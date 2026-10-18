@@ -21,6 +21,7 @@ import h3
 import numpy as np
 import pytest
 import rasterio
+import yaml
 from rasterio.transform import from_origin
 
 from h3_offroad_planner.config import load_vehicle
@@ -287,6 +288,73 @@ def test_route_request_accepts_optional_static_scene_path():
         )
 
 
+
+def test_moisture_calibration_matches_planner_anchors():
+    """theta_dry/theta_wet must come from the frozen local climatology file."""
+    calibration = json.loads(
+        (ROOT / "configs" / "scenes" / "qdx_moisture_calibration.json").read_text(encoding="utf-8")
+    )
+    planning = yaml.safe_load(
+        (ROOT / "configs" / "static_gis_planning.yaml").read_text(encoding="utf-8")
+    )
+    weather = planning["weather"]
+    percentiles = calibration["percentiles"]
+    assert weather["theta_dry"] == pytest.approx(percentiles["q05"], abs=1e-9)
+    assert weather["theta_wet"] == pytest.approx(percentiles["q95"], abs=1e-9)
+    assert weather["calibration_status"] != "provisional_cldas_spatial_20260101"
+    assert calibration["period"]["sample_count"] >= 24 * 30
+    assert calibration["source"]["provider"] == "open-meteo"
+    assert calibration["unit"] == "m3/m3"
+
+
+def test_scene_uses_frozen_snapshot_moisture():
+    """moisture.source=weather_snapshot fills every cell from the frozen value."""
+    cells = {
+        str(h3.latlng_to_cell(31.980, 118.990, 14)): _surface_cell(
+            str(h3.latlng_to_cell(31.980, 118.990, 14))
+        ),
+        str(h3.latlng_to_cell(31.981, 118.991, 14)): _surface_cell(
+            str(h3.latlng_to_cell(31.981, 118.991, 14))
+        ),
+    }
+    graph = H3Graph(cells=cells, edges={})
+    scene = {
+        "soil": {"raster_path": "missing.tif", "catalog_path": "missing.dbf"},
+        "moisture": {"source": "weather_snapshot", "paths": []},
+        "weather": {
+            "snapshot_path": "configs/scenes/baseline_986bd58_weather.json",
+            "soil_moisture_surface_m3_m3": 0.25,
+        },
+        "hydrology": {"upstream_layers": {}},
+    }
+    meta = enrich_graph_from_static_scene(graph, scene)
+    for cell in cells.values():
+        assert cell.soil_moisture == pytest.approx(0.25)
+    assert meta["moisture"]["source"] == "weather_snapshot"
+    assert meta["moisture"]["source_path"].endswith("baseline_986bd58_weather.json")
+    assert meta["coverage"]["soil_moisture"]["valid_rate"] == pytest.approx(1.0)
+
+
+def test_snapshot_moisture_requires_the_frozen_value():
+    cell_id = str(h3.latlng_to_cell(31.980, 118.990, 14))
+    cells = {cell_id: _surface_cell(cell_id)}
+    graph = H3Graph(cells=cells, edges={})
+    scene = {
+        "soil": {"raster_path": "missing.tif", "catalog_path": "missing.dbf"},
+        "moisture": {"source": "weather_snapshot", "paths": []},
+        "hydrology": {"upstream_layers": {}},
+    }
+    with pytest.raises(ValueError):
+        enrich_graph_from_static_scene(graph, scene)
+
+
+def test_repo_scene_does_not_carry_twi():
+    """TWI stays de-registered: the D field already encodes the TWI mapping."""
+    scene = json.loads(
+        (ROOT / "configs" / "scenes" / "m0_qdx_scene.json").read_text(encoding="utf-8")
+    )
+    assert "twi" not in scene["hydrology"]["upstream_layers"]
+    assert scene["moisture"]["source"] == "weather_snapshot"
 def test_enrich_graph_leaves_unmapped_soil_as_none():
     """Verify cells falling on unmapped/nodata areas keep uscs=None and do NOT default to 'CL'."""
     # Coordinate outside Nanjing soil coverage (e.g. lon 110.0, lat 20.0)
@@ -728,6 +796,7 @@ def test_m1_ablation_artifacts_contract_and_traceability():
     assert len(coverage["soil_uscs_map_sha256"]) == 64
 
     union_enrich = meta.get("corridor_union_enrichment", meta.get("enrichment_summary", {}))
+    assert union_enrich["moisture"]["source"] == "weather_snapshot"
     union_cells_total = union_enrich["total_cells_enriched"]
     assert union_cells_total > 100_000, "corridor union must cover the whole benchmark area"
     hist = union_enrich["soil"]["histogram"]

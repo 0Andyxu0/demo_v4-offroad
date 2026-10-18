@@ -487,11 +487,11 @@ class WeatherConfig:
             not isfinite(self.api_reference_mm) or self.api_reference_mm <= 0.0
         ):
             raise ConfigError("api_reference_mm must be finite and positive.")
-        if self.calibration_status not in {
-            "unspecified",
-            "provisional_cldas_spatial_20260101",
-            "field_validated",
-        }:
+        if self.calibration_status not in {"unspecified", "field_validated"} and not (
+            self.calibration_status.startswith("provisional_")
+        ):
+            # Any provisional_* anchor (CLDAS spatial, local archive climatology,
+            # ...) is accepted and keeps the provisional-pressure warning.
             raise ConfigError("unsupported weather calibration_status.")
 
 

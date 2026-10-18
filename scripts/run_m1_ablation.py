@@ -571,8 +571,9 @@ def run_m1_ablation(
             "missing_soil_count": u_missing_soil,
         },
         "moisture": {
+            "source": primary_summary.get("moisture", {}).get("source", "cldas"),
             "source_path": primary_summary.get("moisture", {}).get("source_path"),
-            "layer_index": primary_summary.get("moisture", {}).get("layer_index", 0),
+            "layer_index": primary_summary.get("moisture", {}).get("layer_index"),
             "count": len(u_moisture_vals),
             "missing_count": u_missing_moisture,
             "min": float(min(u_moisture_vals)) if u_moisture_vals else None,
@@ -679,7 +680,7 @@ def _generate_markdown_summary(
             for name, field in ((data_coverage or {}).get("fields") or {}).items()
         ),
         f"- **土壤分类直方图 (USCS)**: `{json.dumps(enrichment_meta.get('soil', {}).get('uscs_histogram', {}), ensure_ascii=False)}`",
-        f"- **CLDAS 含水率统计 (0-5cm)**: 有效采样 {enrichment_meta.get('moisture', {}).get('count', 0):,} 格，均值 {enrichment_meta.get('moisture', {}).get('mean', 0.0):.4f} m³/m³ (范围 [{enrichment_meta.get('moisture', {}).get('min', 0.0):.4f}, {enrichment_meta.get('moisture', {}).get('max', 0.0):.4f}]，不同取值 {enrichment_meta.get('moisture', {}).get('distinct_values', 0)} 个)",
+        f"- **静态含水率（源: {enrichment_meta.get('moisture', {}).get('source', 'cldas')}）**: 有效采样 {enrichment_meta.get('moisture', {}).get('count', 0):,} 格，均值 {enrichment_meta.get('moisture', {}).get('mean', 0.0):.4f} m³/m³ (范围 [{enrichment_meta.get('moisture', {}).get('min', 0.0):.4f}, {enrichment_meta.get('moisture', {}).get('max', 0.0):.4f}]，不同取值 {enrichment_meta.get('moisture', {}).get('distinct_values', 0)} 个)",
         f"- **水文 D 场有效格元**: {enrichment_meta.get('drainage', {}).get('valid_count', 0):,} 格，均值 {enrichment_meta.get('drainage', {}).get('mean', 0.0):.4f}",
         f"- **地表响应分类**: 铺装道路 {enrichment_meta.get('surface_response', {}).get('road_cells', 0):,} 格 (S=0.0)，越野土壤 {enrichment_meta.get('surface_response', {}).get('offroad_cells', 0):,} 格 (S=0.9)",
         "",

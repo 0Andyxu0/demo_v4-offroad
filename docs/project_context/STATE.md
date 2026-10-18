@@ -41,7 +41,7 @@
   - 提供 `scripts/run_m0_baseline.py` 与 `python scripts/run_local.py m0-baseline`，自动执行：请求校验 → 正射预览生成 → 关键属性审计 → `prepare_static_scene` 契约生成与保存（正射预览路径贯通注入） → `cli plan` 基线运行 → 产物摘要与哈希归档。
   - 产物写入独立目录 `outputs/m0_qdx_baseline/`，包含 `m0_baseline.json`、`static_scene.json`、`orthophoto_preview.png`、`orthophoto_preview.json`、`landcover_attribute_audit.json` 及路线结果。
 - **自动化测试**：
-  - 全套回归测试 554 passed, 4 skipped；
+  - 全套回归测试 558 passed, 4 skipped；
   - 包含 `tests/test_m1_consolidated_regression.py`、`tests/test_m1_ablation.py`、`tests/test_static_scene.py`、`tests/test_orthophoto_preview.py`、`tests/test_vectorized_factor.py` 等全量通过。
 
 ### M1 静态通行属性修复与综合审核整改闭环（整改完成，待复核）
@@ -125,6 +125,18 @@
   2. `twi` 仍然为空，索引缺失项中只有 drainage 系在运行时被补齐；
   3. 覆盖率只对**已加载走廊子图**成立（生产 plan 41,503 格元、消融并集 380,044 格元），不代表全库 2,251,004 格元；
   4. `soil_uscs_map_sha256` 只进产物与 enrichment 元数据，未进入 tile/index 身份哈希 `static_input_hash`（改哈希会与既有瓦片清单失配，留待重建瓦片时一并处理）。
+
+### 湿度基准定版与 TWI 去注册（已完成）
+
+- **天气压力标定锚**：`theta_dry/theta_wet` 由 `0.25 / 0.35`（CLDAS 2026-01-01 南京 50 km 空间 q05/q95）改为 **`0.159 / 0.424`**（本地 Open-Meteo 归档 0-7 cm 土壤湿度，2025-10-18…2026-10-17，8,760 小时样本，q05/q95）。效果：生产 plan 的 `derived_pressure` 由 **0.000 → 0.343**，"真实天气修正"首次真正生效。
+- **标定件**：`scripts/calibrate_moisture.py` 拉取并冻结 → `configs/scenes/qdx_moisture_calibration.json`（站点、期间、样本数、q05/q50/q95、来源 URL、取回时间、caveats）。回归测试强制 `static_gis_planning.yaml` 的两个锚值与该文件一致，漂移即失败。
+- **静态含水率来源**：由 CLDAS 2026-01-01（与制图期 2026-10 错季）改为 **冻结的制图期快照 0.25 m³/m³**（`moisture_source: weather_snapshot`）。CLDAS 三层路径保留在场景与私有资产清单中，仅用于敏感度对照。
+- **对 M1 的影响（A1b）**：θ 0.3080/0.3301 → 0.25，CI 666/521 → 1,389 kPa（仍远高于 185.73 阈值，不改变可通行性）。`od_03_water_gully` A1b ETA 104.38 → **103.62 s**（−0.76 s）、成本 650.99 → 652.64；其余 OD 与 A0/A1a/A1c/A2 指标不变，M1 结论不变。
+- **TWI 去注册**：`hydrology.upstream_layers` 由 7 层减为 6 层（移除 `twi`），场景与私有资产清单同步；`H3Cell.twi` 列保留但恒为 `null`，由 `drainage_sensitivity`（D 场）承载其语义。物理列删除留到下一次计划内的索引重建。
+- **接口变化**：`MoistureReference.source`（`cldas` | `weather_snapshot`）；`enrich_graph_from_static_scene` 支持快照模式并在 `moisture.source/source_path` 记录来源；`WeatherConfig.calibration_status` 接受 `provisional_*` 前缀；`ENVIRONMENT_PRESSURE_PROVISIONAL` 仅在 `provisional_*` 时产生。
+- **运行命令**：`python scripts/run_local.py run scripts/calibrate_moisture.py`（重新标定）；`python scripts/run_local.py m0-baseline`；`python scripts/run_local.py m1-ablation`；`python scripts/run_local.py cli plan --request configs/manned_offroad_m0.yaml`。
+- **产物**：`configs/scenes/qdx_moisture_calibration.json`；`outputs/m0_qdx_baseline/static_scene.json`（`moisture.source = weather_snapshot`、6 层水文）；`outputs/m0_qdx_baseline/baseline_route/route_manifest.json`（`derived_pressure = 0.343`）；`outputs/m1_ablation/m1_ablation.json`（`corridor_union_enrichment.moisture.source = weather_snapshot`）。
+- **尚存问题**：① 标定站点为 API 网格点（32.021/118.987，距工区约 3.3 km）；② 快照 0.25 与 CLDAS 0.308 的差异未做敏感性对照，若需要可作为单独消融；③ `twi` 物理列仍在索引 schema 中，待重建时删除。
 
 ## 运行方式
 

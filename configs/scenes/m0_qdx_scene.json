@@ -27,8 +27,8 @@
     "path": "data/inputs/dem/DEM_CGCS2000.tif",
     "crs": "EPSG:4490",
     "native_resolution": [
-      1.971536784943229e-05,
-      1.9715367849435506e-05
+      0.00001971536784943229,
+      0.000019715367849435506
     ],
     "horizontal_unit": "degree",
     "elevation_unit": "meter",
@@ -66,7 +66,7 @@
           "6.3"
         ],
         "numeric_min": 1.5,
-        "numeric_max": 8.0,
+        "numeric_max": 8,
         "semantic_status": "raw source field retained; physical units and vehicle rule remain M1 work"
       },
       {
@@ -97,8 +97,8 @@
           "30",
           "30"
         ],
-        "numeric_min": 30.0,
-        "numeric_max": 55.0,
+        "numeric_min": 30,
+        "numeric_max": 55,
         "semantic_status": "raw source field retained; road-area construction remains M1 work"
       }
     ]
@@ -109,11 +109,11 @@
     "width_field": "Width",
     "feature_count": 124,
     "sample_widths": [
-      30.0,
-      30.0,
-      30.0,
-      30.0,
-      30.0
+      30,
+      30,
+      30,
+      30,
+      30
     ],
     "road_type_field": "FuncClass",
     "sample_road_types": [
@@ -125,7 +125,7 @@
     ],
     "width_unit_or_scale": "0.1m",
     "effective_width_m_range": [
-      3.0,
+      3,
       5.5
     ]
   },
@@ -171,7 +171,9 @@
       "10-40cm"
     ],
     "observation_time": "2026-01-01",
-    "tags": {}
+    "tags": {},
+    "source": "weather_snapshot",
+    "source_note": "Static moisture of record is the frozen mapping-period snapshot; CLDAS paths are retained only for sensitivity runs."
   },
   "hydrology": {
     "upstream_layers": {
@@ -180,11 +182,11 @@
       "boundary_influence": "data/inputs/hydrology/boundary_influence.tif",
       "drainage_direction": "data/inputs/hydrology/drainage_direction.tif",
       "drainage_sensitivity": "data/inputs/hydrology/drainage_sensitivity.tif",
-      "drainage_validity": "data/inputs/hydrology/drainage_validity.tif",
-      "twi": "data/inputs/hydrology/twi.tif"
+      "drainage_validity": "data/inputs/hydrology/drainage_validity.tif"
     },
     "crs": "EPSG:32650",
-    "purpose": "Fixed upstream hydrology D-field reference; not recalibrated on small ROI."
+    "purpose": "Fixed upstream hydrology D-field reference; not recalibrated on small ROI.",
+    "twi_note": "TWI is intentionally not carried per cell: drainage_sensitivity (D field) already encodes the TWI mapping."
   },
   "weather": {
     "snapshot_path": "configs/scenes/baseline_986bd58_weather.json",
@@ -208,7 +210,7 @@
       "functional_class": "FuncClass",
       "width_unit_or_scale": "0.1m",
       "effective_width_m_range": [
-        3.0,
+        3,
         5.5
       ]
     }

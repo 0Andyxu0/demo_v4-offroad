@@ -225,7 +225,9 @@ def resolve_request_environment(
             ),
             request_pressures=(pressure,),
         )
-        if weather.calibration_status == "provisional_cldas_spatial_20260101":
+        if weather.calibration_status.startswith("provisional_"):
+            # Any provisional_* anchor (CLDAS spatial q05/q95, local archive
+            # climatology, ...) keeps the provisional-pressure warning.
             warnings.append("ENVIRONMENT_PRESSURE_PROVISIONAL")
     else:
         fallback_pressure, basis, precip_warnings = resolve_precipitation_fallback(
