@@ -6,7 +6,7 @@
   "baseline_source_commit": "986bd58",
   "mapping_time": "2026-10-15T08:00:00+00:00",
   "study_area": {
-    "source_layer": "D:/Workspace/qdx数据/矢量数据/bound.shp",
+    "source_layer": "data/inputs/landcover/bound.shp",
     "source_crs": "EPSG:4490",
     "bounds_wgs84": [
       118.98133288039901,
@@ -24,7 +24,7 @@
     "selection_basis": "The supplied study boundary, DEM, land-cover layers, road layer, soil raster, and local orthophoto overlap this area."
   },
   "dem": {
-    "path": "D:/Workspace/qdx数据/DEM-DSM/DEM_CGCS2000.tif",
+    "path": "data/inputs/dem/DEM_CGCS2000.tif",
     "crs": "EPSG:4490",
     "native_resolution": [
       1.971536784943229e-05,
@@ -40,7 +40,7 @@
     ]
   },
   "landcover": {
-    "source_directory": "D:/Workspace/qdx数据/矢量数据",
+    "source_directory": "data/inputs/landcover",
     "crs": "EPSG:4490",
     "layers": [
       "bound.shp",
@@ -104,7 +104,7 @@
     ]
   },
   "road": {
-    "path": "D:/Workspace/qdx数据/road/road_fina.shp",
+    "path": "data/inputs/road/road_fina.shp",
     "crs": "EPSG:4490",
     "width_field": "Width",
     "feature_count": 124,
@@ -130,7 +130,7 @@
     ]
   },
   "orthophoto": {
-    "source_path": "D:/Workspace/qdx数据/正射影像/T.tif",
+    "source_path": "data/inputs/orthophoto/T.tif",
     "crs": "EPSG:4528",
     "native_resolution_m": 0.5,
     "bounds_wgs84": [
@@ -148,8 +148,8 @@
     "purpose": "Desktop display and manual boundary verification only; it is not an M0 classification or factor-model input."
   },
   "soil": {
-    "raster_path": "D:/Workspace/demo_v1/data/soil_nanjing.tif",
-    "catalog_path": "D:/Workspace/demo_v1/data/soil_nanjing.tif.vat.dbf",
+    "raster_path": "data/inputs/soil/soil_nanjing.tif",
+    "catalog_path": "data/inputs/soil/soil_nanjing.tif.vat.dbf",
     "crs": "EPSG:4326",
     "native_resolution": [
       0.0003363351959999979,
@@ -160,9 +160,9 @@
   },
   "moisture": {
     "paths": [
-      "D:/Workspace/demo_v4/data/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM000005-2026010100.nc",
-      "D:/Workspace/demo_v4/data/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM000010-2026010100.nc",
-      "D:/Workspace/demo_v4/data/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM010040-2026010100.nc"
+      "data/inputs/cldas/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM000005-2026010100.nc",
+      "data/inputs/cldas/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM000010-2026010100.nc",
+      "data/inputs/cldas/Z_NAFP_C_BABJ_20260102002000_P_CLDAS_NRT_ASI_0P0625_DAY-SM010040-2026010100.nc"
     ],
     "unit": "m3/m3",
     "depth_layers": [
@@ -175,13 +175,13 @@
   },
   "hydrology": {
     "upstream_layers": {
-      "accumulation": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/accumulation.tif",
-      "analysis_dem_metric": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/analysis_dem_metric.tif",
-      "boundary_influence": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/boundary_influence.tif",
-      "drainage_direction": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/drainage_direction.tif",
-      "drainage_sensitivity": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/drainage_sensitivity.tif",
-      "drainage_validity": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/drainage_validity.tif",
-      "twi": "D:/Workspace/demo_v4/outputs/qdx_hydrology_upstream_v1/twi.tif"
+      "accumulation": "data/inputs/hydrology/accumulation.tif",
+      "analysis_dem_metric": "data/inputs/hydrology/analysis_dem_metric.tif",
+      "boundary_influence": "data/inputs/hydrology/boundary_influence.tif",
+      "drainage_direction": "data/inputs/hydrology/drainage_direction.tif",
+      "drainage_sensitivity": "data/inputs/hydrology/drainage_sensitivity.tif",
+      "drainage_validity": "data/inputs/hydrology/drainage_validity.tif",
+      "twi": "data/inputs/hydrology/twi.tif"
     },
     "crs": "EPSG:32650",
     "purpose": "Fixed upstream hydrology D-field reference; not recalibrated on small ROI."

@@ -1,9 +1,9 @@
-﻿version: static_gis_route_v2
+version: static_gis_route_v2
 
 soil:
   mode: categorical_drainage
-  raster_path: D:/Workspace/demo_v1/data/soil_nanjing.tif
-  category_table_path: D:/Workspace/demo_v1/data/soil_nanjing.tif.vat.dbf
+  raster_path: data/inputs/soil/soil_nanjing.tif
+  category_table_path: data/inputs/soil/soil_nanjing.tif.vat.dbf
   default_theta_v: null
   sensitivity_policy: shared_assumption
   shared_sensitivity: 1.0
@@ -67,4 +67,3 @@ decision:
   candidate_limit: 24
   display_limit: 5
   require_independent_backup: false
-
